@@ -1,0 +1,325 @@
+### ============================================
+### BINARY OPTION TRADING SYSTEM - API TESTS
+### ============================================
+@baseUrl = http://localhost:3000/api/v1
+@superAdminToken = YOUR_SUPER_ADMIN_TOKEN
+@adminToken = YOUR_ADMIN_TOKEN
+@userToken = YOUR_USER_TOKEN
+@assetId = YOUR_ASSET_ID
+
+### ============================================
+### HEALTH CHECK
+### ============================================
+
+### Health Check
+GET {{baseUrl}}/health
+
+### ============================================
+### AUTHENTICATION
+### ============================================
+
+### Login as Super Admin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "superadmin@trading.com",
+  "password": "SuperAdmin123!"
+}
+
+### Register User
+POST {{baseUrl}}/auth/register
+Content-Type: application/json
+
+{
+  "email": "trader@example.com",
+  "password": "Trader123!"
+}
+
+### Login User
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "trader@example.com",
+  "password": "Trader123!"
+}
+
+### ============================================
+### ADMIN - USER MANAGEMENT
+### ============================================
+
+### Create Admin User
+POST {{baseUrl}}/admin/users
+Authorization: Bearer {{superAdminToken}}
+Content-Type: application/json
+
+{
+  "email": "admin@trading.com",
+  "password": "Admin123!",
+  "role": "admin"
+}
+
+### Create Regular User
+POST {{baseUrl}}/admin/users
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "email": "user@trading.com",
+  "password": "User123!",
+  "role": "user"
+}
+
+### Get All Users
+GET {{baseUrl}}/admin/users?page=1&limit=50
+Authorization: Bearer {{adminToken}}
+
+### Get User by ID
+GET {{baseUrl}}/admin/users/USER_ID
+Authorization: Bearer {{adminToken}}
+
+### Update User
+PUT {{baseUrl}}/admin/users/USER_ID
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "isActive": false
+}
+
+### Delete User (Super Admin only)
+DELETE {{baseUrl}}/admin/users/USER_ID
+Authorization: Bearer {{superAdminToken}}
+
+### ============================================
+### ASSETS MANAGEMENT
+### ============================================
+
+### Create IDX_STC Asset
+POST {{baseUrl}}/assets
+Authorization: Bearer {{superAdminToken}}
+Content-Type: application/json
+
+{
+  "name": "IDX STC",
+  "symbol": "IDX_STC",
+  "profitRate": 85,
+  "isActive": true,
+  "dataSource": "realtime_db",
+  "realtimeDbPath": "/idx_stc/current_price",
+  "description": "Indonesian Stock Index STC"
+}
+
+### Create Mock Asset for Testing
+POST {{baseUrl}}/assets
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "name": "Test Asset",
+  "symbol": "TEST",
+  "profitRate": 90,
+  "isActive": true,
+  "dataSource": "mock",
+  "description": "Mock asset for testing"
+}
+
+### Get All Assets
+GET {{baseUrl}}/assets
+Authorization: Bearer {{userToken}}
+
+### Get Active Assets Only
+GET {{baseUrl}}/assets?activeOnly=true
+Authorization: Bearer {{userToken}}
+
+### Get Asset by ID
+GET {{baseUrl}}/assets/{{assetId}}
+Authorization: Bearer {{userToken}}
+
+### Get Current Asset Price
+GET {{baseUrl}}/assets/{{assetId}}/price
+Authorization: Bearer {{userToken}}
+
+### Update Asset
+PUT {{baseUrl}}/assets/{{assetId}}
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "profitRate": 88,
+  "isActive": true
+}
+
+### Delete Asset
+DELETE {{baseUrl}}/assets/{{assetId}}
+Authorization: Bearer {{superAdminToken}}
+
+### ============================================
+### USER PROFILE
+### ============================================
+
+### Get User Profile
+GET {{baseUrl}}/user/profile
+Authorization: Bearer {{userToken}}
+
+### ============================================
+### BALANCE MANAGEMENT
+### ============================================
+
+### Deposit Balance
+POST {{baseUrl}}/balance
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{
+  "type": "deposit",
+  "amount": 10000,
+  "description": "Initial deposit"
+}
+
+### Deposit More
+POST {{baseUrl}}/balance
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{
+  "type": "deposit",
+  "amount": 5000,
+  "description": "Additional deposit"
+}
+
+### Withdrawal
+POST {{baseUrl}}/balance
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{
+  "type": "withdrawal",
+  "amount": 1000,
+  "description": "Test withdrawal"
+}
+
+### Get Current Balance
+GET {{baseUrl}}/balance/current
+Authorization: Bearer {{userToken}}
+
+### Get Balance History
+GET {{baseUrl}}/balance?page=1&limit=20
+Authorization: Bearer {{userToken}}
+
+### ============================================
+### BINARY ORDERS
+### ============================================
+
+### Create Binary Order - CALL 1 minute
+POST {{baseUrl}}/binary-orders
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{
+  "asset_id": "{{assetId}}",
+  "direction": "CALL",
+  "amount": 1000,
+  "duration": 1
+}
+
+### Create Binary Order - PUT 2 minutes
+POST {{baseUrl}}/binary-orders
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{
+  "asset_id": "{{assetId}}",
+  "direction": "PUT",
+  "amount": 500,
+  "duration": 2
+}
+
+### Create Binary Order - CALL 15 minutes
+POST {{baseUrl}}/binary-orders
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{
+  "asset_id": "{{assetId}}",
+  "direction": "CALL",
+  "amount": 2000,
+  "duration": 15
+}
+
+### Create Binary Order - PUT 60 minutes
+POST {{baseUrl}}/binary-orders
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{
+  "asset_id": "{{assetId}}",
+  "direction": "PUT",
+  "amount": 1500,
+  "duration": 60
+}
+
+### Get All Binary Orders
+GET {{baseUrl}}/binary-orders?page=1&limit=20
+Authorization: Bearer {{userToken}}
+
+### Get Active Orders
+GET {{baseUrl}}/binary-orders?status=ACTIVE&page=1&limit=20
+Authorization: Bearer {{userToken}}
+
+### Get Won Orders
+GET {{baseUrl}}/binary-orders?status=WON&page=1&limit=20
+Authorization: Bearer {{userToken}}
+
+### Get Lost Orders
+GET {{baseUrl}}/binary-orders?status=LOST&page=1&limit=20
+Authorization: Bearer {{userToken}}
+
+### Get Order by ID
+GET {{baseUrl}}/binary-orders/ORDER_ID
+Authorization: Bearer {{userToken}}
+
+### ============================================
+### ERROR TESTING
+### ============================================
+
+### Invalid Duration
+POST {{baseUrl}}/binary-orders
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{
+  "asset_id": "{{assetId}}",
+  "direction": "CALL",
+  "amount": 1000,
+  "duration": 7
+}
+
+### Insufficient Balance
+POST {{baseUrl}}/binary-orders
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{
+  "asset_id": "{{assetId}}",
+  "direction": "CALL",
+  "amount": 999999999,
+  "duration": 1
+}
+
+### Unauthorized Access
+GET {{baseUrl}}/admin/users
+
+### Forbidden Access (User accessing Admin endpoint)
+POST {{baseUrl}}/assets
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{
+  "name": "Test",
+  "symbol": "TEST",
+  "profitRate": 85,
+  "isActive": true,
+  "dataSource": "mock"
+}
