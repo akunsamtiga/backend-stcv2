@@ -4,7 +4,6 @@ import * as admin from 'firebase-admin';
 import * as dns from 'dns';
 import axios, { AxiosInstance } from 'axios';
 
-// ⚡ Force IPv4 resolution globally
 dns.setDefaultResultOrder('ipv4first');
 
 export interface BatchOperation {
@@ -18,30 +17,23 @@ export interface BatchOperation {
 export class FirebaseService implements OnModuleInit {
   private readonly logger = new Logger(FirebaseService.name);
   
-  // Firestore instance
   private db: admin.firestore.Firestore;
-  
-  // Realtime DB instances
   private realtimeDb: admin.database.Database | null = null;
   private realtimeDbRest: AxiosInstance | null = null;
   
-  // Status flags
   private initialized = false;
-  private firestoreReady = false; // ✅ NEW FLAG
+  private firestoreReady = false;
   private useRestForRealtimeDb = false;
   
-  // ⚡ Connection pool optimization
   private restConnectionPool: AxiosInstance[] = [];
   private readonly POOL_SIZE = 5;
   private currentPoolIndex = 0;
   
-  // ⚡ Performance tracking
   private operationCount = 0;
   private avgResponseTime = 0;
   
-  // ⚡ Cache for frequently accessed data
   private queryCache: Map<string, { data: any; timestamp: number }> = new Map();
-  private readonly CACHE_TTL = 5000; // 5 seconds
+  private readonly CACHE_TTL = 5000;
 
   constructor(private configService: ConfigService) {}
 
@@ -59,45 +51,50 @@ export class FirebaseService implements OnModuleInit {
         throw new Error('Firebase credentials missing');
       }
 
-      this.logger.log('⚡ Initializing Firebase (Ultra-Fast mode)...');
+      this.logger.log('⚡ Initializing Firebase...');
 
-      // ✅ Initialize Admin SDK for Firestore
+      // ✅ Initialize Admin SDK dengan DATABASE URL
+      const realtimeDbUrl = this.configService.get('firebase.realtimeDbUrl');
+      
       if (!admin.apps.length) {
-        admin.initializeApp({
+        const appConfig: any = {
           credential: admin.credential.cert(serviceAccount as admin.ServiceAccount),
-        });
+        };
+        
+        // ✅ CRITICAL: Tambahkan databaseURL saat init
+        if (realtimeDbUrl) {
+          appConfig.databaseURL = realtimeDbUrl;
+          this.logger.log(`🔥 Realtime DB URL: ${realtimeDbUrl}`);
+        }
+        
+        admin.initializeApp(appConfig);
       }
 
+      // Initialize Firestore
       this.db = admin.firestore();
-      
-      // ⚡ Optimize Firestore settings
       this.db.settings({
         ignoreUndefinedProperties: true,
         timestampsInSnapshots: true,
-        // Enable connection pooling
         maxIdleChannels: 10,
       });
 
-      // ✅ TEST FIRESTORE CONNECTION
       try {
         await this.db.collection('_health_check').limit(1).get();
         this.firestoreReady = true;
-        this.logger.log('✅ Firestore initialized and ready');
+        this.logger.log('✅ Firestore initialized');
       } catch (error) {
         this.logger.error(`❌ Firestore test failed: ${error.message}`);
-        // Still set as ready, will retry on actual operations
         this.firestoreReady = true;
       }
 
-      // ✅ Initialize Realtime DB with connection pool
-      await this.initializeRealtimeDbWithPool();
+      // ✅ Initialize Realtime DB - FIXED VERSION
+      await this.initializeRealtimeDbFixed();
       
       this.initialized = true;
       
-      this.logger.log('✅ Firebase Ultra-Fast mode ready!');
+      this.logger.log('✅ Firebase initialized successfully!');
       
-      // ⚡ Start cache cleanup
-      setInterval(() => this.cleanupCache(), 30000); // Every 30s
+      setInterval(() => this.cleanupCache(), 30000);
       
     } catch (error) {
       this.logger.error(`❌ Firebase initialization failed: ${error.message}`);
@@ -106,15 +103,77 @@ export class FirebaseService implements OnModuleInit {
   }
 
   /**
-   * ✅ CHECK IF FIRESTORE IS READY
+   * ✅ FIXED: Realtime DB Initialization
    */
+  private async initializeRealtimeDbFixed() {
+    const realtimeDbUrl = this.configService.get('firebase.realtimeDbUrl');
+    
+    if (!realtimeDbUrl) {
+      this.logger.warn('⚠️ Realtime DB URL not configured');
+      return;
+    }
+
+    this.logger.log('🔥 Initializing Realtime DB...');
+
+    // ✅ METHOD 1: Try Admin SDK first (recommended)
+    try {
+      this.logger.log('📡 Attempting Admin SDK...');
+      this.realtimeDb = admin.database();
+      
+      // Test connection
+      const testRef = this.realtimeDb.ref('/.info/connected');
+      await testRef.once('value');
+      
+      this.useRestForRealtimeDb = false;
+      this.logger.log('✅ Realtime DB (Admin SDK) ready');
+      return; // Success!
+      
+    } catch (sdkError) {
+      this.logger.warn(`⚠️ Admin SDK failed: ${sdkError.message}`);
+      this.logger.log('📡 Falling back to REST API...');
+      this.realtimeDb = null;
+    }
+
+    // ✅ METHOD 2: REST API as fallback
+    try {
+      const baseURL = realtimeDbUrl.replace(/\/$/, '');
+      
+      for (let i = 0; i < this.POOL_SIZE; i++) {
+        const instance = axios.create({
+          baseURL,
+          timeout: 5000,
+          family: 4,
+          headers: {
+            'Content-Type': 'application/json',
+            'Connection': 'keep-alive',
+          },
+          validateStatus: (status) => status >= 200 && status < 300,
+          maxRedirects: 0,
+        });
+        
+        this.restConnectionPool.push(instance);
+      }
+      
+      // Test REST connection
+      await this.restConnectionPool[0].get('/.json?shallow=true');
+      
+      this.useRestForRealtimeDb = true;
+      this.realtimeDbRest = this.restConnectionPool[0];
+      
+      this.logger.log(`✅ Realtime DB (REST API) ready with ${this.POOL_SIZE} connections`);
+      
+    } catch (restError) {
+      this.logger.error(`❌ Both methods failed!`);
+      this.logger.error(`SDK Error: Admin SDK initialization issue`);
+      this.logger.error(`REST Error: ${restError.message}`);
+      this.logger.warn('⚠️ Price fetching will not work!');
+    }
+  }
+
   isFirestoreReady(): boolean {
     return this.firestoreReady;
   }
 
-  /**
-   * ✅ WAIT FOR FIRESTORE TO BE READY
-   */
   async waitForFirestore(maxWaitMs: number = 5000): Promise<void> {
     const startTime = Date.now();
     
@@ -126,76 +185,6 @@ export class FirebaseService implements OnModuleInit {
     }
   }
 
-  /**
-   * ⚡ INITIALIZE REALTIME DB WITH CONNECTION POOL
-   */
-  private async initializeRealtimeDbWithPool() {
-    const realtimeDbUrl = this.configService.get('firebase.realtimeDbUrl');
-    
-    if (!realtimeDbUrl) {
-      this.logger.warn('⚠️ Realtime DB URL not configured');
-      return;
-    }
-
-    // ✅ Try REST API with connection pool (fastest for read-heavy)
-    try {
-      this.logger.log('⚡ Creating REST connection pool...');
-      
-      const baseURL = realtimeDbUrl.replace(/\/$/, '');
-      
-      // Create multiple axios instances for connection pooling
-      for (let i = 0; i < this.POOL_SIZE; i++) {
-        const instance = axios.create({
-          baseURL,
-          timeout: 1000, // ⚡ 1 second timeout
-          family: 4, // Force IPv4
-          headers: {
-            'Content-Type': 'application/json',
-            'Connection': 'keep-alive',
-          },
-          validateStatus: (status) => status >= 200 && status < 300,
-          maxRedirects: 0, // No redirects
-          // ⚡ Keep connection alive
-          httpAgent: null,
-          httpsAgent: null,
-        });
-        
-        this.restConnectionPool.push(instance);
-      }
-      
-      // Test connection with first instance
-      await this.restConnectionPool[0].get('/.json?shallow=true');
-      
-      this.useRestForRealtimeDb = true;
-      this.realtimeDbRest = this.restConnectionPool[0]; // Keep for compatibility
-      
-      this.logger.log(`✅ REST connection pool created (${this.POOL_SIZE} connections)`);
-      
-    } catch (restError) {
-      this.logger.warn(`⚠️ REST API failed: ${restError.message}`);
-      
-      // ✅ Fallback to Admin SDK
-      try {
-        this.logger.log('⚡ Trying Admin SDK...');
-        this.realtimeDb = admin.database();
-        
-        // Optimize SDK settings
-        this.realtimeDb.goOffline();
-        this.realtimeDb.goOnline();
-        
-        this.useRestForRealtimeDb = false;
-        this.logger.log('✅ Realtime DB via Admin SDK');
-        
-      } catch (sdkError) {
-        this.logger.error('❌ Both methods failed for Realtime DB');
-        this.logger.warn('⚠️ Continuing without Realtime DB');
-      }
-    }
-  }
-
-  /**
-   * ⚡ GET NEXT CONNECTION FROM POOL
-   */
   private getNextConnection(): AxiosInstance {
     if (this.restConnectionPool.length === 0) {
       throw new Error('No REST connections available');
@@ -207,9 +196,6 @@ export class FirebaseService implements OnModuleInit {
     return conn;
   }
 
-  /**
-   * GET FIRESTORE (WITH READY CHECK)
-   */
   getFirestore(): admin.firestore.Firestore {
     if (!this.initialized || !this.db) {
       throw new Error('Firestore not initialized');
@@ -220,9 +206,6 @@ export class FirebaseService implements OnModuleInit {
     return this.db;
   }
 
-  /**
-   * GET REALTIME DATABASE (SDK)
-   */
   getRealtimeDatabase(): admin.database.Database {
     if (!this.initialized) {
       throw new Error('Firebase not initialized');
@@ -237,8 +220,7 @@ export class FirebaseService implements OnModuleInit {
   }
 
   /**
-   * ⚡ GET REALTIME DB VALUE (ULTRA-FAST)
-   * Uses connection pool and caching
+   * ✅ FIXED: Get Realtime DB Value
    */
   async getRealtimeDbValue(path: string, useCache = true): Promise<any> {
     if (!this.initialized) {
@@ -247,7 +229,7 @@ export class FirebaseService implements OnModuleInit {
 
     const startTime = Date.now();
 
-    // ✅ Try cache first
+    // Try cache
     if (useCache) {
       const cached = this.getCachedQuery(path);
       if (cached !== null) {
@@ -256,24 +238,33 @@ export class FirebaseService implements OnModuleInit {
       }
     }
 
-    // ✅ Fetch with connection pool
     try {
       let data: any;
 
-      if (this.useRestForRealtimeDb && this.restConnectionPool.length > 0) {
-        // Use connection pool
+      // ✅ METHOD 1: Admin SDK
+      if (!this.useRestForRealtimeDb && this.realtimeDb) {
+        try {
+          this.logger.debug(`📡 Fetching via SDK: ${path}`);
+          const snapshot = await this.realtimeDb.ref(path).once('value');
+          data = snapshot.val();
+        } catch (sdkError) {
+          this.logger.warn(`SDK fetch failed: ${sdkError.message}`);
+          throw sdkError;
+        }
+      }
+      // ✅ METHOD 2: REST API
+      else if (this.useRestForRealtimeDb && this.restConnectionPool.length > 0) {
+        this.logger.debug(`📡 Fetching via REST: ${path}`);
         const conn = this.getNextConnection();
         const response = await conn.get(`${path}.json`);
         data = response.data;
-      } else if (this.realtimeDb) {
-        // Fallback to SDK
-        const snapshot = await this.realtimeDb.ref(path).once('value');
-        data = snapshot.val();
-      } else {
+      }
+      // ❌ No method available
+      else {
         throw new Error('Realtime Database not available');
       }
 
-      // ✅ Cache result
+      // Cache result
       if (useCache && data !== null) {
         this.cacheQuery(path, data);
       }
@@ -293,9 +284,6 @@ export class FirebaseService implements OnModuleInit {
     }
   }
 
-  /**
-   * ⚡ SET REALTIME DB VALUE
-   */
   async setRealtimeDbValue(path: string, data: any): Promise<void> {
     if (!this.initialized) {
       throw new Error('Firebase not initialized');
@@ -313,7 +301,6 @@ export class FirebaseService implements OnModuleInit {
         throw new Error('Realtime Database not available');
       }
 
-      // Invalidate cache
       this.queryCache.delete(path);
 
       const duration = Date.now() - startTime;
@@ -325,9 +312,6 @@ export class FirebaseService implements OnModuleInit {
     }
   }
 
-  /**
-   * ⚡ CACHE MANAGEMENT
-   */
   private getCachedQuery(path: string): any | null {
     const cached = this.queryCache.get(path);
     if (!cached) return null;
@@ -364,16 +348,10 @@ export class FirebaseService implements OnModuleInit {
     }
   }
 
-  /**
-   * GENERATE ID
-   */
   async generateId(collection: string): Promise<string> {
     return this.getFirestore().collection(collection).doc().id;
   }
 
-  /**
-   * CREATE WITH TIMESTAMP
-   */
   async createWithTimestamp(collection: string, data: any): Promise<string> {
     const id = await this.generateId(collection);
     const timestamp = new Date().toISOString();
@@ -388,9 +366,6 @@ export class FirebaseService implements OnModuleInit {
     return id;
   }
 
-  /**
-   * UPDATE WITH TIMESTAMP
-   */
   async updateWithTimestamp(collection: string, id: string, data: any): Promise<void> {
     await this.getFirestore().collection(collection).doc(id).update({
       ...data,
@@ -398,15 +373,10 @@ export class FirebaseService implements OnModuleInit {
     });
   }
 
-  /**
-   * ⚡ OPTIMIZED BATCH WRITE
-   * Max 500 operations per batch (Firestore limit)
-   */
   async batchWrite(operations: BatchOperation[]): Promise<void> {
     const db = this.getFirestore();
     const BATCH_LIMIT = 500;
     
-    // Split into chunks if needed
     for (let i = 0; i < operations.length; i += BATCH_LIMIT) {
       const chunk = operations.slice(i, i + BATCH_LIMIT);
       const batch = db.batch();
@@ -440,18 +410,12 @@ export class FirebaseService implements OnModuleInit {
     this.logger.debug(`⚡ Batch completed: ${operations.length} operations`);
   }
 
-  /**
-   * ⚡ TRANSACTION
-   */
   async runTransaction<T>(
     updateFunction: (transaction: admin.firestore.Transaction) => Promise<T>,
   ): Promise<T> {
     return this.getFirestore().runTransaction(updateFunction);
   }
 
-  /**
-   * ⚡ PERFORMANCE STATS
-   */
   getPerformanceStats() {
     return {
       operations: this.operationCount,
@@ -460,6 +424,7 @@ export class FirebaseService implements OnModuleInit {
       connectionPoolSize: this.restConnectionPool.length,
       usingREST: this.useRestForRealtimeDb,
       firestoreReady: this.firestoreReady,
+      realtimeDbAvailable: !!(this.realtimeDb || this.restConnectionPool.length > 0),
     };
   }
 }
