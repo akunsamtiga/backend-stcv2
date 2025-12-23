@@ -122,7 +122,7 @@ export class BinaryOrdersService {
 
       // Deduct balance asynchronously
       const balancePromise = this.balanceService.createBalanceEntry(userId, {
-        type: BALANCE_TYPES.WITHDRAWAL,
+        type: 'order_debit',  // ← GANTI DARI 'withdrawal'
         amount: createOrderDto.amount,
         description: `Order ${orderId}`,
       });
@@ -320,7 +320,7 @@ export class BinaryOrdersService {
       let balancePromise: Promise<any> | null = null;
       if (result === 'WON') {
         balancePromise = this.balanceService.createBalanceEntry(order.user_id, {
-          type: BALANCE_TYPES.WIN,
+          type: 'order_profit',  // ← GANTI DARI 'win'
           amount: order.amount + profit,
           description: `Won ${order.id}`,
         });

@@ -15,7 +15,7 @@ echo ""
 # ============================================
 # CONFIGURATION - EDIT THESE
 # ============================================
-VPS_IP="YOUR_VPS_IP"              # e.g., 103.127.132.64
+VPS_IP="103.171.85.146"              # e.g., 103.127.132.64
 VPS_USER="stcautotrade"            # VPS username
 VPS_PORT="22"                      # SSH port
 DEPLOY_PATH="/home/stcautotrade/backend"  # Path di VPS

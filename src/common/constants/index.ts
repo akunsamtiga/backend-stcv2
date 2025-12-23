@@ -3,6 +3,8 @@ export const BALANCE_TYPES = {
   WITHDRAWAL: 'withdrawal',
   WIN: 'win',
   LOSE: 'lose',
+  ORDER_DEBIT: 'order_debit',    // ← TAMBAH INI (untuk order placement)
+  ORDER_PROFIT: 'order_profit',  // ← TAMBAH INI (untuk order win)
 } as const;
 
 export const ORDER_STATUS = {
