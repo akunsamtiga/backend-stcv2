@@ -1,10 +1,12 @@
+// src/common/constants/index.ts
 export const BALANCE_TYPES = {
   DEPOSIT: 'deposit',
   WITHDRAWAL: 'withdrawal',
+  ORDER_DEBIT: 'order_debit',      // ✅ BARU: Saat order dibuat
+  ORDER_PROFIT: 'order_profit',    // ✅ BARU: Saat order menang
+  // Legacy types (bisa dihapus nanti jika tidak dipakai)
   WIN: 'win',
   LOSE: 'lose',
-  ORDER_DEBIT: 'order_debit',    // ← TAMBAH INI (untuk order placement)
-  ORDER_PROFIT: 'order_profit',  // ← TAMBAH INI (untuk order win)
 } as const;
 
 export const ORDER_STATUS = {
@@ -38,8 +40,6 @@ export const DURATIONS = {
   MEDIUM: [15, 30, 45, 60], // minutes
 } as const;
 
-// Fix: Add 'as const' to ALL_DURATIONS
 export const ALL_DURATIONS = [1, 2, 3, 4, 5, 15, 30, 45, 60] as const;
 
-// Helper type for type-safe duration checking
 export type ValidDuration = typeof ALL_DURATIONS[number];

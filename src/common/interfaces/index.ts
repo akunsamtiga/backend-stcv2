@@ -1,3 +1,4 @@
+// src/common/interfaces/index.ts
 export interface ApiResponse<T = any> {
   success: boolean;
   message?: string;
@@ -33,10 +34,13 @@ export interface User {
   createdBy?: string;
 }
 
+/**
+ * ✅ UPDATED: Balance interface dengan type baru
+ */
 export interface Balance {
   id: string;
   user_id: string;
-  type: 'deposit' | 'withdrawal' | 'win' | 'lose';
+  type: 'deposit' | 'withdrawal' | 'order_debit' | 'order_profit' | 'win' | 'lose';
   amount: number;
   description?: string;
   createdAt: string;

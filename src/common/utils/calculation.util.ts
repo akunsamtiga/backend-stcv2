@@ -1,3 +1,4 @@
+// src/common/utils/calculation.util.ts
 export class CalculationUtil {
   static calculateBinaryProfit(
     amount: number,
@@ -18,11 +19,17 @@ export class CalculationUtil {
     }
   }
 
+  /**
+   * ✅ UPDATED: Calculate balance dengan type baru
+   */
   static calculateBalance(transactions: Array<{ type: string; amount: number }>): number {
     return transactions.reduce((sum, t) => {
-      if (t.type === 'deposit' || t.type === 'win') {
+      // ✅ Tambah balance: deposit, order_profit
+      if (t.type === 'deposit' || t.type === 'order_profit' || t.type === 'win') {
         return sum + t.amount;
-      } else if (t.type === 'withdrawal' || t.type === 'lose') {
+      } 
+      // ✅ Kurangi balance: withdrawal, order_debit
+      else if (t.type === 'withdrawal' || t.type === 'order_debit' || t.type === 'lose') {
         return sum - t.amount;
       }
       return sum;
