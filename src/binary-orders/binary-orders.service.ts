@@ -55,7 +55,7 @@ export class BinaryOrdersService {
    * ⚡ ULTRA-FAST ORDER CREATION
    * Target: < 500ms response time
    */
-  async createOrder(userId: string, createOrderDto: CreateBinaryOrderDto) {
+    async createOrder(userId: string, createOrderDto: CreateBinaryOrderDto) {
     const startTime = Date.now();
     
     try {
@@ -120,11 +120,11 @@ export class BinaryOrdersService {
         .doc(orderId)
         .set(orderData);
 
-      // Deduct balance asynchronously
+      // ⚡ FIX: Ganti dari 'withdrawal' ke 'order_debit'
       const balancePromise = this.balanceService.createBalanceEntry(userId, {
-        type: 'order_debit',  // ← GANTI DARI 'withdrawal'
+        type: BALANCE_TYPES.ORDER_DEBIT,  // ✅ FIXED: Dulu 'withdrawal'
         amount: createOrderDto.amount,
-        description: `Order ${orderId}`,
+        description: `Order #${orderId.slice(-8)} - ${asset.symbol} ${createOrderDto.direction}`,
       });
 
       // Wait for order write, but balance can complete later
@@ -160,6 +160,7 @@ export class BinaryOrdersService {
       throw error;
     }
   }
+
 
   /**
    * ⚡ FAST CACHED BALANCE (< 100ms)
@@ -316,15 +317,18 @@ export class BinaryOrdersService {
           profit,
         });
 
-      // Add balance entry
+      // ⚡ FIX: Ganti dari 'win' ke 'order_profit'
       let balancePromise: Promise<any> | null = null;
       if (result === 'WON') {
+        const totalReturn = order.amount + profit;
+        
         balancePromise = this.balanceService.createBalanceEntry(order.user_id, {
-          type: 'order_profit',  // ← GANTI DARI 'win'
-          amount: order.amount + profit,
-          description: `Won ${order.id}`,
+          type: BALANCE_TYPES.ORDER_PROFIT,  // ✅ FIXED: Dulu 'win'
+          amount: totalReturn,  // Return amount + profit
+          description: `Won #${order.id.slice(-8)} - ${asset.symbol} +${profit.toFixed(0)}`,
         });
       }
+      // ℹ️ Jika LOST, tidak perlu entry karena sudah di-deduct saat create order
 
       // Wait for update, balance can complete later
       await updatePromise;
@@ -344,7 +348,7 @@ export class BinaryOrdersService {
       this.avgSettleTime = (this.avgSettleTime + duration) / 2;
 
       this.logger.log(
-        `⚡ Settled ${order.id} in ${duration}ms - ${result} ${profit > 0 ? '+' : ''}${profit.toFixed(2)}`
+        `⚡ Settled ${order.id.slice(-8)} in ${duration}ms - ${result} ${profit > 0 ? '+' : ''}${profit.toFixed(2)}`
       );
 
     } catch (error) {
