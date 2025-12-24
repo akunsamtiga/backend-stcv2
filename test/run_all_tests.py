@@ -1,16 +1,48 @@
 #!/usr/bin/env python3
 """
-Binary Option Trading System - Master Test Runner
-=================================================
-Runs all tests and generates comprehensive report
+Binary Option Trading System - Complete Test Suite Runner
+=========================================================
+Runs all test suites and provides comprehensive reporting
 """
 
 import subprocess
-import time
 import sys
+import time
 import os
+from typing import List, Dict, Optional
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Tuple
+import argparse
+
+# ============================================
+# CONFIGURATION
+# ============================================
+TEST_FILES = {
+    "simulator": {
+        "file": "test_simulator.py",
+        "name": "🔬 Simulator Tests",
+        "description": "Tests price simulator functionality",
+        "critical": True
+    },
+    "backend": {
+        "file": "test_backend.py",
+        "name": "🧪 Backend API Tests",
+        "description": "Tests all backend endpoints",
+        "critical": True
+    },
+    "performance": {
+        "file": "test_performance.py",
+        "name": "⚡ Performance Tests",
+        "description": "Tests system under load",
+        "critical": False
+    },
+    "integration": {
+        "file": "test_integration.py",
+        "name": "🔄 Integration Tests",
+        "description": "Tests end-to-end workflow",
+        "critical": True
+    }
+}
 
 # ============================================
 # COLORS
@@ -23,391 +55,367 @@ class Colors:
     CYAN = '\033[96m'
     MAGENTA = '\033[95m'
     BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
     END = '\033[0m'
 
 # ============================================
-# TEST CONFIGURATION
+# DATA CLASSES
 # ============================================
-TESTS = [
-    {
-        "name": "Backend API Tests",
-        "file": "test_backend.py",
-        "description": "Comprehensive endpoint testing",
-        "estimated_time": "30 seconds",
-        "critical": True
-    },
-    {
-        "name": "Simulator Tests",
-        "file": "test_simulator.py",
-        "description": "Price simulator validation",
-        "estimated_time": "15 seconds",
-        "critical": True
-    },
-    {
-        "name": "Performance Tests",
-        "file": "test_performance.py",
-        "description": "Load and performance testing",
-        "estimated_time": "5 minutes",
-        "critical": False
-    },
-    {
-        "name": "Integration Test",
-        "file": "test_integration.py",
-        "description": "End-to-end workflow testing",
-        "estimated_time": "2 minutes",
-        "critical": True
-    }
-]
+@dataclass
+class TestSuiteResult:
+    name: str
+    file: str
+    passed: bool
+    exit_code: int
+    duration: float
+    output: str
+    critical: bool
 
 # ============================================
 # UTILS
 # ============================================
+def print_header(text: str, char: str = "="):
+    """Print styled header"""
+    width = 70
+    print(f"\n{Colors.BOLD}{Colors.CYAN}{char * width}")
+    print(f"{text.center(width)}")
+    print(f"{char * width}{Colors.END}\n")
+
 def print_banner():
-    """Print test suite banner"""
-    print(f"\n{Colors.BOLD}{Colors.CYAN}")
-    print("╔═══════════════════════════════════════════════════════════════════╗")
-    print("║                                                                   ║")
-    print("║         🧪 BINARY OPTION TRADING SYSTEM 🧪                        ║")
-    print("║              COMPREHENSIVE TEST SUITE                             ║")
-    print("║                                                                   ║")
-    print("╚═══════════════════════════════════════════════════════════════════╝")
-    print(f"{Colors.END}\n")
+    """Print application banner"""
+    banner = f"""
+{Colors.BOLD}{Colors.CYAN}╔══════════════════════════════════════════════════════════════════════╗
+║                                                                      ║
+║           BINARY OPTION TRADING SYSTEM - TEST SUITE RUNNER           ║
+║                                                                      ║
+║                    Complete Testing Framework                        ║
+║                                                                      ║
+╚══════════════════════════════════════════════════════════════════════╝{Colors.END}
+"""
+    print(banner)
 
-def print_section(title: str):
-    """Print section header"""
-    print(f"\n{Colors.BOLD}{Colors.MAGENTA}")
-    print(f"{'='*70}")
-    print(f"{title.center(70)}")
-    print(f"{'='*70}")
-    print(f"{Colors.END}\n")
+def print_test_suite_info():
+    """Print information about test suites"""
+    print(f"{Colors.BOLD}Available Test Suites:{Colors.END}\n")
+    
+    for key, info in TEST_FILES.items():
+        critical_badge = f"{Colors.RED}[CRITICAL]{Colors.END}" if info['critical'] else f"{Colors.YELLOW}[OPTIONAL]{Colors.END}"
+        print(f"  {critical_badge} {info['name']}")
+        print(f"      📄 {info['file']}")
+        print(f"      📝 {info['description']}")
+        print()
 
-def print_test_header(test: Dict):
-    """Print individual test header"""
-    print(f"\n{Colors.BOLD}{Colors.BLUE}{'─'*70}{Colors.END}")
-    print(f"{Colors.BOLD}{test['name']}{Colors.END}")
-    print(f"{Colors.CYAN}{test['description']}{Colors.END}")
-    print(f"📁 File: {test['file']}")
-    print(f"⏱️  Estimated: {test['estimated_time']}")
-    
-    if test['critical']:
-        print(f"{Colors.RED}⚠️  CRITICAL TEST{Colors.END}")
-    
-    print(f"{Colors.BLUE}{'─'*70}{Colors.END}\n")
+def check_file_exists(filepath: str) -> bool:
+    """Check if test file exists"""
+    return os.path.isfile(filepath)
 
-def run_test(test_file: str) -> Tuple[bool, float, str]:
-    """Run a test file and capture results"""
+def run_test_suite(test_key: str, test_info: Dict) -> TestSuiteResult:
+    """Run a single test suite"""
+    filename = test_info['file']
     
-    if not os.path.exists(test_file):
-        return False, 0, f"Test file not found: {test_file}"
+    print(f"\n{Colors.BOLD}{Colors.BLUE}{'─' * 70}{Colors.END}")
+    print(f"{Colors.BOLD}{test_info['name']}{Colors.END}")
+    print(f"{Colors.BOLD}{Colors.BLUE}{'─' * 70}{Colors.END}\n")
     
+    # Check if file exists
+    if not check_file_exists(filename):
+        print(f"{Colors.RED}✗ Test file not found: {filename}{Colors.END}")
+        return TestSuiteResult(
+            name=test_info['name'],
+            file=filename,
+            passed=False,
+            exit_code=-1,
+            duration=0,
+            output=f"File not found: {filename}",
+            critical=test_info['critical']
+        )
+    
+    # Make file executable
+    try:
+        os.chmod(filename, 0o755)
+    except:
+        pass
+    
+    # Run the test
     start_time = time.time()
     
     try:
-        # Run the test
         result = subprocess.run(
-            ['python3', test_file],
+            [sys.executable, filename],
             capture_output=True,
             text=True,
-            timeout=600  # 10 minute timeout
+            timeout=300  # 5 minute timeout
         )
         
-        elapsed = time.time() - start_time
+        duration = time.time() - start_time
         
-        # Get output
-        output = result.stdout + result.stderr
+        # Print output in real-time style
+        if result.stdout:
+            print(result.stdout)
         
-        # Check if test passed
-        success = result.returncode == 0
+        if result.stderr and result.returncode != 0:
+            print(f"{Colors.RED}Errors:{Colors.END}")
+            print(result.stderr)
         
-        return success, elapsed, output
+        passed = result.returncode == 0
+        
+        # Print result
+        if passed:
+            print(f"\n{Colors.GREEN}{Colors.BOLD}✅ {test_info['name']} PASSED{Colors.END}")
+        else:
+            print(f"\n{Colors.RED}{Colors.BOLD}❌ {test_info['name']} FAILED{Colors.END}")
+        
+        print(f"{Colors.CYAN}Duration: {duration:.2f}s{Colors.END}")
+        
+        return TestSuiteResult(
+            name=test_info['name'],
+            file=filename,
+            passed=passed,
+            exit_code=result.returncode,
+            duration=duration,
+            output=result.stdout + result.stderr,
+            critical=test_info['critical']
+        )
         
     except subprocess.TimeoutExpired:
-        elapsed = time.time() - start_time
-        return False, elapsed, "Test timed out (>10 minutes)"
-    
+        duration = time.time() - start_time
+        print(f"\n{Colors.RED}{Colors.BOLD}⏱️  TEST TIMEOUT (exceeded 5 minutes){Colors.END}")
+        
+        return TestSuiteResult(
+            name=test_info['name'],
+            file=filename,
+            passed=False,
+            exit_code=-1,
+            duration=duration,
+            output="Test exceeded timeout limit",
+            critical=test_info['critical']
+        )
+        
     except Exception as e:
-        elapsed = time.time() - start_time
-        return False, elapsed, f"Error running test: {str(e)}"
-
-def format_duration(seconds: float) -> str:
-    """Format duration in human readable format"""
-    if seconds < 60:
-        return f"{seconds:.1f}s"
-    elif seconds < 3600:
-        minutes = int(seconds // 60)
-        secs = int(seconds % 60)
-        return f"{minutes}m {secs}s"
-    else:
-        hours = int(seconds // 3600)
-        minutes = int((seconds % 3600) // 60)
-        return f"{hours}h {minutes}m"
-
-def print_test_result(test_name: str, success: bool, duration: float):
-    """Print test result summary"""
-    status = f"{Colors.GREEN}✅ PASSED" if success else f"{Colors.RED}❌ FAILED"
-    print(f"{status}{Colors.END} - {test_name} ({format_duration(duration)})")
-
-def generate_report(results: List[Dict]):
-    """Generate comprehensive test report"""
-    print_section("📊 TEST SUITE REPORT")
-    
-    # Calculate summary
-    total_tests = len(results)
-    passed_tests = sum(1 for r in results if r['success'])
-    failed_tests = total_tests - passed_tests
-    total_duration = sum(r['duration'] for r in results)
-    
-    # Overall status
-    all_passed = failed_tests == 0
-    
-    print(f"{Colors.BOLD}OVERALL STATUS:{Colors.END}")
-    if all_passed:
-        print(f"{Colors.GREEN}{Colors.BOLD}✅ ALL TESTS PASSED! 🎉{Colors.END}")
-    else:
-        print(f"{Colors.RED}{Colors.BOLD}❌ SOME TESTS FAILED{Colors.END}")
-    
-    print(f"\n{Colors.BOLD}SUMMARY:{Colors.END}")
-    print(f"  Total Tests:    {total_tests}")
-    print(f"  {Colors.GREEN}✅ Passed:{Colors.END}       {passed_tests}")
-    print(f"  {Colors.RED}❌ Failed:{Colors.END}       {failed_tests}")
-    print(f"  Success Rate:   {(passed_tests/total_tests*100):.1f}%")
-    print(f"  Total Duration: {format_duration(total_duration)}")
-    
-    # Individual test results
-    print(f"\n{Colors.BOLD}DETAILED RESULTS:{Colors.END}")
-    print(f"{'─'*70}")
-    
-    for i, result in enumerate(results, 1):
-        status_icon = "✅" if result['success'] else "❌"
-        critical_mark = " ⚠️ " if result.get('critical', False) else ""
+        duration = time.time() - start_time
+        print(f"\n{Colors.RED}{Colors.BOLD}❌ TEST ERROR: {str(e)}{Colors.END}")
         
-        print(f"{i}. {status_icon}{critical_mark} {result['name']}")
-        print(f"   Duration: {format_duration(result['duration'])}")
-        print(f"   Status: {'PASSED' if result['success'] else 'FAILED'}")
+        return TestSuiteResult(
+            name=test_info['name'],
+            file=filename,
+            passed=False,
+            exit_code=-1,
+            duration=duration,
+            output=str(e),
+            critical=test_info['critical']
+        )
+
+def print_summary(results: List[TestSuiteResult], total_duration: float):
+    """Print comprehensive test summary"""
+    print_header("📊 COMPREHENSIVE TEST SUMMARY")
+    
+    total = len(results)
+    passed = sum(1 for r in results if r.passed)
+    failed = sum(1 for r in results if not r.passed)
+    
+    critical_total = sum(1 for r in results if r.critical)
+    critical_passed = sum(1 for r in results if r.critical and r.passed)
+    critical_failed = sum(1 for r in results if r.critical and not r.passed)
+    
+    # Overall Status
+    print(f"{Colors.BOLD}Overall Test Results:{Colors.END}\n")
+    print(f"  Total Test Suites:     {total}")
+    print(f"  {Colors.GREEN}✓ Passed:{Colors.END}              {passed}")
+    print(f"  {Colors.RED}✗ Failed:{Colors.END}              {failed}")
+    print(f"  Success Rate:          {(passed/total*100):.1f}%")
+    print(f"  Total Duration:        {total_duration:.2f}s")
+    
+    # Critical Tests
+    print(f"\n{Colors.BOLD}Critical Tests Status:{Colors.END}\n")
+    print(f"  Critical Tests:        {critical_total}")
+    print(f"  {Colors.GREEN}✓ Passed:{Colors.END}              {critical_passed}")
+    print(f"  {Colors.RED}✗ Failed:{Colors.END}              {critical_failed}")
+    
+    # Individual Results
+    print(f"\n{Colors.BOLD}Individual Test Suite Results:{Colors.END}\n")
+    
+    for result in results:
+        status = f"{Colors.GREEN}✅ PASS" if result.passed else f"{Colors.RED}❌ FAIL"
+        critical = f"{Colors.RED}[CRITICAL]" if result.critical else f"{Colors.YELLOW}[OPTIONAL]"
         
-        if not result['success']:
-            print(f"   {Colors.RED}Error: Check detailed output above{Colors.END}")
-        
+        print(f"  {status}{Colors.END} | {critical}{Colors.END} | {result.name}")
+        print(f"        📄 {result.file}")
+        print(f"        ⏱️  Duration: {result.duration:.2f}s")
+        print(f"        🔢 Exit Code: {result.exit_code}")
         print()
     
-    # Critical tests status
-    critical_results = [r for r in results if r.get('critical', False)]
-    if critical_results:
-        critical_failed = sum(1 for r in critical_results if not r['success'])
-        
-        print(f"{Colors.BOLD}CRITICAL TESTS:{Colors.END}")
-        if critical_failed == 0:
-            print(f"{Colors.GREEN}✅ All critical tests passed{Colors.END}")
-        else:
-            print(f"{Colors.RED}❌ {critical_failed} critical test(s) failed{Colors.END}")
-        print()
+    # Performance Summary
+    print(f"{Colors.BOLD}Performance Summary:{Colors.END}\n")
+    
+    fastest = min(results, key=lambda r: r.duration)
+    slowest = max(results, key=lambda r: r.duration)
+    avg_duration = sum(r.duration for r in results) / len(results)
+    
+    print(f"  ⚡ Fastest Suite:       {fastest.name} ({fastest.duration:.2f}s)")
+    print(f"  🐢 Slowest Suite:       {slowest.name} ({slowest.duration:.2f}s)")
+    print(f"  📊 Average Duration:    {avg_duration:.2f}s")
+    
+    # Final Verdict
+    print(f"\n{Colors.BOLD}{'═' * 70}{Colors.END}")
+    
+    if failed == 0:
+        print(f"{Colors.GREEN}{Colors.BOLD}")
+        print(f"  ✅ ALL TESTS PASSED! SYSTEM IS READY FOR PRODUCTION! ✅")
+        print(f"{Colors.END}")
+    elif critical_failed == 0 and failed > 0:
+        print(f"{Colors.YELLOW}{Colors.BOLD}")
+        print(f"  ⚠️  ALL CRITICAL TESTS PASSED, BUT SOME OPTIONAL TESTS FAILED")
+        print(f"  System is functional but needs attention")
+        print(f"{Colors.END}")
+    else:
+        print(f"{Colors.RED}{Colors.BOLD}")
+        print(f"  ❌ CRITICAL TESTS FAILED - SYSTEM NOT READY")
+        print(f"  Please fix critical issues before deployment")
+        print(f"{Colors.END}")
+    
+    print(f"{Colors.BOLD}{'═' * 70}{Colors.END}\n")
     
     # Recommendations
-    print(f"{Colors.BOLD}RECOMMENDATIONS:{Colors.END}")
-    
-    if all_passed:
-        print(f"  {Colors.GREEN}✓{Colors.END} System is production ready!")
-        print(f"  {Colors.GREEN}✓{Colors.END} All tests passed successfully")
-        print(f"  {Colors.GREEN}✓{Colors.END} Performance meets targets")
-    else:
-        print(f"  {Colors.YELLOW}!{Colors.END} Review failed tests above")
-        print(f"  {Colors.YELLOW}!{Colors.END} Check backend and simulator logs")
-        print(f"  {Colors.YELLOW}!{Colors.END} Verify environment configuration")
+    if failed > 0:
+        print(f"{Colors.BOLD}Recommendations:{Colors.END}\n")
         
-        if any(not r['success'] and r.get('critical', False) for r in results):
-            print(f"  {Colors.RED}!{Colors.END} CRITICAL: System has critical failures")
-    
-    print()
-    
-    # Timestamp
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"Report generated: {timestamp}")
-    print()
+        for result in results:
+            if not result.passed:
+                print(f"  ❌ {result.name}:")
+                print(f"     • Review test output above")
+                print(f"     • Check {result.file} for details")
+                if result.critical:
+                    print(f"     • {Colors.RED}CRITICAL: Must be fixed before production{Colors.END}")
+                print()
 
-def check_prerequisites():
-    """Check if prerequisites are met"""
-    print_section("🔍 CHECKING PREREQUISITES")
-    
-    issues = []
-    
-    # Check Python version
-    py_version = sys.version_info
-    if py_version.major < 3 or (py_version.major == 3 and py_version.minor < 7):
-        issues.append("Python 3.7+ required")
-    else:
-        print(f"{Colors.GREEN}✓{Colors.END} Python version: {py_version.major}.{py_version.minor}")
-    
-    # Check if test files exist
-    for test in TESTS:
-        if os.path.exists(test['file']):
-            print(f"{Colors.GREEN}✓{Colors.END} Found: {test['file']}")
-        else:
-            issues.append(f"Missing test file: {test['file']}")
-            print(f"{Colors.RED}✗{Colors.END} Missing: {test['file']}")
-    
-    # Check if backend is running
-    try:
-        import requests
-        response = requests.get("http://localhost:3000/api/v1/health", timeout=5)
-        if response.status_code == 200:
-            print(f"{Colors.GREEN}✓{Colors.END} Backend is running")
-        else:
-            issues.append("Backend not responding correctly")
-            print(f"{Colors.YELLOW}⚠{Colors.END} Backend status: {response.status_code}")
-    except:
-        issues.append("Backend not running (http://localhost:3000)")
-        print(f"{Colors.RED}✗{Colors.END} Backend not accessible")
-    
-    # Check if simulator is running (non-critical)
-    try:
-        import requests
-        url = "https://stc-autotrade-18f67-default-rtdb.asia-southeast1.firebasedatabase.app/idx_stc/current_price.json"
-        response = requests.get(url, timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            if data:
-                print(f"{Colors.GREEN}✓{Colors.END} Simulator is running")
-            else:
-                print(f"{Colors.YELLOW}⚠{Colors.END} Simulator: No data (will affect some tests)")
-        else:
-            print(f"{Colors.YELLOW}⚠{Colors.END} Simulator: Not responding (will affect some tests)")
-    except:
-        print(f"{Colors.YELLOW}⚠{Colors.END} Simulator: Not accessible (will affect some tests)")
-    
-    print()
-    
-    if issues:
-        print(f"{Colors.RED}{Colors.BOLD}CRITICAL ISSUES FOUND:{Colors.END}")
-        for issue in issues:
-            print(f"  {Colors.RED}✗{Colors.END} {issue}")
-        print()
-        print(f"{Colors.YELLOW}Please fix these issues before running tests{Colors.END}")
-        return False
-    
-    print(f"{Colors.GREEN}{Colors.BOLD}✅ All prerequisites met!{Colors.END}\n")
-    return True
-
-def confirm_run():
-    """Ask user to confirm test run"""
-    print(f"{Colors.BOLD}Test Suite Overview:{Colors.END}")
-    print()
-    
-    total_time = 0
-    for test in TESTS:
-        critical_mark = f"{Colors.RED}[CRITICAL]{Colors.END}" if test['critical'] else ""
-        print(f"  • {test['name']} {critical_mark}")
-        print(f"    {test['description']}")
-        print(f"    Estimated: {test['estimated_time']}")
-        print()
-    
-    print(f"{Colors.YELLOW}Note: Integration test will create real orders{Colors.END}")
-    print()
-    
-    try:
-        response = input(f"{Colors.BOLD}Proceed with tests? (y/n): {Colors.END}").lower()
-        return response in ['y', 'yes']
-    except KeyboardInterrupt:
-        print("\n\nCancelled by user")
-        return False
-
-# ============================================
-# MAIN TEST RUNNER
-# ============================================
-def main():
-    """Main test execution"""
-    print_banner()
-    
-    # Check prerequisites
-    if not check_prerequisites():
-        print(f"{Colors.RED}Prerequisites not met. Exiting.{Colors.END}")
-        sys.exit(1)
-    
-    # Confirm run
-    if not confirm_run():
-        print(f"\n{Colors.YELLOW}Tests cancelled by user{Colors.END}")
-        sys.exit(0)
-    
-    print_section("🚀 STARTING TEST SUITE")
-    
-    start_time = time.time()
+def run_selected_tests(test_keys: List[str]) -> List[TestSuiteResult]:
+    """Run selected test suites"""
     results = []
     
-    # Run each test
-    for test in TESTS:
-        print_test_header(test)
-        
-        success, duration, output = run_test(test['file'])
-        
-        results.append({
-            'name': test['name'],
-            'success': success,
-            'duration': duration,
-            'critical': test.get('critical', False)
-        })
-        
-        # Show output
-        print(output)
-        
-        print_test_result(test['name'], success, duration)
-        
-        # If critical test fails, ask if should continue
-        if not success and test.get('critical', False):
-            print(f"\n{Colors.RED}{Colors.BOLD}⚠️  CRITICAL TEST FAILED!{Colors.END}")
-            try:
-                response = input(f"{Colors.YELLOW}Continue with remaining tests? (y/n): {Colors.END}").lower()
-                if response not in ['y', 'yes']:
-                    print(f"\n{Colors.YELLOW}Test suite stopped by user{Colors.END}")
-                    break
-            except KeyboardInterrupt:
-                print("\n\nTest suite interrupted")
-                break
+    for key in test_keys:
+        if key in TEST_FILES:
+            result = run_test_suite(key, TEST_FILES[key])
+            results.append(result)
+            
+            # Small delay between tests
+            time.sleep(1)
+        else:
+            print(f"{Colors.RED}Unknown test suite: {key}{Colors.END}")
+    
+    return results
+
+def run_all_tests() -> List[TestSuiteResult]:
+    """Run all test suites"""
+    results = []
+    
+    for key, info in TEST_FILES.items():
+        result = run_test_suite(key, info)
+        results.append(result)
         
         # Small delay between tests
         time.sleep(1)
     
-    total_duration = time.time() - start_time
-    
-    # Generate report
-    generate_report(results)
-    
-    # Save report to file
-    try:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        report_file = f"test_report_{timestamp}.txt"
-        
-        with open(report_file, 'w') as f:
-            f.write("BINARY OPTION TRADING SYSTEM - TEST REPORT\n")
-            f.write("=" * 70 + "\n\n")
-            f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write(f"Duration: {format_duration(total_duration)}\n\n")
-            
-            f.write("RESULTS:\n")
-            for result in results:
-                status = "PASSED" if result['success'] else "FAILED"
-                f.write(f"  {result['name']}: {status} ({format_duration(result['duration'])})\n")
-            
-            f.write(f"\nTotal: {len(results)} tests\n")
-            f.write(f"Passed: {sum(1 for r in results if r['success'])}\n")
-            f.write(f"Failed: {sum(1 for r in results if not r['success'])}\n")
-        
-        print(f"📄 Report saved: {report_file}")
-        print()
-        
-    except Exception as e:
-        print(f"{Colors.YELLOW}Warning: Could not save report file: {str(e)}{Colors.END}")
-    
-    # Exit with appropriate code
-    all_passed = all(r['success'] for r in results)
-    sys.exit(0 if all_passed else 1)
+    return results
 
-if __name__ == "__main__":
+# ============================================
+# MAIN
+# ============================================
+def main():
+    """Main test runner"""
+    parser = argparse.ArgumentParser(
+        description='Binary Option Trading System - Complete Test Suite Runner',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    parser.add_argument(
+        '--tests',
+        nargs='+',
+        choices=['simulator', 'backend', 'performance', 'integration', 'all'],
+        default=['all'],
+        help='Specify which tests to run (default: all)'
+    )
+    
+    parser.add_argument(
+        '--critical-only',
+        action='store_true',
+        help='Run only critical tests'
+    )
+    
+    parser.add_argument(
+        '--quick',
+        action='store_true',
+        help='Skip performance tests for faster execution'
+    )
+    
+    parser.add_argument(
+        '--list',
+        action='store_true',
+        help='List all available test suites'
+    )
+    
+    args = parser.parse_args()
+    
+    # Print banner
+    print_banner()
+    
+    # List tests if requested
+    if args.list:
+        print_test_suite_info()
+        sys.exit(0)
+    
+    # Determine which tests to run
+    if args.critical_only:
+        test_keys = [k for k, v in TEST_FILES.items() if v['critical']]
+        print(f"{Colors.YELLOW}Running CRITICAL tests only{Colors.END}\n")
+    elif args.quick:
+        test_keys = [k for k in TEST_FILES.keys() if k != 'performance']
+        print(f"{Colors.YELLOW}Running quick test suite (skipping performance){Colors.END}\n")
+    elif 'all' in args.tests:
+        test_keys = list(TEST_FILES.keys())
+        print(f"{Colors.CYAN}Running ALL test suites{Colors.END}\n")
+    else:
+        test_keys = args.tests
+        print(f"{Colors.CYAN}Running selected test suites: {', '.join(test_keys)}{Colors.END}\n")
+    
+    # Show what will be tested
+    print(f"{Colors.BOLD}Test Suites to Execute:{Colors.END}")
+    for key in test_keys:
+        info = TEST_FILES[key]
+        critical = "🔴 CRITICAL" if info['critical'] else "🟡 OPTIONAL"
+        print(f"  • {critical} - {info['name']}")
+    
+    print(f"\n{Colors.YELLOW}⏳ Starting test execution...{Colors.END}")
+    time.sleep(2)
+    
+    # Run tests
+    start_time = time.time()
+    
     try:
-        main()
+        results = run_selected_tests(test_keys)
+        total_duration = time.time() - start_time
+        
+        # Print summary
+        print_summary(results, total_duration)
+        
+        # Exit with appropriate code
+        failed_critical = sum(1 for r in results if r.critical and not r.passed)
+        
+        if failed_critical > 0:
+            sys.exit(1)  # Critical failure
+        elif any(not r.passed for r in results):
+            sys.exit(2)  # Non-critical failure
+        else:
+            sys.exit(0)  # All passed
+            
     except KeyboardInterrupt:
-        print(f"\n\n{Colors.YELLOW}Test suite interrupted by user{Colors.END}")
-        sys.exit(1)
+        print(f"\n\n{Colors.YELLOW}⚠️  Tests interrupted by user{Colors.END}")
+        sys.exit(130)
+        
     except Exception as e:
-        print(f"\n\n{Colors.RED}Fatal error: {str(e)}{Colors.END}")
+        print(f"\n\n{Colors.RED}❌ Fatal error: {str(e)}{Colors.END}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
+
+if __name__ == "__main__":
+    main()
