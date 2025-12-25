@@ -1,5 +1,5 @@
 // src/balance/balance.service.ts
-// ⚡ CACHED VERSION - Optimized balance calculations
+// ✅ CRITICAL FIX - Balance calculation corrected
 
 import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import { FirebaseService, BatchOperation } from '../firebase/firebase.service';
@@ -13,23 +13,22 @@ import { Balance } from '../common/interfaces';
 export class BalanceService {
   private readonly logger = new Logger(BalanceService.name);
   
-  // ⚡ AGGRESSIVE BALANCE CACHING
+  // ⚡ BALANCE CACHING
   private balanceCache: Map<string, { balance: number; timestamp: number }> = new Map();
   private balanceHistoryCache: Map<string, { history: Balance[]; timestamp: number }> = new Map();
   
-  // ⚡ REDUCED TTLs for better accuracy
-  private readonly BALANCE_CACHE_TTL = 2000; // 2 seconds
-  private readonly HISTORY_CACHE_TTL = 5000; // 5 seconds
+  // ✅ ADJUSTED TTLs - Balance harus lebih fresh untuk avoid race condition
+  private readonly BALANCE_CACHE_TTL = 1000; // ✅ REDUCED to 1s for critical operations
+  private readonly HISTORY_CACHE_TTL = 3000; // ✅ REDUCED to 3s
 
   constructor(private firebaseService: FirebaseService) {
-    // Cleanup cache every 30s
     setInterval(() => this.cleanupCache(), 30000);
   }
 
   /**
-   * ⚡ OPTIMIZED: Create balance entry (background write for non-critical)
+   * ✅ FIXED: Create balance entry - ALWAYS WAIT for critical operations
    */
-  async createBalanceEntry(userId: string, createBalanceDto: CreateBalanceDto, critical = false) {
+  async createBalanceEntry(userId: string, createBalanceDto: CreateBalanceDto, critical = true) {
     const db = this.firebaseService.getFirestore();
 
     // ✅ Quick balance check for withdrawals
@@ -50,23 +49,39 @@ export class BalanceService {
       createdAt: new Date().toISOString(),
     };
 
-    // ⚡ Write to database
-    if (critical) {
-      // Wait for critical writes (deposits, withdrawals)
+    // ✅ CRITICAL FIX: ALWAYS WAIT for deposits and withdrawals
+    // Only use fire-and-forget for order-related operations
+    const isCriticalOperation = 
+      createBalanceDto.type === BALANCE_TYPES.DEPOSIT || 
+      createBalanceDto.type === BALANCE_TYPES.WITHDRAWAL;
+
+    if (isCriticalOperation || critical) {
+      // Wait for write to complete
       await db.collection(COLLECTIONS.BALANCE).doc(balanceId).set(balanceData);
+      this.logger.log(`✅ Balance written (critical): ${userId} - ${createBalanceDto.type} ${createBalanceDto.amount}`);
     } else {
       // Fire and forget for non-critical (order debits/profits)
       db.collection(COLLECTIONS.BALANCE).doc(balanceId).set(balanceData)
-        .catch(err => this.logger.error(`Balance write failed: ${err.message}`));
+        .then(() => {
+          this.logger.debug(`✅ Balance written (async): ${userId} - ${createBalanceDto.type} ${createBalanceDto.amount}`);
+        })
+        .catch(err => {
+          this.logger.error(`❌ Balance write failed: ${err.message}`);
+        });
     }
 
     // ⚡ Invalidate cache immediately
     this.invalidateCache(userId);
 
-    // ⚡ Get new balance (from cache if available)
+    // ✅ CRITICAL FIX: Wait a bit for cache to clear before reading
+    if (isCriticalOperation) {
+      await new Promise(resolve => setTimeout(resolve, 100)); // 100ms delay
+    }
+
+    // ⚡ Get new balance (will fetch fresh from DB)
     const currentBalance = await this.getCurrentBalance(userId);
 
-    this.logger.log(`Balance updated for user ${userId}: ${createBalanceDto.type} ${createBalanceDto.amount}`);
+    this.logger.log(`Balance updated for user ${userId}: ${createBalanceDto.type} ${createBalanceDto.amount} -> ${currentBalance}`);
 
     return {
       message: 'Balance transaction recorded successfully',
@@ -122,9 +137,12 @@ export class BalanceService {
     // Invalidate cache
     this.invalidateCache(userId);
 
+    // Wait a bit for consistency
+    await new Promise(resolve => setTimeout(resolve, 100));
+
     const newBalance = await this.getCurrentBalance(userId);
 
-    this.logger.log(`Batch balance update for user ${userId}: ${entries.length} entries`);
+    this.logger.log(`Batch balance update for user ${userId}: ${entries.length} entries -> ${newBalance}`);
 
     return {
       message: `${entries.length} balance transactions recorded successfully`,
@@ -133,20 +151,20 @@ export class BalanceService {
   }
 
   /**
-   * ⚡ ULTRA-FAST: Get current balance with aggressive caching
+   * ✅ FIXED: Get current balance - Better cache management
    */
   async getCurrentBalance(userId: string): Promise<number> {
-    // ✅ Try cache first
+    // ✅ Try cache first but with shorter TTL
     const cached = this.balanceCache.get(userId);
     if (cached) {
       const age = Date.now() - cached.timestamp;
       if (age < this.BALANCE_CACHE_TTL) {
-        this.logger.debug(`⚡ Balance cache hit for ${userId}`);
+        this.logger.debug(`⚡ Balance cache hit for ${userId}: ${cached.balance}`);
         return cached.balance;
       }
     }
 
-    // ✅ Fetch and calculate
+    // ✅ Fetch fresh from database
     const db = this.firebaseService.getFirestore();
 
     const snapshot = await db.collection(COLLECTIONS.BALANCE)
@@ -162,6 +180,8 @@ export class BalanceService {
       timestamp: Date.now(),
     });
 
+    this.logger.debug(`📊 Balance calculated for ${userId}: ${balance} (from ${transactions.length} transactions)`);
+
     return balance;
   }
 
@@ -171,7 +191,7 @@ export class BalanceService {
   async getBalanceHistory(userId: string, queryDto: QueryBalanceDto) {
     const { page = 1, limit = 20 } = queryDto;
 
-    // ✅ Try cache for first page
+    // Try cache for first page
     if (page === 1) {
       const cached = this.balanceHistoryCache.get(userId);
       if (cached) {
@@ -194,7 +214,7 @@ export class BalanceService {
       }
     }
 
-    // ✅ Fetch from database
+    // Fetch from database
     const db = this.firebaseService.getFirestore();
 
     const snapshot = await db.collection(COLLECTIONS.BALANCE)
@@ -204,7 +224,7 @@ export class BalanceService {
 
     const allTransactions = snapshot.docs.map(doc => doc.data() as Balance);
     
-    // ✅ Cache full history
+    // Cache full history
     this.balanceHistoryCache.set(userId, {
       history: allTransactions,
       timestamp: Date.now(),
@@ -230,7 +250,7 @@ export class BalanceService {
   }
 
   /**
-   * ⚡ CACHED: Balance summary
+   * CACHED: Balance summary
    */
   async getBalanceSummary(userId: string) {
     // Try to use cached history
@@ -275,7 +295,7 @@ export class BalanceService {
   }
 
   /**
-   * ⚡ BULK CREATE (for settlement)
+   * BULK CREATE (for settlement) - Always wait
    */
   async bulkCreateBalanceEntries(
     entries: Array<{
@@ -306,6 +326,7 @@ export class BalanceService {
       });
     }
 
+    // Always wait for bulk operations
     await this.firebaseService.batchWrite(operations);
     
     // Invalidate all affected users
@@ -320,6 +341,7 @@ export class BalanceService {
   private invalidateCache(userId: string): void {
     this.balanceCache.delete(userId);
     this.balanceHistoryCache.delete(userId);
+    this.logger.debug(`🗑️ Cache invalidated for user ${userId}`);
   }
 
   private cleanupCache(): void {
@@ -342,6 +364,14 @@ export class BalanceService {
     if (this.balanceCache.size > 0 || this.balanceHistoryCache.size > 0) {
       this.logger.debug(`⚡ Balance cache: ${this.balanceCache.size}, History: ${this.balanceHistoryCache.size}`);
     }
+  }
+
+  /**
+   * FORCE REFRESH (for testing/debugging)
+   */
+  async forceRefreshBalance(userId: string): Promise<number> {
+    this.invalidateCache(userId);
+    return this.getCurrentBalance(userId);
   }
 
   /**

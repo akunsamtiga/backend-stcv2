@@ -171,19 +171,24 @@ export class BinaryOrdersService {
 
   /**
    * ⚡ ULTRA-FAST CACHED BALANCE (<50ms target)
+   * ✅ FIXED: More conservative caching for balance to avoid stale data
    */
   private async getCachedBalanceFast(userId: string): Promise<number> {
     const cached = this.userBalanceCache.get(userId);
     const now = Date.now();
 
-    // ✅ Use cache aggressively
-    if (cached && (now - cached.timestamp) < this.BALANCE_CACHE_TTL) {
+    // ✅ FIXED: Use shorter TTL for balance (1s instead of 2s)
+    // This prevents reading stale balance during order creation
+    if (cached && (now - cached.timestamp) < 1000) {
+      this.logger.debug(`⚡ Balance cache hit: ${userId} = ${cached.balance}`);
       return cached.balance;
     }
 
-    // Fetch and cache
+    // ✅ Fetch fresh balance
     const balance = await this.balanceService.getCurrentBalance(userId);
     this.userBalanceCache.set(userId, { balance, timestamp: now });
+    
+    this.logger.debug(`📊 Balance fetched: ${userId} = ${balance}`);
     
     return balance;
   }

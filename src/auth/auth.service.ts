@@ -112,6 +112,7 @@ export class AuthService implements OnModuleInit {
 
   /**
    * ⚡ OPTIMIZED REGISTER - Target: <500ms
+   * ✅ FIXED: Ensure initial balance is created properly
    */
   async register(registerDto: RegisterDto) {
     const startTime = Date.now();
@@ -146,16 +147,19 @@ export class AuthService implements OnModuleInit {
     // ⚡ Write user (wait for this)
     await db.collection(COLLECTIONS.USERS).doc(userId).set(userData);
 
-    // ⚡ Create balance in background (non-blocking)
+    // ✅ CRITICAL FIX: Wait for initial balance creation
+    // This ensures user has a balance record before they can trade
     const balanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
-    db.collection(COLLECTIONS.BALANCE).doc(balanceId).set({
+    await db.collection(COLLECTIONS.BALANCE).doc(balanceId).set({
       id: balanceId,
       user_id: userId,
       type: BALANCE_TYPES.DEPOSIT,
       amount: 0,
       description: 'Initial balance',
       createdAt: timestamp,
-    }).catch(err => this.logger.error(`Balance creation failed: ${err.message}`));
+    });
+
+    this.logger.log(`✅ Initial balance created for user ${userId}`);
 
     // ⚡ Generate token
     const token = this.generateToken(userId, email, USER_ROLES.USER);
