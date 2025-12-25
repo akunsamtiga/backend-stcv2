@@ -1,3 +1,6 @@
+// src/balance/balance.service.ts
+// ⚡ CACHED VERSION - Optimized balance calculations
+
 import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import { FirebaseService, BatchOperation } from '../firebase/firebase.service';
 import { CreateBalanceDto } from './dto/create-balance.dto';
@@ -9,12 +12,27 @@ import { Balance } from '../common/interfaces';
 @Injectable()
 export class BalanceService {
   private readonly logger = new Logger(BalanceService.name);
+  
+  // ⚡ AGGRESSIVE BALANCE CACHING
+  private balanceCache: Map<string, { balance: number; timestamp: number }> = new Map();
+  private balanceHistoryCache: Map<string, { history: Balance[]; timestamp: number }> = new Map();
+  
+  // ⚡ REDUCED TTLs for better accuracy
+  private readonly BALANCE_CACHE_TTL = 2000; // 2 seconds
+  private readonly HISTORY_CACHE_TTL = 5000; // 5 seconds
 
-  constructor(private firebaseService: FirebaseService) {}
+  constructor(private firebaseService: FirebaseService) {
+    // Cleanup cache every 30s
+    setInterval(() => this.cleanupCache(), 30000);
+  }
 
-  async createBalanceEntry(userId: string, createBalanceDto: CreateBalanceDto) {
+  /**
+   * ⚡ OPTIMIZED: Create balance entry (background write for non-critical)
+   */
+  async createBalanceEntry(userId: string, createBalanceDto: CreateBalanceDto, critical = false) {
     const db = this.firebaseService.getFirestore();
 
+    // ✅ Quick balance check for withdrawals
     if (createBalanceDto.type === BALANCE_TYPES.WITHDRAWAL) {
       const currentBalance = await this.getCurrentBalance(userId);
       if (currentBalance < createBalanceDto.amount) {
@@ -32,8 +50,20 @@ export class BalanceService {
       createdAt: new Date().toISOString(),
     };
 
-    await db.collection(COLLECTIONS.BALANCE).doc(balanceId).set(balanceData);
+    // ⚡ Write to database
+    if (critical) {
+      // Wait for critical writes (deposits, withdrawals)
+      await db.collection(COLLECTIONS.BALANCE).doc(balanceId).set(balanceData);
+    } else {
+      // Fire and forget for non-critical (order debits/profits)
+      db.collection(COLLECTIONS.BALANCE).doc(balanceId).set(balanceData)
+        .catch(err => this.logger.error(`Balance write failed: ${err.message}`));
+    }
 
+    // ⚡ Invalidate cache immediately
+    this.invalidateCache(userId);
+
+    // ⚡ Get new balance (from cache if available)
     const currentBalance = await this.getCurrentBalance(userId);
 
     this.logger.log(`Balance updated for user ${userId}: ${createBalanceDto.type} ${createBalanceDto.amount}`);
@@ -45,6 +75,9 @@ export class BalanceService {
     };
   }
 
+  /**
+   * ⚡ OPTIMIZED: Bulk create with batch write
+   */
   async createMultipleBalanceEntries(
     userId: string,
     entries: CreateBalanceDto[],
@@ -86,6 +119,9 @@ export class BalanceService {
     // Execute batch write
     await this.firebaseService.batchWrite(operations);
 
+    // Invalidate cache
+    this.invalidateCache(userId);
+
     const newBalance = await this.getCurrentBalance(userId);
 
     this.logger.log(`Batch balance update for user ${userId}: ${entries.length} entries`);
@@ -96,7 +132,21 @@ export class BalanceService {
     };
   }
 
+  /**
+   * ⚡ ULTRA-FAST: Get current balance with aggressive caching
+   */
   async getCurrentBalance(userId: string): Promise<number> {
+    // ✅ Try cache first
+    const cached = this.balanceCache.get(userId);
+    if (cached) {
+      const age = Date.now() - cached.timestamp;
+      if (age < this.BALANCE_CACHE_TTL) {
+        this.logger.debug(`⚡ Balance cache hit for ${userId}`);
+        return cached.balance;
+      }
+    }
+
+    // ✅ Fetch and calculate
     const db = this.firebaseService.getFirestore();
 
     const snapshot = await db.collection(COLLECTIONS.BALANCE)
@@ -104,12 +154,48 @@ export class BalanceService {
       .get();
 
     const transactions = snapshot.docs.map(doc => doc.data() as Balance);
-    return CalculationUtil.calculateBalance(transactions);
+    const balance = CalculationUtil.calculateBalance(transactions);
+    
+    // ✅ Cache it
+    this.balanceCache.set(userId, {
+      balance,
+      timestamp: Date.now(),
+    });
+
+    return balance;
   }
 
+  /**
+   * ⚡ OPTIMIZED: Get balance history with caching
+   */
   async getBalanceHistory(userId: string, queryDto: QueryBalanceDto) {
-    const db = this.firebaseService.getFirestore();
     const { page = 1, limit = 20 } = queryDto;
+
+    // ✅ Try cache for first page
+    if (page === 1) {
+      const cached = this.balanceHistoryCache.get(userId);
+      if (cached) {
+        const age = Date.now() - cached.timestamp;
+        if (age < this.HISTORY_CACHE_TTL) {
+          const transactions = cached.history.slice(0, limit);
+          const currentBalance = await this.getCurrentBalance(userId);
+          
+          return {
+            currentBalance,
+            transactions,
+            pagination: {
+              page,
+              limit,
+              total: cached.history.length,
+              totalPages: Math.ceil(cached.history.length / limit),
+            },
+          };
+        }
+      }
+    }
+
+    // ✅ Fetch from database
+    const db = this.firebaseService.getFirestore();
 
     const snapshot = await db.collection(COLLECTIONS.BALANCE)
       .where('user_id', '==', userId)
@@ -117,6 +203,13 @@ export class BalanceService {
       .get();
 
     const allTransactions = snapshot.docs.map(doc => doc.data() as Balance);
+    
+    // ✅ Cache full history
+    this.balanceHistoryCache.set(userId, {
+      history: allTransactions,
+      timestamp: Date.now(),
+    });
+
     const total = allTransactions.length;
     const startIndex = (page - 1) * limit;
     const endIndex = startIndex + limit;
@@ -136,14 +229,30 @@ export class BalanceService {
     };
   }
 
+  /**
+   * ⚡ CACHED: Balance summary
+   */
   async getBalanceSummary(userId: string) {
-    const db = this.firebaseService.getFirestore();
+    // Try to use cached history
+    const cached = this.balanceHistoryCache.get(userId);
+    let transactions: Balance[];
 
-    const snapshot = await db.collection(COLLECTIONS.BALANCE)
-      .where('user_id', '==', userId)
-      .get();
+    if (cached && (Date.now() - cached.timestamp) < this.HISTORY_CACHE_TTL) {
+      transactions = cached.history;
+    } else {
+      const db = this.firebaseService.getFirestore();
+      const snapshot = await db.collection(COLLECTIONS.BALANCE)
+        .where('user_id', '==', userId)
+        .get();
 
-    const transactions = snapshot.docs.map(doc => doc.data() as Balance);
+      transactions = snapshot.docs.map(doc => doc.data() as Balance);
+      
+      // Cache it
+      this.balanceHistoryCache.set(userId, {
+        history: transactions,
+        timestamp: Date.now(),
+      });
+    }
 
     const summary = {
       currentBalance: CalculationUtil.calculateBalance(transactions),
@@ -153,11 +262,11 @@ export class BalanceService {
       totalWithdrawals: transactions
         .filter(t => t.type === BALANCE_TYPES.WITHDRAWAL)
         .reduce((sum, t) => sum + t.amount, 0),
-      totalWins: transactions
-        .filter(t => t.type === BALANCE_TYPES.WIN)
+      totalOrderDebits: transactions
+        .filter(t => t.type === BALANCE_TYPES.ORDER_DEBIT)
         .reduce((sum, t) => sum + t.amount, 0),
-      totalLosses: transactions
-        .filter(t => t.type === BALANCE_TYPES.LOSE)
+      totalOrderProfits: transactions
+        .filter(t => t.type === BALANCE_TYPES.ORDER_PROFIT)
         .reduce((sum, t) => sum + t.amount, 0),
       transactionCount: transactions.length,
     };
@@ -166,8 +275,7 @@ export class BalanceService {
   }
 
   /**
-   * Bulk create balance entries with batch write
-   * Used internally by other services (e.g., binary orders settlement)
+   * ⚡ BULK CREATE (for settlement)
    */
   async bulkCreateBalanceEntries(
     entries: Array<{
@@ -199,6 +307,52 @@ export class BalanceService {
     }
 
     await this.firebaseService.batchWrite(operations);
+    
+    // Invalidate all affected users
+    entries.forEach(entry => this.invalidateCache(entry.userId));
+    
     this.logger.log(`Bulk created ${entries.length} balance entries`);
+  }
+
+  /**
+   * ⚡ CACHE MANAGEMENT
+   */
+  private invalidateCache(userId: string): void {
+    this.balanceCache.delete(userId);
+    this.balanceHistoryCache.delete(userId);
+  }
+
+  private cleanupCache(): void {
+    const now = Date.now();
+    
+    // Clean balance cache
+    for (const [userId, cached] of this.balanceCache.entries()) {
+      if (now - cached.timestamp > this.BALANCE_CACHE_TTL * 5) {
+        this.balanceCache.delete(userId);
+      }
+    }
+
+    // Clean history cache
+    for (const [userId, cached] of this.balanceHistoryCache.entries()) {
+      if (now - cached.timestamp > this.HISTORY_CACHE_TTL * 5) {
+        this.balanceHistoryCache.delete(userId);
+      }
+    }
+
+    if (this.balanceCache.size > 0 || this.balanceHistoryCache.size > 0) {
+      this.logger.debug(`⚡ Balance cache: ${this.balanceCache.size}, History: ${this.balanceHistoryCache.size}`);
+    }
+  }
+
+  /**
+   * PERFORMANCE STATS
+   */
+  getPerformanceStats() {
+    return {
+      balanceCacheSize: this.balanceCache.size,
+      historyCacheSize: this.balanceHistoryCache.size,
+      balanceCacheTTL: this.BALANCE_CACHE_TTL,
+      historyCacheTTL: this.HISTORY_CACHE_TTL,
+    };
   }
 }

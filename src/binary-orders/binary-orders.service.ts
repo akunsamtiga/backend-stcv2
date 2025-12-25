@@ -1,3 +1,6 @@
+// src/binary-orders/binary-orders.service.ts
+// ⚡ ULTRA-FAST VERSION - Target: <300ms order creation
+
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { FirebaseService } from '../firebase/firebase.service';
@@ -14,28 +17,31 @@ import { BinaryOrder, Asset } from '../common/interfaces';
 export class BinaryOrdersService {
   private readonly logger = new Logger(BinaryOrdersService.name);
   
-  // ⚡ Multi-level caching untuk ultra-fast access
+  // ⚡ AGGRESSIVE MULTI-LEVEL CACHING
   private orderCache: Map<string, BinaryOrder> = new Map();
   private assetCache: Map<string, { asset: Asset; timestamp: number }> = new Map();
   private activeOrdersCache: BinaryOrder[] = [];
   private userBalanceCache: Map<string, { balance: number; timestamp: number }> = new Map();
   
-  // ⚡ Cache TTLs
-  private readonly ORDER_CACHE_TTL = 10000; // 10 seconds
-  private readonly ASSET_CACHE_TTL = 30000; // 30 seconds  
-  private readonly BALANCE_CACHE_TTL = 5000; // 5 seconds
+  // ⚡ REDUCED CACHE TTLs for better freshness
+  private readonly ORDER_CACHE_TTL = 5000; // ✅ REDUCED from 10s
+  private readonly ASSET_CACHE_TTL = 20000; // ✅ REDUCED from 30s  
+  private readonly BALANCE_CACHE_TTL = 2000; // ✅ REDUCED from 5s
   private lastCacheUpdate = 0;
   
-  // ⚡ Processing optimization
+  // ⚡ PROCESSING OPTIMIZATION
   private isProcessing = false;
   private processingLock = false;
   private settlementQueue: BinaryOrder[] = [];
   
-  // ⚡ Performance metrics
+  // ⚡ PERFORMANCE METRICS
   private orderCreateCount = 0;
   private orderSettleCount = 0;
   private avgCreateTime = 0;
   private avgSettleTime = 0;
+  
+  // ⚡ PREFETCH QUEUE
+  private prefetchQueue: Set<string> = new Set();
 
   constructor(
     private firebaseService: FirebaseService,
@@ -43,8 +49,11 @@ export class BinaryOrdersService {
     private assetsService: AssetsService,
     private priceFetcherService: PriceFetcherService,
   ) {
-    // ⚡ Initialize cache cleanup
-    setInterval(() => this.cleanupStaleCache(), 60000); // Every minute
+    // Cleanup every 30s (reduced from 60s)
+    setInterval(() => this.cleanupStaleCache(), 30000);
+    
+    // ⚡ Prefetch popular assets every 10s
+    setInterval(() => this.prefetchPopularData(), 10000);
   }
 
   private isValidDuration(duration: number): duration is ValidDuration {
@@ -52,28 +61,27 @@ export class BinaryOrdersService {
   }
 
   /**
-   * ⚡ ULTRA-FAST ORDER CREATION
-   * Target: < 500ms response time
+   * ⚡ ULTRA-FAST ORDER CREATION - Target: <300ms
    */
-    async createOrder(userId: string, createOrderDto: CreateBinaryOrderDto) {
+  async createOrder(userId: string, createOrderDto: CreateBinaryOrderDto) {
     const startTime = Date.now();
     
     try {
-      // ✅ Step 1: Quick validation (< 50ms)
+      // ✅ STEP 1: Quick validation (<5ms)
       if (!this.isValidDuration(createOrderDto.duration)) {
         throw new BadRequestException(
           `Invalid duration. Allowed: ${ALL_DURATIONS.join(', ')} minutes`
         );
       }
 
-      // ✅ Step 2: Parallel fetch with cache (< 200ms)
+      // ✅ STEP 2: PARALLEL FETCH with aggressive caching (<100ms)
       const [currentBalance, asset, priceData] = await Promise.all([
-        this.getCachedBalance(userId),
-        this.getCachedAsset(createOrderDto.asset_id),
-        this.getFastPrice(createOrderDto.asset_id),
+        this.getCachedBalanceFast(userId),
+        this.getCachedAssetFast(createOrderDto.asset_id),
+        this.getFastPriceWithFallback(createOrderDto.asset_id),
       ]);
 
-      // ✅ Step 3: Quick business logic validation (< 10ms)
+      // ✅ STEP 3: Quick business validation (<5ms)
       if (currentBalance < createOrderDto.amount) {
         throw new BadRequestException('Insufficient balance');
       }
@@ -86,7 +94,7 @@ export class BinaryOrdersService {
         throw new BadRequestException('Price unavailable');
       }
 
-      // ✅ Step 4: Prepare order data (< 10ms)
+      // ✅ STEP 4: Prepare data (<5ms)
       const orderId = await this.firebaseService.generateId(COLLECTIONS.ORDERS);
       const timestamp = new Date().toISOString();
       const expiryTime = CalculationUtil.calculateExpiryTime(
@@ -112,37 +120,37 @@ export class BinaryOrdersService {
         createdAt: timestamp,
       };
 
-      // ✅ Step 5: Atomic write - Fire and forget style (< 200ms)
+      // ✅ STEP 5: FIRE AND FORGET writes (<150ms)
       const db = this.firebaseService.getFirestore();
       
-      // Write to Firebase (don't wait for balance write)
+      // ⚡ Write order (don't wait for balance)
       const orderPromise = db.collection(COLLECTIONS.ORDERS)
         .doc(orderId)
         .set(orderData);
 
-      // ⚡ FIX: Ganti dari 'withdrawal' ke 'order_debit'
+      // ⚡ Balance write in background (non-blocking)
       const balancePromise = this.balanceService.createBalanceEntry(userId, {
-        type: BALANCE_TYPES.ORDER_DEBIT,  // ✅ FIXED: Dulu 'withdrawal'
+        type: BALANCE_TYPES.ORDER_DEBIT,
         amount: createOrderDto.amount,
         description: `Order #${orderId.slice(-8)} - ${asset.symbol} ${createOrderDto.direction}`,
+      }).catch(err => {
+        this.logger.error(`Background balance write failed: ${err.message}`);
       });
 
-      // Wait for order write, but balance can complete later
+      // Only wait for order write
       await orderPromise;
       
-      // Update caches immediately
+      // ✅ STEP 6: Update caches immediately (<5ms)
       this.orderCache.set(orderId, orderData);
       this.activeOrdersCache.push(orderData);
       this.invalidateBalanceCache(userId);
 
       // Let balance write complete in background
-      balancePromise.catch(err => {
-        this.logger.error(`Background balance write failed: ${err.message}`);
-      });
+      balancePromise;
 
       const duration = Date.now() - startTime;
       this.orderCreateCount++;
-      this.avgCreateTime = (this.avgCreateTime + duration) / 2;
+      this.avgCreateTime = (this.avgCreateTime * 0.9) + (duration * 0.1); // Weighted avg
 
       this.logger.log(
         `⚡ Order created in ${duration}ms - ${asset.symbol} ${createOrderDto.direction} ${createOrderDto.duration}min`
@@ -161,18 +169,19 @@ export class BinaryOrdersService {
     }
   }
 
-
   /**
-   * ⚡ FAST CACHED BALANCE (< 100ms)
+   * ⚡ ULTRA-FAST CACHED BALANCE (<50ms target)
    */
-  private async getCachedBalance(userId: string): Promise<number> {
+  private async getCachedBalanceFast(userId: string): Promise<number> {
     const cached = this.userBalanceCache.get(userId);
     const now = Date.now();
 
+    // ✅ Use cache aggressively
     if (cached && (now - cached.timestamp) < this.BALANCE_CACHE_TTL) {
       return cached.balance;
     }
 
+    // Fetch and cache
     const balance = await this.balanceService.getCurrentBalance(userId);
     this.userBalanceCache.set(userId, { balance, timestamp: now });
     
@@ -180,16 +189,18 @@ export class BinaryOrdersService {
   }
 
   /**
-   * ⚡ FAST CACHED ASSET (< 50ms)
+   * ⚡ ULTRA-FAST CACHED ASSET (<30ms target)
    */
-  private async getCachedAsset(assetId: string): Promise<Asset> {
+  private async getCachedAssetFast(assetId: string): Promise<Asset> {
     const cached = this.assetCache.get(assetId);
     const now = Date.now();
 
+    // ✅ Use cache aggressively
     if (cached && (now - cached.timestamp) < this.ASSET_CACHE_TTL) {
       return cached.asset;
     }
 
+    // Fetch and cache
     const asset = await this.assetsService.getAssetById(assetId);
     this.assetCache.set(assetId, { asset, timestamp: now });
     
@@ -197,17 +208,17 @@ export class BinaryOrdersService {
   }
 
   /**
-   * ⚡ ULTRA-FAST PRICE FETCH (< 100ms)
+   * ⚡ ULTRA-FAST PRICE with FALLBACK (<80ms target)
    */
-  private async getFastPrice(assetId: string) {
+  private async getFastPriceWithFallback(assetId: string) {
     try {
-      const asset = await this.getCachedAsset(assetId);
+      const asset = await this.getCachedAssetFast(assetId);
       
-      // Use aggressive timeout for order creation
+      // ✅ Race with shorter timeout
       return await Promise.race([
-        this.priceFetcherService.getCurrentPrice(asset),
+        this.priceFetcherService.getCurrentPrice(asset, true), // Use fast cache
         new Promise<never>((_, reject) => 
-          setTimeout(() => reject(new Error('Timeout')), 1000) // 1 second max
+          setTimeout(() => reject(new Error('Timeout')), 800) // 800ms max
         ),
       ]);
     } catch (error) {
@@ -219,11 +230,9 @@ export class BinaryOrdersService {
   /**
    * ⚡ OPTIMIZED CRON - Every 3 seconds
    */
-  @Cron('*/3 * * * * *') // Every 3 seconds
+  @Cron('*/3 * * * * *')
   async processExpiredOrders() {
-    if (this.processingLock) {
-      return; // Skip if already processing
-    }
+    if (this.processingLock) return;
 
     this.processingLock = true;
     const startTime = Date.now();
@@ -231,7 +240,7 @@ export class BinaryOrdersService {
     try {
       const now = new Date();
       
-      // ✅ Use cached active orders
+      // Get active orders from cache
       let activeOrders = await this.getActiveOrdersFromCache();
       
       // Filter expired
@@ -245,8 +254,8 @@ export class BinaryOrdersService {
 
       this.logger.log(`⚡ Processing ${expiredOrders.length} expired orders`);
 
-      // ✅ Parallel settlement with limit
-      const PARALLEL_LIMIT = 10;
+      // ⚡ PARALLEL SETTLEMENT with increased limit
+      const PARALLEL_LIMIT = 15; // ✅ INCREASED from 10
       for (let i = 0; i < expiredOrders.length; i += PARALLEL_LIMIT) {
         const batch = expiredOrders.slice(i, i + PARALLEL_LIMIT);
         
@@ -271,21 +280,22 @@ export class BinaryOrdersService {
   }
 
   /**
-   * ⚡ FAST ORDER SETTLEMENT (< 300ms per order)
+   * ⚡ FAST ORDER SETTLEMENT (<200ms per order target)
    */
   private async settleOrderFast(order: BinaryOrder): Promise<void> {
     const startTime = Date.now();
     
     try {
-      // ✅ Parallel fetch asset and price
+      // ⚡ PARALLEL FETCH
       const [asset, priceData] = await Promise.all([
-        this.getCachedAsset(order.asset_id),
+        this.getCachedAssetFast(order.asset_id),
         Promise.race([
           this.priceFetcherService.getCurrentPrice(
-            await this.getCachedAsset(order.asset_id)
+            await this.getCachedAssetFast(order.asset_id),
+            false // Don't use fast cache for settlement
           ),
           new Promise<any>((_, reject) => 
-            setTimeout(() => reject(new Error('Timeout')), 2000)
+            setTimeout(() => reject(new Error('Timeout')), 1500) // 1.5s timeout
           ),
         ]),
       ]);
@@ -295,7 +305,7 @@ export class BinaryOrdersService {
         return;
       }
 
-      // ✅ Calculate result
+      // Calculate result
       const result = CalculationUtil.determineBinaryResult(
         order.direction,
         order.entry_price,
@@ -306,7 +316,7 @@ export class BinaryOrdersService {
         ? CalculationUtil.calculateBinaryProfit(order.amount, order.profitRate)
         : -order.amount;
 
-      // ✅ Atomic update
+      // ⚡ Atomic update
       const db = this.firebaseService.getFirestore();
       
       const updatePromise = db.collection(COLLECTIONS.ORDERS)
@@ -317,27 +327,25 @@ export class BinaryOrdersService {
           profit,
         });
 
-      // ⚡ FIX: Ganti dari 'win' ke 'order_profit'
+      // ⚡ Balance update in background
       let balancePromise: Promise<any> | null = null;
       if (result === 'WON') {
         const totalReturn = order.amount + profit;
         
         balancePromise = this.balanceService.createBalanceEntry(order.user_id, {
-          type: BALANCE_TYPES.ORDER_PROFIT,  // ✅ FIXED: Dulu 'win'
-          amount: totalReturn,  // Return amount + profit
+          type: BALANCE_TYPES.ORDER_PROFIT,
+          amount: totalReturn,
           description: `Won #${order.id.slice(-8)} - ${asset.symbol} +${profit.toFixed(0)}`,
-        });
-      }
-      // ℹ️ Jika LOST, tidak perlu entry karena sudah di-deduct saat create order
-
-      // Wait for update, balance can complete later
-      await updatePromise;
-      
-      if (balancePromise) {
-        balancePromise.catch(err => {
+        }).catch(err => {
           this.logger.error(`Balance update failed for ${order.id}: ${err.message}`);
         });
       }
+
+      // Wait for order update only
+      await updatePromise;
+      
+      // Let balance complete in background
+      if (balancePromise) balancePromise;
 
       // Invalidate caches
       this.orderCache.delete(order.id);
@@ -345,7 +353,7 @@ export class BinaryOrdersService {
 
       const duration = Date.now() - startTime;
       this.orderSettleCount++;
-      this.avgSettleTime = (this.avgSettleTime + duration) / 2;
+      this.avgSettleTime = (this.avgSettleTime * 0.9) + (duration * 0.1);
 
       this.logger.log(
         `⚡ Settled ${order.id.slice(-8)} in ${duration}ms - ${result} ${profit > 0 ? '+' : ''}${profit.toFixed(2)}`
@@ -357,11 +365,12 @@ export class BinaryOrdersService {
   }
 
   /**
-   * ⚡ FAST ACTIVE ORDERS RETRIEVAL
+   * ⚡ FAST ACTIVE ORDERS with SMART CACHING
    */
   private async getActiveOrdersFromCache(): Promise<BinaryOrder[]> {
     const now = Date.now();
     
+    // ✅ More aggressive caching
     if (
       this.activeOrdersCache.length > 0 && 
       (now - this.lastCacheUpdate) < this.ORDER_CACHE_TTL
@@ -372,7 +381,7 @@ export class BinaryOrdersService {
     const db = this.firebaseService.getFirestore();
     const snapshot = await db.collection(COLLECTIONS.ORDERS)
       .where('status', '==', ORDER_STATUS.ACTIVE)
-      .limit(200)
+      .limit(300) // ✅ INCREASED from 200
       .get();
 
     this.activeOrdersCache = snapshot.docs.map(doc => doc.data() as BinaryOrder);
@@ -382,14 +391,25 @@ export class BinaryOrdersService {
   }
 
   /**
-   * GET ORDERS (Optimized with cache)
+   * ⚡ PREFETCH POPULAR DATA (Background task)
+   */
+  private async prefetchPopularData() {
+    try {
+      // Prefetch active orders count
+      if (this.activeOrdersCache.length === 0) {
+        await this.getActiveOrdersFromCache();
+      }
+    } catch (error) {
+      // Silent fail - prefetch is optional
+    }
+  }
+
+  /**
+   * GET ORDERS (Optimized)
    */
   async getOrders(userId: string, queryDto: QueryBinaryOrderDto) {
     const { status, page = 1, limit = 20 } = queryDto;
 
-    // Try cache first for recent queries
-    const cacheKey = `${userId}-${status || 'all'}-${page}-${limit}`;
-    
     const db = this.firebaseService.getFirestore();
     let query = db.collection(COLLECTIONS.ORDERS)
       .where('user_id', '==', userId);
@@ -423,6 +443,7 @@ export class BinaryOrdersService {
    * GET ORDER BY ID (Fast cached)
    */
   async getOrderById(userId: string, orderId: string) {
+    // Try cache first
     const cached = this.orderCache.get(orderId);
     if (cached?.user_id === userId) {
       return cached;
@@ -441,6 +462,7 @@ export class BinaryOrdersService {
       throw new BadRequestException('Unauthorized');
     }
 
+    // Cache it
     this.orderCache.set(orderId, order);
     return order;
   }
@@ -455,28 +477,28 @@ export class BinaryOrdersService {
   private cleanupStaleCache(): void {
     const now = Date.now();
     
-    // Clean order cache
+    // Clean order cache (only inactive)
     for (const [orderId, order] of this.orderCache.entries()) {
       if (order.status !== ORDER_STATUS.ACTIVE) {
         this.orderCache.delete(orderId);
       }
     }
 
-    // Clean asset cache
+    // Clean asset cache (stale entries)
     for (const [assetId, cached] of this.assetCache.entries()) {
       if (now - cached.timestamp > this.ASSET_CACHE_TTL * 2) {
         this.assetCache.delete(assetId);
       }
     }
 
-    // Clean balance cache
+    // Clean balance cache (stale entries)
     for (const [userId, cached] of this.userBalanceCache.entries()) {
-      if (now - cached.timestamp > this.BALANCE_CACHE_TTL * 2) {
+      if (now - cached.timestamp > this.BALANCE_CACHE_TTL * 3) {
         this.userBalanceCache.delete(userId);
       }
     }
 
-    this.logger.debug('Cache cleaned');
+    this.logger.debug('⚡ Cache cleaned');
   }
 
   /**
@@ -494,11 +516,17 @@ export class BinaryOrdersService {
         assets: this.assetCache.size,
         balances: this.userBalanceCache.size,
       },
+      performance: {
+        createTimeTarget: 300,
+        settleTimeTarget: 200,
+        createTimeStatus: this.avgCreateTime < 300 ? 'EXCELLENT' : 'NEEDS_IMPROVEMENT',
+        settleTimeStatus: this.avgSettleTime < 200 ? 'EXCELLENT' : 'NEEDS_IMPROVEMENT',
+      }
     };
   }
 
   /**
-   * MANUAL CACHE CLEAR (for testing)
+   * CLEAR CACHE (for testing)
    */
   clearAllCache(): void {
     this.orderCache.clear();
@@ -506,6 +534,6 @@ export class BinaryOrdersService {
     this.assetCache.clear();
     this.userBalanceCache.clear();
     this.lastCacheUpdate = 0;
-    this.logger.log('All caches cleared');
+    this.logger.log('⚡ All caches cleared');
   }
 }
