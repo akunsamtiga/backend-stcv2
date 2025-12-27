@@ -1,3 +1,4 @@
+// src/balance/balance.module.ts
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
@@ -21,6 +22,6 @@ import { AuthModule } from '../auth/auth.module';
   ],
   controllers: [BalanceController],
   providers: [BalanceService],
-  exports: [BalanceService],
+  exports: [BalanceService], 
 })
 export class BalanceModule {}

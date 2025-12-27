@@ -1,13 +1,16 @@
+// src/user/user.module.ts
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { UserController } from './user.controller';
 import { UserService } from './user.service';
 import { AuthModule } from '../auth/auth.module';
+import { BalanceModule } from '../balance/balance.module'; // ✅ PASTIKAN INI ADA
 
 @Module({
   imports: [
     AuthModule,
+    BalanceModule, // ✅ PASTIKAN INI ADA
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
