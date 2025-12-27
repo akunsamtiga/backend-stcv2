@@ -1,9 +1,19 @@
 // src/balance/dto/create-balance.dto.ts
+// ✅ UPDATED: Added accountType field
+
 import { IsEnum, IsNumber, IsPositive, IsOptional, IsString } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
-import { BALANCE_TYPES } from '../../common/constants';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { BALANCE_TYPES, BALANCE_ACCOUNT_TYPE } from '../../common/constants';
 
 export class CreateBalanceDto {
+  @ApiProperty({ 
+    enum: BALANCE_ACCOUNT_TYPE, 
+    example: 'real',
+    description: 'Account type: real or demo'
+  })
+  @IsEnum(BALANCE_ACCOUNT_TYPE)
+  accountType: string;
+
   @ApiProperty({ 
     enum: BALANCE_TYPES, 
     example: 'deposit',
@@ -17,7 +27,7 @@ export class CreateBalanceDto {
   @IsPositive()
   amount: number;
 
-  @ApiProperty({ 
+  @ApiPropertyOptional({ 
     required: false, 
     example: 'Monthly deposit' 
   })

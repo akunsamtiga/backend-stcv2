@@ -1,8 +1,19 @@
+// src/binary-orders/dto/create-binary-order.dto.ts
+// ✅ UPDATED: Added accountType field
+
 import { IsString, IsEnum, IsNumber, IsPositive, IsInt, Min } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
-import { ORDER_DIRECTION, ALL_DURATIONS } from '../../common/constants';
+import { ORDER_DIRECTION, ALL_DURATIONS, BALANCE_ACCOUNT_TYPE } from '../../common/constants';
 
 export class CreateBinaryOrderDto {
+  @ApiProperty({ 
+    enum: BALANCE_ACCOUNT_TYPE, 
+    example: 'demo',
+    description: 'Account type to use: real or demo'
+  })
+  @IsEnum(BALANCE_ACCOUNT_TYPE)
+  accountType: string;
+
   @ApiProperty({ example: 'asset_id_here' })
   @IsString()
   asset_id: string;
@@ -16,7 +27,10 @@ export class CreateBinaryOrderDto {
   @IsPositive()
   amount: number;
 
-  @ApiProperty({ example: 1, description: 'Duration in minutes (1,2,3,4,5,15,30,45,60)' })
+  @ApiProperty({ 
+    example: 1, 
+    description: 'Duration in minutes (1,2,3,4,5,15,30,45,60)' 
+  })
   @IsInt()
   @Min(1)
   duration: number;

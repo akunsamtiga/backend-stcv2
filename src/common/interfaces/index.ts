@@ -1,4 +1,6 @@
 // src/common/interfaces/index.ts
+// ✅ UPDATED: Balance and BinaryOrder interfaces with accountType
+
 export interface ApiResponse<T = any> {
   success: boolean;
   message?: string;
@@ -35,11 +37,12 @@ export interface User {
 }
 
 /**
- * ✅ UPDATED: Balance interface dengan type baru
+ * ✅ UPDATED: Balance interface with accountType (real/demo)
  */
 export interface Balance {
   id: string;
   user_id: string;
+  accountType: 'real' | 'demo'; // ✅ NEW: Separate real and demo balance
   type: 'deposit' | 'withdrawal' | 'order_debit' | 'order_profit' | 'win' | 'lose';
   amount: number;
   description?: string;
@@ -50,24 +53,28 @@ export interface Asset {
   id: string;
   name: string;
   symbol: string;
-  profitRate: number; // 0-100 (e.g., 85 for 85%)
+  profitRate: number;
   isActive: boolean;
   dataSource: 'realtime_db' | 'api' | 'mock';
-  realtimeDbPath?: string; // For Firebase Realtime DB
-  apiEndpoint?: string; // For external API
+  realtimeDbPath?: string;
+  apiEndpoint?: string;
   description?: string;
   createdAt: string;
   updatedAt?: string;
 }
 
+/**
+ * ✅ UPDATED: BinaryOrder interface with accountType
+ */
 export interface BinaryOrder {
   id: string;
   user_id: string;
+  accountType: 'real' | 'demo'; // ✅ NEW: Track which account was used
   asset_id: string;
   asset_name: string;
   direction: 'CALL' | 'PUT';
   amount: number;
-  duration: number; // minutes
+  duration: number;
   entry_price: number;
   entry_time: string;
   exit_price: number | null;
@@ -82,4 +89,14 @@ export interface RealtimePrice {
   price: number;
   timestamp: number;
   datetime: string;
+}
+
+/**
+ * ✅ NEW: Balance summary for both accounts
+ */
+export interface BalanceSummary {
+  realBalance: number;
+  demoBalance: number;
+  realTransactions: number;
+  demoTransactions: number;
 }

@@ -1,41 +1,201 @@
 // src/balance/balance.service.ts
-// ✅ CRITICAL FIX - Balance calculation corrected
+// ✅ UPDATED: Backward compatibility untuk akun lama
+// Auto-migrate accountType saat data diakses
 
 import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import { FirebaseService, BatchOperation } from '../firebase/firebase.service';
 import { CreateBalanceDto } from './dto/create-balance.dto';
 import { QueryBalanceDto } from './dto/query-balance.dto';
-import { COLLECTIONS, BALANCE_TYPES } from '../common/constants';
+import { COLLECTIONS, BALANCE_TYPES, BALANCE_ACCOUNT_TYPE } from '../common/constants';
 import { CalculationUtil } from '../common/utils';
-import { Balance } from '../common/interfaces';
+import { Balance, BalanceSummary } from '../common/interfaces';
 
 @Injectable()
 export class BalanceService {
   private readonly logger = new Logger(BalanceService.name);
   
-  // ⚡ BALANCE CACHING
-  private balanceCache: Map<string, { balance: number; timestamp: number }> = new Map();
+  private realBalanceCache: Map<string, { balance: number; timestamp: number }> = new Map();
+  private demoBalanceCache: Map<string, { balance: number; timestamp: number }> = new Map();
   private balanceHistoryCache: Map<string, { history: Balance[]; timestamp: number }> = new Map();
   
-  // ✅ ADJUSTED TTLs - Balance harus lebih fresh untuk avoid race condition
-  private readonly BALANCE_CACHE_TTL = 1000; // ✅ REDUCED to 1s for critical operations
-  private readonly HISTORY_CACHE_TTL = 3000; // ✅ REDUCED to 3s
+  private readonly BALANCE_CACHE_TTL = 1000;
+  private readonly HISTORY_CACHE_TTL = 3000;
 
   constructor(private firebaseService: FirebaseService) {
     setInterval(() => this.cleanupCache(), 30000);
   }
 
   /**
-   * ✅ FIXED: Create balance entry - ALWAYS WAIT for critical operations
+   * ✅ HELPER: Auto-migrate old records without accountType
    */
-  async createBalanceEntry(userId: string, createBalanceDto: CreateBalanceDto, critical = true) {
+  private async autoMigrateIfNeeded(userId: string): Promise<void> {
     const db = this.firebaseService.getFirestore();
 
-    // ✅ Quick balance check for withdrawals
+    try {
+      // Check if user has any records without accountType
+      const oldRecordsQuery = await db.collection(COLLECTIONS.BALANCE)
+        .where('user_id', '==', userId)
+        .limit(100)
+        .get();
+
+      if (oldRecordsQuery.empty) {
+        return;
+      }
+
+      let needsMigration = false;
+      const batch = db.batch();
+      let batchCount = 0;
+
+      for (const doc of oldRecordsQuery.docs) {
+        const data = doc.data();
+
+        // ✅ Auto-add accountType='real' to old records
+        if (!data.accountType) {
+          batch.update(doc.ref, { accountType: 'real' });
+          batchCount++;
+          needsMigration = true;
+        }
+      }
+
+      if (needsMigration) {
+        await batch.commit();
+        this.logger.log(
+          `✅ Auto-migrated ${batchCount} old balance records for user ${userId}`
+        );
+      }
+
+      // ✅ Check if user needs demo balance
+      const demoBalanceQuery = await db.collection(COLLECTIONS.BALANCE)
+        .where('user_id', '==', userId)
+        .where('accountType', '==', 'demo')
+        .limit(1)
+        .get();
+
+      if (demoBalanceQuery.empty) {
+        // Create demo balance
+        const balanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
+        const timestamp = new Date().toISOString();
+
+        await db.collection(COLLECTIONS.BALANCE).doc(balanceId).set({
+          id: balanceId,
+          user_id: userId,
+          accountType: 'demo',
+          type: BALANCE_TYPES.DEPOSIT,
+          amount: 10000,
+          description: 'Initial demo balance (auto-created)',
+          createdAt: timestamp,
+        });
+
+        this.logger.log(`✅ Auto-created demo balance for user ${userId}`);
+      }
+
+    } catch (error) {
+      // Don't fail if migration fails - just log it
+      this.logger.warn(`Auto-migration warning for user ${userId}: ${error.message}`);
+    }
+  }
+
+  /**
+   * ✅ GET CURRENT BALANCE - With Auto-migration
+   */
+  async getCurrentBalance(
+    userId: string, 
+    accountType: 'real' | 'demo'
+  ): Promise<number> {
+    // ✅ Auto-migrate old records first
+    await this.autoMigrateIfNeeded(userId);
+
+    // ✅ Select correct cache
+    const cache = accountType === BALANCE_ACCOUNT_TYPE.REAL 
+      ? this.realBalanceCache 
+      : this.demoBalanceCache;
+
+    const cached = cache.get(userId);
+    if (cached) {
+      const age = Date.now() - cached.timestamp;
+      if (age < this.BALANCE_CACHE_TTL) {
+        this.logger.debug(`⚡ ${accountType} balance cache hit: ${userId} = ${cached.balance}`);
+        return cached.balance;
+      }
+    }
+
+    // ✅ Fetch from database with account type filter
+    const db = this.firebaseService.getFirestore();
+    const snapshot = await db.collection(COLLECTIONS.BALANCE)
+      .where('user_id', '==', userId)
+      .where('accountType', '==', accountType)
+      .get();
+
+    const transactions = snapshot.docs.map(doc => doc.data() as Balance);
+    const balance = CalculationUtil.calculateBalance(transactions);
+    
+    cache.set(userId, {
+      balance,
+      timestamp: Date.now(),
+    });
+
+    this.logger.debug(
+      `📊 ${accountType.toUpperCase()} balance: ${userId} = ${balance} (${transactions.length} txs)`
+    );
+
+    return balance;
+  }
+
+  /**
+   * ✅ GET BOTH BALANCES - With Auto-migration
+   */
+  async getBothBalances(userId: string): Promise<BalanceSummary> {
+    // ✅ Auto-migrate first
+    await this.autoMigrateIfNeeded(userId);
+
+    const [realBalance, demoBalance] = await Promise.all([
+      this.getCurrentBalance(userId, BALANCE_ACCOUNT_TYPE.REAL),
+      this.getCurrentBalance(userId, BALANCE_ACCOUNT_TYPE.DEMO),
+    ]);
+
+    const db = this.firebaseService.getFirestore();
+    const snapshot = await db.collection(COLLECTIONS.BALANCE)
+      .where('user_id', '==', userId)
+      .get();
+
+    const transactions = snapshot.docs.map(doc => doc.data() as Balance);
+    const realTransactions = transactions.filter(t => t.accountType === BALANCE_ACCOUNT_TYPE.REAL).length;
+    const demoTransactions = transactions.filter(t => t.accountType === BALANCE_ACCOUNT_TYPE.DEMO).length;
+
+    return {
+      realBalance,
+      demoBalance,
+      realTransactions,
+      demoTransactions,
+    };
+  }
+
+  /**
+   * ✅ CREATE BALANCE ENTRY
+   */
+  async createBalanceEntry(
+    userId: string, 
+    createBalanceDto: CreateBalanceDto, 
+    critical = true
+  ) {
+    const db = this.firebaseService.getFirestore();
+    const { accountType } = createBalanceDto;
+
+    // ✅ Validate account type
+    if (accountType !== BALANCE_ACCOUNT_TYPE.REAL && accountType !== BALANCE_ACCOUNT_TYPE.DEMO) {
+      throw new BadRequestException('Invalid account type. Must be "real" or "demo"');
+    }
+
+    // ✅ Auto-migrate if needed (before checking balance)
+    await this.autoMigrateIfNeeded(userId);
+
+    // ✅ Check balance for withdrawals
     if (createBalanceDto.type === BALANCE_TYPES.WITHDRAWAL) {
-      const currentBalance = await this.getCurrentBalance(userId);
+      const currentBalance = await this.getCurrentBalance(userId, accountType);
       if (currentBalance < createBalanceDto.amount) {
-        throw new BadRequestException('Insufficient balance for withdrawal');
+        throw new BadRequestException(
+          `Insufficient ${accountType} balance for withdrawal. Available: ${currentBalance}`
+        );
       }
     }
 
@@ -43,202 +203,100 @@ export class BalanceService {
     const balanceData = {
       id: balanceId,
       user_id: userId,
+      accountType,
       type: createBalanceDto.type,
       amount: createBalanceDto.amount,
       description: createBalanceDto.description || '',
       createdAt: new Date().toISOString(),
     };
 
-    // ✅ CRITICAL FIX: ALWAYS WAIT for deposits and withdrawals
-    // Only use fire-and-forget for order-related operations
     const isCriticalOperation = 
       createBalanceDto.type === BALANCE_TYPES.DEPOSIT || 
       createBalanceDto.type === BALANCE_TYPES.WITHDRAWAL;
 
     if (isCriticalOperation || critical) {
-      // Wait for write to complete
       await db.collection(COLLECTIONS.BALANCE).doc(balanceId).set(balanceData);
-      this.logger.log(`✅ Balance written (critical): ${userId} - ${createBalanceDto.type} ${createBalanceDto.amount}`);
+      this.logger.log(
+        `✅ ${accountType} balance written: ${userId} - ${createBalanceDto.type} ${createBalanceDto.amount}`
+      );
     } else {
-      // Fire and forget for non-critical (order debits/profits)
       db.collection(COLLECTIONS.BALANCE).doc(balanceId).set(balanceData)
         .then(() => {
-          this.logger.debug(`✅ Balance written (async): ${userId} - ${createBalanceDto.type} ${createBalanceDto.amount}`);
+          this.logger.debug(
+            `✅ ${accountType} balance written (async): ${userId} - ${createBalanceDto.type}`
+          );
         })
         .catch(err => {
-          this.logger.error(`❌ Balance write failed: ${err.message}`);
+          this.logger.error(`❌ ${accountType} balance write failed: ${err.message}`);
         });
     }
 
-    // ⚡ Invalidate cache immediately
-    this.invalidateCache(userId);
+    this.invalidateCache(userId, accountType);
 
-    // ✅ CRITICAL FIX: Wait a bit for cache to clear before reading
     if (isCriticalOperation) {
-      await new Promise(resolve => setTimeout(resolve, 100)); // 100ms delay
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
 
-    // ⚡ Get new balance (will fetch fresh from DB)
-    const currentBalance = await this.getCurrentBalance(userId);
+    const currentBalance = await this.getCurrentBalance(userId, accountType);
 
-    this.logger.log(`Balance updated for user ${userId}: ${createBalanceDto.type} ${createBalanceDto.amount} -> ${currentBalance}`);
+    this.logger.log(
+      `${accountType.toUpperCase()} balance updated: ${userId} - ${createBalanceDto.type} ${createBalanceDto.amount} -> ${currentBalance}`
+    );
 
     return {
-      message: 'Balance transaction recorded successfully',
+      message: `${accountType} balance transaction recorded successfully`,
       transaction: balanceData,
       currentBalance,
+      accountType,
     };
   }
 
   /**
-   * ⚡ OPTIMIZED: Bulk create with batch write
+   * ✅ GET BALANCE HISTORY - With Auto-migration
    */
-  async createMultipleBalanceEntries(
-    userId: string,
-    entries: CreateBalanceDto[],
+  async getBalanceHistory(
+    userId: string, 
+    queryDto: QueryBalanceDto,
+    accountType?: 'real' | 'demo'
   ) {
-    const db = this.firebaseService.getFirestore();
+    // ✅ Auto-migrate first
+    await this.autoMigrateIfNeeded(userId);
 
-    // Check balance for withdrawals
-    const currentBalance = await this.getCurrentBalance(userId);
-    const totalWithdrawals = entries
-      .filter(e => e.type === BALANCE_TYPES.WITHDRAWAL)
-      .reduce((sum, e) => sum + e.amount, 0);
-
-    if (totalWithdrawals > currentBalance) {
-      throw new BadRequestException('Insufficient balance for withdrawals');
-    }
-
-    // Prepare batch operations
-    const operations: BatchOperation[] = [];
-    const timestamp = new Date().toISOString();
-
-    for (const entry of entries) {
-      const balanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
-      
-      operations.push({
-        type: 'set',
-        collection: COLLECTIONS.BALANCE,
-        docId: balanceId,
-        data: {
-          id: balanceId,
-          user_id: userId,
-          type: entry.type,
-          amount: entry.amount,
-          description: entry.description || '',
-          createdAt: timestamp,
-        },
-      });
-    }
-
-    // Execute batch write
-    await this.firebaseService.batchWrite(operations);
-
-    // Invalidate cache
-    this.invalidateCache(userId);
-
-    // Wait a bit for consistency
-    await new Promise(resolve => setTimeout(resolve, 100));
-
-    const newBalance = await this.getCurrentBalance(userId);
-
-    this.logger.log(`Batch balance update for user ${userId}: ${entries.length} entries -> ${newBalance}`);
-
-    return {
-      message: `${entries.length} balance transactions recorded successfully`,
-      newBalance,
-    };
-  }
-
-  /**
-   * ✅ FIXED: Get current balance - Better cache management
-   */
-  async getCurrentBalance(userId: string): Promise<number> {
-    // ✅ Try cache first but with shorter TTL
-    const cached = this.balanceCache.get(userId);
-    if (cached) {
-      const age = Date.now() - cached.timestamp;
-      if (age < this.BALANCE_CACHE_TTL) {
-        this.logger.debug(`⚡ Balance cache hit for ${userId}: ${cached.balance}`);
-        return cached.balance;
-      }
-    }
-
-    // ✅ Fetch fresh from database
-    const db = this.firebaseService.getFirestore();
-
-    const snapshot = await db.collection(COLLECTIONS.BALANCE)
-      .where('user_id', '==', userId)
-      .get();
-
-    const transactions = snapshot.docs.map(doc => doc.data() as Balance);
-    const balance = CalculationUtil.calculateBalance(transactions);
-    
-    // ✅ Cache it
-    this.balanceCache.set(userId, {
-      balance,
-      timestamp: Date.now(),
-    });
-
-    this.logger.debug(`📊 Balance calculated for ${userId}: ${balance} (from ${transactions.length} transactions)`);
-
-    return balance;
-  }
-
-  /**
-   * ⚡ OPTIMIZED: Get balance history with caching
-   */
-  async getBalanceHistory(userId: string, queryDto: QueryBalanceDto) {
     const { page = 1, limit = 20 } = queryDto;
 
-    // Try cache for first page
-    if (page === 1) {
-      const cached = this.balanceHistoryCache.get(userId);
-      if (cached) {
-        const age = Date.now() - cached.timestamp;
-        if (age < this.HISTORY_CACHE_TTL) {
-          const transactions = cached.history.slice(0, limit);
-          const currentBalance = await this.getCurrentBalance(userId);
-          
-          return {
-            currentBalance,
-            transactions,
-            pagination: {
-              page,
-              limit,
-              total: cached.history.length,
-              totalPages: Math.ceil(cached.history.length / limit),
-            },
-          };
-        }
-      }
+    const db = this.firebaseService.getFirestore();
+    let query = db.collection(COLLECTIONS.BALANCE)
+      .where('user_id', '==', userId);
+
+    if (accountType) {
+      query = query.where('accountType', '==', accountType) as any;
     }
 
-    // Fetch from database
-    const db = this.firebaseService.getFirestore();
-
-    const snapshot = await db.collection(COLLECTIONS.BALANCE)
-      .where('user_id', '==', userId)
+    const snapshot = await query
       .orderBy('createdAt', 'desc')
       .get();
 
     const allTransactions = snapshot.docs.map(doc => doc.data() as Balance);
     
-    // Cache full history
-    this.balanceHistoryCache.set(userId, {
-      history: allTransactions,
-      timestamp: Date.now(),
-    });
-
     const total = allTransactions.length;
     const startIndex = (page - 1) * limit;
     const endIndex = startIndex + limit;
     const transactions = allTransactions.slice(startIndex, endIndex);
 
-    const currentBalance = await this.getCurrentBalance(userId);
+    let currentBalances: any = {};
+    
+    if (accountType) {
+      currentBalances[accountType] = await this.getCurrentBalance(userId, accountType);
+    } else {
+      const summary = await this.getBothBalances(userId);
+      currentBalances = {
+        real: summary.realBalance,
+        demo: summary.demoBalance,
+      };
+    }
 
     return {
-      currentBalance,
+      currentBalances,
       transactions,
       pagination: {
         page,
@@ -246,60 +304,78 @@ export class BalanceService {
         total,
         totalPages: Math.ceil(total / limit),
       },
+      filter: accountType ? { accountType } : { accountType: 'all' },
     };
   }
 
   /**
-   * CACHED: Balance summary
+   * ✅ GET BALANCE SUMMARY
    */
   async getBalanceSummary(userId: string) {
-    // Try to use cached history
-    const cached = this.balanceHistoryCache.get(userId);
-    let transactions: Balance[];
+    // ✅ Auto-migrate first
+    await this.autoMigrateIfNeeded(userId);
 
-    if (cached && (Date.now() - cached.timestamp) < this.HISTORY_CACHE_TTL) {
-      transactions = cached.history;
-    } else {
-      const db = this.firebaseService.getFirestore();
-      const snapshot = await db.collection(COLLECTIONS.BALANCE)
-        .where('user_id', '==', userId)
-        .get();
+    const db = this.firebaseService.getFirestore();
+    const snapshot = await db.collection(COLLECTIONS.BALANCE)
+      .where('user_id', '==', userId)
+      .get();
 
-      transactions = snapshot.docs.map(doc => doc.data() as Balance);
-      
-      // Cache it
-      this.balanceHistoryCache.set(userId, {
-        history: transactions,
-        timestamp: Date.now(),
-      });
-    }
+    const transactions = snapshot.docs.map(doc => doc.data() as Balance);
 
-    const summary = {
-      currentBalance: CalculationUtil.calculateBalance(transactions),
-      totalDeposits: transactions
+    const realTransactions = transactions.filter(t => t.accountType === BALANCE_ACCOUNT_TYPE.REAL);
+    const demoTransactions = transactions.filter(t => t.accountType === BALANCE_ACCOUNT_TYPE.DEMO);
+
+    const realSummary = {
+      currentBalance: CalculationUtil.calculateBalance(realTransactions),
+      totalDeposits: realTransactions
         .filter(t => t.type === BALANCE_TYPES.DEPOSIT)
         .reduce((sum, t) => sum + t.amount, 0),
-      totalWithdrawals: transactions
+      totalWithdrawals: realTransactions
         .filter(t => t.type === BALANCE_TYPES.WITHDRAWAL)
         .reduce((sum, t) => sum + t.amount, 0),
-      totalOrderDebits: transactions
+      totalOrderDebits: realTransactions
         .filter(t => t.type === BALANCE_TYPES.ORDER_DEBIT)
         .reduce((sum, t) => sum + t.amount, 0),
-      totalOrderProfits: transactions
+      totalOrderProfits: realTransactions
         .filter(t => t.type === BALANCE_TYPES.ORDER_PROFIT)
         .reduce((sum, t) => sum + t.amount, 0),
-      transactionCount: transactions.length,
+      transactionCount: realTransactions.length,
     };
 
-    return summary;
+    const demoSummary = {
+      currentBalance: CalculationUtil.calculateBalance(demoTransactions),
+      totalDeposits: demoTransactions
+        .filter(t => t.type === BALANCE_TYPES.DEPOSIT)
+        .reduce((sum, t) => sum + t.amount, 0),
+      totalWithdrawals: demoTransactions
+        .filter(t => t.type === BALANCE_TYPES.WITHDRAWAL)
+        .reduce((sum, t) => sum + t.amount, 0),
+      totalOrderDebits: demoTransactions
+        .filter(t => t.type === BALANCE_TYPES.ORDER_DEBIT)
+        .reduce((sum, t) => sum + t.amount, 0),
+      totalOrderProfits: demoTransactions
+        .filter(t => t.type === BALANCE_TYPES.ORDER_PROFIT)
+        .reduce((sum, t) => sum + t.amount, 0),
+      transactionCount: demoTransactions.length,
+    };
+
+    return {
+      real: realSummary,
+      demo: demoSummary,
+      total: {
+        transactionCount: transactions.length,
+        combinedBalance: realSummary.currentBalance + demoSummary.currentBalance,
+      },
+    };
   }
 
   /**
-   * BULK CREATE (for settlement) - Always wait
+   * BULK CREATE
    */
   async bulkCreateBalanceEntries(
     entries: Array<{
       userId: string;
+      accountType: 'real' | 'demo';
       type: string;
       amount: number;
       description: string;
@@ -318,6 +394,7 @@ export class BalanceService {
         data: {
           id: balanceId,
           user_id: entry.userId,
+          accountType: entry.accountType,
           type: entry.type,
           amount: entry.amount,
           description: entry.description,
@@ -326,60 +403,65 @@ export class BalanceService {
       });
     }
 
-    // Always wait for bulk operations
     await this.firebaseService.batchWrite(operations);
     
-    // Invalidate all affected users
-    entries.forEach(entry => this.invalidateCache(entry.userId));
+    const uniqueUsers = [...new Set(entries.map(e => e.userId))];
+    uniqueUsers.forEach(userId => {
+      const hasReal = entries.some(e => e.userId === userId && e.accountType === BALANCE_ACCOUNT_TYPE.REAL);
+      const hasDemo = entries.some(e => e.userId === userId && e.accountType === BALANCE_ACCOUNT_TYPE.DEMO);
+      
+      if (hasReal) this.invalidateCache(userId, BALANCE_ACCOUNT_TYPE.REAL);
+      if (hasDemo) this.invalidateCache(userId, BALANCE_ACCOUNT_TYPE.DEMO);
+    });
     
     this.logger.log(`Bulk created ${entries.length} balance entries`);
   }
 
   /**
-   * ⚡ CACHE MANAGEMENT
+   * CACHE MANAGEMENT
    */
-  private invalidateCache(userId: string): void {
-    this.balanceCache.delete(userId);
+  private invalidateCache(userId: string, accountType: 'real' | 'demo'): void {
+    if (accountType === BALANCE_ACCOUNT_TYPE.REAL) {
+      this.realBalanceCache.delete(userId);
+    } else {
+      this.demoBalanceCache.delete(userId);
+    }
     this.balanceHistoryCache.delete(userId);
-    this.logger.debug(`🗑️ Cache invalidated for user ${userId}`);
+    this.logger.debug(`🗑️ ${accountType} cache invalidated for ${userId}`);
   }
 
   private cleanupCache(): void {
     const now = Date.now();
+    const maxAge = this.BALANCE_CACHE_TTL * 5;
     
-    // Clean balance cache
-    for (const [userId, cached] of this.balanceCache.entries()) {
-      if (now - cached.timestamp > this.BALANCE_CACHE_TTL * 5) {
-        this.balanceCache.delete(userId);
+    for (const [userId, cached] of this.realBalanceCache.entries()) {
+      if (now - cached.timestamp > maxAge) {
+        this.realBalanceCache.delete(userId);
       }
     }
 
-    // Clean history cache
+    for (const [userId, cached] of this.demoBalanceCache.entries()) {
+      if (now - cached.timestamp > maxAge) {
+        this.demoBalanceCache.delete(userId);
+      }
+    }
+
     for (const [userId, cached] of this.balanceHistoryCache.entries()) {
       if (now - cached.timestamp > this.HISTORY_CACHE_TTL * 5) {
         this.balanceHistoryCache.delete(userId);
       }
     }
-
-    if (this.balanceCache.size > 0 || this.balanceHistoryCache.size > 0) {
-      this.logger.debug(`⚡ Balance cache: ${this.balanceCache.size}, History: ${this.balanceHistoryCache.size}`);
-    }
   }
 
-  /**
-   * FORCE REFRESH (for testing/debugging)
-   */
-  async forceRefreshBalance(userId: string): Promise<number> {
-    this.invalidateCache(userId);
-    return this.getCurrentBalance(userId);
+  async forceRefreshBalance(userId: string, accountType: 'real' | 'demo'): Promise<number> {
+    this.invalidateCache(userId, accountType);
+    return this.getCurrentBalance(userId, accountType);
   }
 
-  /**
-   * PERFORMANCE STATS
-   */
   getPerformanceStats() {
     return {
-      balanceCacheSize: this.balanceCache.size,
+      realBalanceCacheSize: this.realBalanceCache.size,
+      demoBalanceCacheSize: this.demoBalanceCache.size,
       historyCacheSize: this.balanceHistoryCache.size,
       balanceCacheTTL: this.BALANCE_CACHE_TTL,
       historyCacheTTL: this.HISTORY_CACHE_TTL,

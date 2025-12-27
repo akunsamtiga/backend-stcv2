@@ -8,7 +8,7 @@ import * as bcrypt from 'bcrypt';
 import { FirebaseService } from '../firebase/firebase.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
-import { COLLECTIONS, BALANCE_TYPES, USER_ROLES } from '../common/constants';
+import { COLLECTIONS, BALANCE_TYPES, BALANCE_ACCOUNT_TYPE, USER_ROLES } from '../common/constants';
 import { User } from '../common/interfaces';
 
 @Injectable()
@@ -59,7 +59,7 @@ export class AuthService implements OnModuleInit {
       const email = this.configService.get('superAdmin.email');
       const password = this.configService.get('superAdmin.password');
 
-      if (!email || password) {
+      if (!email || !password) {
         this.logger.warn('⚠️ Super admin credentials not configured');
         return;
       }
@@ -85,18 +85,34 @@ export class AuthService implements OnModuleInit {
           updatedAt: timestamp,
         });
 
-        // Create initial balance (non-blocking)
-        const balanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
-        db.collection(COLLECTIONS.BALANCE).doc(balanceId).set({
-          id: balanceId,
-          user_id: userId,
-          type: BALANCE_TYPES.DEPOSIT,
-          amount: 0,
-          description: 'Initial balance',
-          createdAt: timestamp,
-        }).catch(err => this.logger.error(`Balance creation failed: ${err.message}`));
+        // ✅ Create initial balance for BOTH accounts
+        const balanceId1 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
+        const balanceId2 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
 
-        this.logger.log(`✅ Super admin created: ${email}`);
+        await Promise.all([
+          // Real account
+          db.collection(COLLECTIONS.BALANCE).doc(balanceId1).set({
+            id: balanceId1,
+            user_id: userId,
+            accountType: BALANCE_ACCOUNT_TYPE.REAL,
+            type: BALANCE_TYPES.DEPOSIT,
+            amount: 0,
+            description: 'Initial real balance',
+            createdAt: timestamp,
+          }),
+          // Demo account
+          db.collection(COLLECTIONS.BALANCE).doc(balanceId2).set({
+            id: balanceId2,
+            user_id: userId,
+            accountType: BALANCE_ACCOUNT_TYPE.DEMO,
+            type: BALANCE_TYPES.DEPOSIT,
+            amount: 10000,
+            description: 'Initial demo balance',
+            createdAt: timestamp,
+          }),
+        ]);
+
+        this.logger.log(`✅ Super admin created with both accounts: ${email}`);
       } else {
         this.logger.log(`ℹ️ Super admin already exists: ${email}`);
       }
@@ -112,7 +128,7 @@ export class AuthService implements OnModuleInit {
 
   /**
    * ⚡ OPTIMIZED REGISTER - Target: <500ms
-   * ✅ FIXED: Ensure initial balance is created properly
+   * ✅ UPDATED: Create both Real and Demo accounts
    */
   async register(registerDto: RegisterDto) {
     const startTime = Date.now();
@@ -147,19 +163,34 @@ export class AuthService implements OnModuleInit {
     // ⚡ Write user (wait for this)
     await db.collection(COLLECTIONS.USERS).doc(userId).set(userData);
 
-    // ✅ CRITICAL FIX: Wait for initial balance creation
-    // This ensures user has a balance record before they can trade
-    const balanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
-    await db.collection(COLLECTIONS.BALANCE).doc(balanceId).set({
-      id: balanceId,
-      user_id: userId,
-      type: BALANCE_TYPES.DEPOSIT,
-      amount: 0,
-      description: 'Initial balance',
-      createdAt: timestamp,
-    });
+    // ✅ UPDATED: Create initial balance for BOTH accounts
+    const balanceId1 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
+    const balanceId2 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
 
-    this.logger.log(`✅ Initial balance created for user ${userId}`);
+    await Promise.all([
+      // Real account - starts with 0
+      db.collection(COLLECTIONS.BALANCE).doc(balanceId1).set({
+        id: balanceId1,
+        user_id: userId,
+        accountType: BALANCE_ACCOUNT_TYPE.REAL,
+        type: BALANCE_TYPES.DEPOSIT,
+        amount: 0,
+        description: 'Initial real balance',
+        createdAt: timestamp,
+      }),
+      // Demo account - starts with 10,000
+      db.collection(COLLECTIONS.BALANCE).doc(balanceId2).set({
+        id: balanceId2,
+        user_id: userId,
+        accountType: BALANCE_ACCOUNT_TYPE.DEMO,
+        type: BALANCE_TYPES.DEPOSIT,
+        amount: 10000,
+        description: 'Initial demo balance',
+        createdAt: timestamp,
+      }),
+    ]);
+
+    this.logger.log(`✅ Initial balances created for user ${userId} (Real: 0, Demo: 10000)`);
 
     // ⚡ Generate token
     const token = this.generateToken(userId, email, USER_ROLES.USER);
@@ -171,7 +202,7 @@ export class AuthService implements OnModuleInit {
     this.logger.log(`✅ User registered in ${duration}ms: ${email}`);
 
     return {
-      message: 'Registration successful',
+      message: 'Registration successful with real and demo accounts',
       user: {
         id: userId,
         email,
