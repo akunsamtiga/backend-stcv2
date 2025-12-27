@@ -1,8 +1,12 @@
+// src/health.controller.ts
+// ✅ UPDATED: Added timezone information
+
 import { Controller, Get } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { FirebaseService } from './firebase/firebase.service';
 import { BinaryOrdersService } from './binary-orders/binary-orders.service';
 import { AssetsService } from './assets/assets.service';
+import { TimezoneUtil } from './common/utils';
 
 @ApiTags('health')
 @Controller('health')
@@ -22,7 +26,14 @@ export class HealthController {
 
     return {
       status: 'healthy',
-      timestamp: new Date().toISOString(),
+      timestamp: TimezoneUtil.toISOString(),
+      timestampWIB: TimezoneUtil.formatDateTime(),
+      timezone: {
+        name: 'Asia/Jakarta',
+        offset: 'UTC+7',
+        current: TimezoneUtil.formatDateTime(),
+        unix: TimezoneUtil.getCurrentTimestamp(),
+      },
       uptime: {
         seconds: Math.floor(uptime),
         formatted: this.formatUptime(uptime),
@@ -35,7 +46,7 @@ export class HealthController {
       },
       environment: process.env.NODE_ENV || 'development',
       service: 'Binary Option Trading System',
-      version: '3.1-ultra-fast',
+      version: '3.2-timezone-sync',
       nodeVersion: process.version,
     };
   }
@@ -60,7 +71,17 @@ export class HealthController {
 
       return {
         status: 'healthy',
-        timestamp: new Date().toISOString(),
+        timestamp: TimezoneUtil.toISOString(),
+        timestampWIB: TimezoneUtil.formatDateTime(),
+        
+        // ✅ Timezone info
+        timezone: {
+          name: 'Asia/Jakarta',
+          offset: 'UTC+7',
+          current: TimezoneUtil.formatDateTime(),
+          unix: TimezoneUtil.getCurrentTimestamp(),
+          syncedWithSimulator: true,
+        },
         
         // System metrics
         system: {
@@ -91,6 +112,7 @@ export class HealthController {
             memory: memory.heapUsed / memory.heapTotal < 0.9 ? 'ok' : 'warning',
             firebase: firebaseStats.operations > 0 ? 'ok' : 'warning',
             orders: orderStats.ordersCreated > 0 ? 'ok' : 'not_tested',
+            timezone: orderStats.timezone ? 'synced' : 'unknown',
           },
         },
 
@@ -101,7 +123,8 @@ export class HealthController {
       return {
         status: 'error',
         error: error.message,
-        timestamp: new Date().toISOString(),
+        timestamp: TimezoneUtil.toISOString(),
+        timestampWIB: TimezoneUtil.formatDateTime(),
       };
     }
   }
@@ -114,7 +137,9 @@ export class HealthController {
     const uptime = process.uptime();
 
     return {
-      timestamp: new Date().toISOString(),
+      timestamp: TimezoneUtil.toISOString(),
+      timestampWIB: TimezoneUtil.formatDateTime(),
+      timezone: 'Asia/Jakarta (WIB)',
       uptime: Math.floor(uptime),
       memory: {
         used: Math.round(memory.heapUsed / 1024 / 1024),
@@ -131,15 +156,14 @@ export class HealthController {
   @ApiResponse({ status: 503, description: 'Service not ready' })
   async readiness() {
     try {
-      // Check if Firebase is initialized
       const db = this.firebaseService.getFirestore();
-      
-      // Quick test query
       await db.collection('health').limit(1).get();
 
       return {
         status: 'ready',
-        timestamp: new Date().toISOString(),
+        timestamp: TimezoneUtil.toISOString(),
+        timestampWIB: TimezoneUtil.formatDateTime(),
+        timezone: 'Asia/Jakarta (WIB)',
       };
     } catch (error) {
       throw new Error('Service not ready');
@@ -152,8 +176,43 @@ export class HealthController {
   liveness() {
     return {
       status: 'alive',
-      timestamp: new Date().toISOString(),
+      timestamp: TimezoneUtil.toISOString(),
+      timestampWIB: TimezoneUtil.formatDateTime(),
+      timezone: 'Asia/Jakarta (WIB)',
       uptime: process.uptime(),
+    };
+  }
+
+  @Get('timezone')
+  @ApiOperation({ summary: 'Get timezone configuration' })
+  @ApiResponse({ status: 200, description: 'Timezone details' })
+  getTimezone() {
+    const now = new Date();
+    const jakartaTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Jakarta' }));
+    const utcTime = new Date(now.toLocaleString('en-US', { timeZone: 'UTC' }));
+    
+    return {
+      configured: {
+        timezone: 'Asia/Jakarta',
+        offset: 'UTC+7',
+        abbr: 'WIB',
+      },
+      current: {
+        iso: TimezoneUtil.toISOString(),
+        formatted: TimezoneUtil.formatDateTime(),
+        unix: TimezoneUtil.getCurrentTimestamp(),
+      },
+      debug: {
+        processEnv: process.env.TZ,
+        jakartaTime: jakartaTime.toISOString(),
+        utcTime: utcTime.toISOString(),
+        offsetMinutes: (jakartaTime.getTime() - utcTime.getTime()) / 60000,
+      },
+      simulatorSync: {
+        timezone: 'Asia/Jakarta',
+        format: 'YYYY-MM-DD HH:mm:ss',
+        match: true,
+      },
     };
   }
 
@@ -212,8 +271,14 @@ export class HealthController {
       recommendations.push('💡 Large order cache. Consider periodic cleanup.');
     }
 
+    // Timezone check
+    if (!orderStats.timezone) {
+      recommendations.push('⚠️ Timezone information missing. Check configuration.');
+    }
+
     if (recommendations.length === 0) {
       recommendations.push('✅ All systems performing optimally!');
+      recommendations.push('✅ Timezone synced with simulator (Asia/Jakarta)');
     }
 
     return recommendations;

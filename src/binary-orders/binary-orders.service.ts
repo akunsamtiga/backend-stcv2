@@ -1,5 +1,5 @@
 // src/binary-orders/binary-orders.service.ts
-// ✅ FIXED: ULTRA-STRICT balance validation before order creation
+// ✅ UPDATED: Using TimezoneUtil for consistent timezone with simulator
 
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
@@ -10,7 +10,7 @@ import { PriceFetcherService } from '../assets/services/price-fetcher.service';
 import { CreateBinaryOrderDto } from './dto/create-binary-order.dto';
 import { QueryBinaryOrderDto } from './dto/query-binary-order.dto';
 import { COLLECTIONS, ORDER_STATUS, BALANCE_TYPES, ALL_DURATIONS, ValidDuration, BALANCE_ACCOUNT_TYPE } from '../common/constants';
-import { CalculationUtil } from '../common/utils';
+import { CalculationUtil, TimezoneUtil } from '../common/utils';
 import { BinaryOrder, Asset } from '../common/interfaces';
 
 @Injectable()
@@ -41,6 +41,10 @@ export class BinaryOrdersService {
     private priceFetcherService: PriceFetcherService,
   ) {
     setInterval(() => this.cleanupStaleCache(), 10000);
+    
+    // ✅ Log timezone info on startup
+    this.logger.log(`🌍 Timezone: Asia/Jakarta (WIB = UTC+7)`);
+    this.logger.log(`⏰ Current time: ${TimezoneUtil.formatDateTime()}`);
   }
 
   private isValidDuration(duration: number): duration is ValidDuration {
@@ -48,47 +52,47 @@ export class BinaryOrdersService {
   }
 
   /**
-   * ✅ CREATE ORDER - ULTRA-STRICT VALIDATION
+   * ✅ CREATE ORDER - Using TimezoneUtil
    */
   async createOrder(userId: string, createOrderDto: CreateBinaryOrderDto) {
     const startTime = Date.now();
     const { accountType, amount } = createOrderDto;
     
     try {
-      // ✅ Step 1: Validate account type
+      // Validate account type
       if (accountType !== BALANCE_ACCOUNT_TYPE.REAL && accountType !== BALANCE_ACCOUNT_TYPE.DEMO) {
         throw new BadRequestException('Invalid account type. Must be "real" or "demo"');
       }
 
-      // ✅ Step 2: Validate duration
+      // Validate duration
       if (!this.isValidDuration(createOrderDto.duration)) {
         throw new BadRequestException(
           `Invalid duration. Allowed: ${ALL_DURATIONS.join(', ')} minutes`
         );
       }
 
-      // ✅ Step 3: Validate amount (minimum 1000)
+      // Validate amount
       if (amount < 1000) {
         throw new BadRequestException('Minimum order amount is Rp 1,000');
       }
 
-      // ✅ Step 4: Get asset & price (parallel)
+      // Get asset & price
       const [asset, priceData] = await Promise.all([
         this.getCachedAssetFast(createOrderDto.asset_id),
         this.getFastPriceWithFallback(createOrderDto.asset_id),
       ]);
 
-      // ✅ Step 5: Validate asset
+      // Validate asset
       if (!asset.isActive) {
         throw new BadRequestException('Asset not active');
       }
 
-      // ✅ Step 6: Validate price
+      // Validate price
       if (!priceData || !priceData.price) {
         throw new BadRequestException('Price unavailable, please try again');
       }
 
-      // ✅ Step 7: CRITICAL - Get FRESH balance with STRICT validation
+      // ✅ STRICT balance validation
       this.logger.log(`🔍 Checking ${accountType} balance for user ${userId}...`);
       
       const currentBalance = await this.balanceService.getCurrentBalanceStrict(
@@ -100,27 +104,30 @@ export class BinaryOrdersService {
         `💰 User ${userId} - ${accountType} balance: ${currentBalance}, Required: ${amount}`
       );
 
-      // ✅ Step 8: STRICT balance validation
       if (currentBalance < amount) {
         throw new BadRequestException(
           `Insufficient ${accountType} balance. Available: Rp ${currentBalance.toLocaleString()}, Required: Rp ${amount.toLocaleString()}`
         );
       }
 
-      // ✅ Step 9: Extra safety check
       if (currentBalance === 0) {
         throw new BadRequestException(
           `Cannot create order with zero balance. Please deposit first.`
         );
       }
 
-      // ✅ Step 10: Generate order
+      // ✅ Generate order with TimezoneUtil
       const orderId = await this.firebaseService.generateId(COLLECTIONS.ORDERS);
-      const timestamp = new Date().toISOString();
-      const expiryTime = CalculationUtil.calculateExpiryTime(
-        new Date(), 
-        createOrderDto.duration
-      );
+      
+      // ✅ Use TimezoneUtil for consistent timestamps
+      const entryTimestamp = TimezoneUtil.getCurrentTimestamp();
+      const entryDate = TimezoneUtil.fromTimestamp(entryTimestamp);
+      const expiryDate = TimezoneUtil.addMinutes(entryDate, createOrderDto.duration);
+      const expiryTimestamp = TimezoneUtil.toTimestamp(expiryDate);
+      
+      // ✅ Get formatted datetime info
+      const entryDateTimeInfo = TimezoneUtil.getDateTimeInfo(entryDate);
+      const expiryDateTimeInfo = TimezoneUtil.getDateTimeInfo(expiryDate);
 
       const orderData: BinaryOrder = {
         id: orderId,
@@ -132,35 +139,38 @@ export class BinaryOrdersService {
         amount: createOrderDto.amount,
         duration: createOrderDto.duration,
         entry_price: priceData.price,
-        entry_time: timestamp,
+        entry_time: entryDateTimeInfo.datetime_iso, // ISO format
         exit_price: null,
-        exit_time: expiryTime.toISOString(),
+        exit_time: expiryDateTimeInfo.datetime_iso, // ISO format
         status: ORDER_STATUS.ACTIVE,
         profit: null,
         profitRate: asset.profitRate,
-        createdAt: timestamp,
+        createdAt: entryDateTimeInfo.datetime_iso,
       };
 
       const db = this.firebaseService.getFirestore();
       
-      // ✅ Step 11: Write order FIRST (so we can rollback if debit fails)
+      // Write order
       await db.collection(COLLECTIONS.ORDERS).doc(orderId).set(orderData);
 
       this.logger.log(`✅ Order ${orderId} created, now debiting balance...`);
+      this.logger.log(`📅 Entry: ${entryDateTimeInfo.datetime} WIB`);
+      this.logger.log(`📅 Expiry: ${expiryDateTimeInfo.datetime} WIB`);
+      this.logger.log(`⏱️  Duration: ${createOrderDto.duration} minutes`);
 
-      // ✅ Step 12: Debit balance (SYNCHRONOUS & CRITICAL)
+      // Debit balance
       try {
         await this.balanceService.createBalanceEntry(userId, {
           accountType,
           type: BALANCE_TYPES.ORDER_DEBIT,
           amount: createOrderDto.amount,
           description: `[${accountType.toUpperCase()}] Order #${orderId.slice(-8)} - ${asset.symbol} ${createOrderDto.direction}`,
-        }, true); // ✅ CRITICAL = true (wait for completion)
+        }, true);
 
         this.logger.log(`✅ Balance debited successfully`);
 
       } catch (debitError) {
-        // ✅ ROLLBACK: Delete order if debit fails
+        // Rollback: Delete order if debit fails
         this.logger.error(`❌ Balance debit failed, rolling back order: ${debitError.message}`);
         
         await db.collection(COLLECTIONS.ORDERS).doc(orderId).delete();
@@ -170,10 +180,10 @@ export class BinaryOrdersService {
         );
       }
 
-      // ✅ Step 13: Clear balance cache (force refresh next time)
+      // Clear cache
       this.balanceService.clearUserCache(userId);
 
-      // ✅ Step 14: Update order cache
+      // Update cache
       this.orderCache.set(orderId, orderData);
       
       if (accountType === BALANCE_ACCOUNT_TYPE.REAL) {
@@ -184,7 +194,7 @@ export class BinaryOrdersService {
         this.lastDemoCacheUpdate = 0;
       }
 
-      // ✅ Step 15: Verify balance after order
+      // Verify balance
       const newBalance = await this.balanceService.getCurrentBalance(userId, accountType, true);
       
       this.logger.log(
@@ -205,6 +215,11 @@ export class BinaryOrdersService {
         accountType,
         balanceAfter: newBalance,
         executionTime: duration,
+        timing: {
+          entry: entryDateTimeInfo.datetime,
+          expiry: expiryDateTimeInfo.datetime,
+          timezone: 'Asia/Jakarta (WIB)',
+        },
       };
 
     } catch (error) {
@@ -215,7 +230,7 @@ export class BinaryOrdersService {
   }
 
   /**
-   * ✅ SETTLEMENT CRON
+   * ✅ SETTLEMENT CRON - Using TimezoneUtil
    */
   @Cron('*/2 * * * * *')
   async processExpiredOrders() {
@@ -225,7 +240,9 @@ export class BinaryOrdersService {
     const startTime = Date.now();
 
     try {
-      const now = new Date();
+      // ✅ Get current timestamp using TimezoneUtil
+      const currentTimestamp = TimezoneUtil.getCurrentTimestamp();
+      const currentDateTime = TimezoneUtil.formatDateTime();
       
       const [realOrders, demoOrders] = await Promise.all([
         this.getActiveOrdersFromDB(BALANCE_ACCOUNT_TYPE.REAL),
@@ -233,13 +250,13 @@ export class BinaryOrdersService {
       ]);
 
       const expiredRealOrders = realOrders.filter(order => {
-        const exitTime = new Date(order.exit_time!);
-        return exitTime.getTime() - now.getTime() <= 1000;
+        const exitTimestamp = TimezoneUtil.toTimestamp(new Date(order.exit_time!));
+        return currentTimestamp >= exitTimestamp;
       });
 
       const expiredDemoOrders = demoOrders.filter(order => {
-        const exitTime = new Date(order.exit_time!);
-        return exitTime.getTime() - now.getTime() <= 1000;
+        const exitTimestamp = TimezoneUtil.toTimestamp(new Date(order.exit_time!));
+        return currentTimestamp >= exitTimestamp;
       });
 
       const totalExpired = expiredRealOrders.length + expiredDemoOrders.length;
@@ -249,7 +266,7 @@ export class BinaryOrdersService {
       }
 
       this.logger.log(
-        `⚡ Processing ${totalExpired} expired orders (Real: ${expiredRealOrders.length}, Demo: ${expiredDemoOrders.length})`
+        `⚡ [${currentDateTime} WIB] Processing ${totalExpired} expired orders (Real: ${expiredRealOrders.length}, Demo: ${expiredDemoOrders.length})`
       );
 
       const PARALLEL_LIMIT = 20;
@@ -284,7 +301,7 @@ export class BinaryOrdersService {
   }
 
   /**
-   * ✅ SETTLE SINGLE ORDER
+   * ✅ SETTLE SINGLE ORDER - Using TimezoneUtil
    */
   private async settleOrderInstant(order: BinaryOrder): Promise<void> {
     const startTime = Date.now();
@@ -320,15 +337,19 @@ export class BinaryOrdersService {
 
       const db = this.firebaseService.getFirestore();
       
+      // ✅ Use TimezoneUtil for settlement timestamp
+      const settlementDateTime = TimezoneUtil.formatDateTime();
+      
       await db.collection(COLLECTIONS.ORDERS)
         .doc(order.id)
         .update({
           exit_price: priceData.price,
           status: result,
           profit,
+          settled_at: TimezoneUtil.toISOString(), // Add settlement timestamp
         });
 
-      // ✅ Credit balance if won
+      // Credit balance if won
       if (result === 'WON') {
         const totalReturn = order.amount + profit;
         
@@ -352,7 +373,7 @@ export class BinaryOrdersService {
       this.avgSettleTime = (this.avgSettleTime * 0.9) + (duration * 0.1);
 
       this.logger.log(
-        `⚡ [${order.accountType.toUpperCase()}] Settled ${order.id.slice(-8)} in ${duration}ms - ${result} ${profit > 0 ? '+' : ''}${profit.toFixed(2)}`
+        `⚡ [${settlementDateTime} WIB] [${order.accountType.toUpperCase()}] Settled ${order.id.slice(-8)} in ${duration}ms - ${result} ${profit > 0 ? '+' : ''}${profit.toFixed(2)}`
       );
 
     } catch (error) {
@@ -361,7 +382,7 @@ export class BinaryOrdersService {
   }
 
   /**
-   * ✅ GET ACTIVE ORDERS
+   * GET ACTIVE ORDERS
    */
   private async getActiveOrdersFromDB(accountType?: 'real' | 'demo'): Promise<BinaryOrder[]> {
     const db = this.firebaseService.getFirestore();
@@ -377,7 +398,7 @@ export class BinaryOrdersService {
   }
 
   /**
-   * ✅ GET ORDERS
+   * GET ORDERS
    */
   async getOrders(
     userId: string, 
@@ -420,6 +441,8 @@ export class BinaryOrdersService {
         accountType: accountType || 'all',
         status: status || 'all',
       },
+      currentTime: TimezoneUtil.formatDateTime(),
+      timezone: 'Asia/Jakarta (WIB)',
     };
   }
 
@@ -440,11 +463,20 @@ export class BinaryOrdersService {
       throw new BadRequestException('Unauthorized');
     }
 
-    return order;
+    // ✅ Add timing info
+    const expiryTimestamp = TimezoneUtil.toTimestamp(new Date(order.exit_time!));
+    const expiryInfo = CalculationUtil.formatExpiryInfo(expiryTimestamp);
+
+    return {
+      ...order,
+      expiryInfo,
+      currentTime: TimezoneUtil.formatDateTime(),
+      timezone: 'Asia/Jakarta (WIB)',
+    };
   }
 
   /**
-   * ✅ HELPER METHODS
+   * HELPER METHODS
    */
   private async getCachedAssetFast(assetId: string): Promise<Asset> {
     const cached = this.assetCache.get(assetId);
@@ -518,7 +550,12 @@ export class BinaryOrdersService {
         settleTimeTarget: 200,
         createTimeStatus: this.avgCreateTime < 300 ? 'EXCELLENT' : 'NEEDS_IMPROVEMENT',
         settleTimeStatus: this.avgSettleTime < 200 ? 'EXCELLENT' : 'NEEDS_IMPROVEMENT',
-      }
+      },
+      timezone: {
+        name: 'Asia/Jakarta',
+        offset: 'UTC+7',
+        current: TimezoneUtil.formatDateTime(),
+      },
     };
   }
 }

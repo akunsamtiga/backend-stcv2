@@ -1,4 +1,5 @@
-// src/common/utils/calculation.util.ts
+import TimezoneUtil from './timezone.util';
+
 export class CalculationUtil {
   static calculateBinaryProfit(
     amount: number,
@@ -36,7 +37,65 @@ export class CalculationUtil {
     }, 0);
   }
 
+  /**
+   * ✅ UPDATED: Calculate expiry time using TimezoneUtil
+   * Ensures consistent timezone with simulator
+   */
   static calculateExpiryTime(startTime: Date, durationMinutes: number): Date {
-    return new Date(startTime.getTime() + durationMinutes * 60 * 1000);
+    return TimezoneUtil.addMinutes(startTime, durationMinutes);
+  }
+
+  /**
+   * ✅ NEW: Get current timestamp (consistent with simulator)
+   */
+  static getCurrentTimestamp(): number {
+    return TimezoneUtil.getCurrentTimestamp();
+  }
+
+  /**
+   * ✅ NEW: Get current ISO string
+   */
+  static getCurrentISOString(): string {
+    return TimezoneUtil.toISOString();
+  }
+
+  /**
+   * ✅ NEW: Format datetime (consistent with simulator format)
+   */
+  static formatDateTime(date: Date = new Date()): string {
+    return TimezoneUtil.formatDateTime(date);
+  }
+
+  /**
+   * ✅ NEW: Check if order has expired
+   */
+  static isOrderExpired(exitTimestamp: number): boolean {
+    return TimezoneUtil.isExpired(exitTimestamp);
+  }
+
+  /**
+   * ✅ NEW: Get time remaining until expiry
+   */
+  static getTimeUntilExpiry(exitTimestamp: number): number {
+    const now = TimezoneUtil.getCurrentTimestamp();
+    return Math.max(0, exitTimestamp - now);
+  }
+
+  /**
+   * ✅ NEW: Format order expiry info
+   */
+  static formatExpiryInfo(exitTimestamp: number): {
+    isExpired: boolean;
+    timeRemaining: number;
+    formattedRemaining: string;
+  } {
+    const timeRemaining = this.getTimeUntilExpiry(exitTimestamp);
+    const isExpired = timeRemaining === 0;
+
+    return {
+      isExpired,
+      timeRemaining,
+      formattedRemaining: TimezoneUtil.formatDuration(timeRemaining),
+    };
   }
 }

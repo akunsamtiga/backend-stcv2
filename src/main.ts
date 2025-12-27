@@ -1,5 +1,5 @@
 // src/main.ts
-// ⚡ ULTRA-OPTIMIZED VERSION - Maximum Performance
+// ✅ UPDATED: Set timezone globally for consistency with simulator
 
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
@@ -12,41 +12,56 @@ import { AppModule } from './app.module';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
+import { TimezoneUtil } from './common/utils';
+
+// ✅ CRITICAL: Set timezone globally BEFORE anything else
+process.env.TZ = 'Asia/Jakarta';
 
 async function bootstrap() {
-  // ⚡ OPTIMIZED: Disable unnecessary features in production
   const app = await NestFactory.create(AppModule, {
     bodyParser: true,
     bufferLogs: true,
-    abortOnError: false, // ✅ NEW: Don't crash on minor errors
+    abortOnError: false,
   });
 
   const configService = app.get(ConfigService);
   const logger = new Logger('Bootstrap');
 
+  // ✅ Log timezone configuration
+  const timezone = configService.get('timezone') || 'Asia/Jakarta';
+  logger.log('');
+  logger.log('🌍 ================================================');
+  logger.log('🌍 TIMEZONE CONFIGURATION');
+  logger.log('🌍 ================================================');
+  logger.log(`🌍 Configured Timezone: ${timezone}`);
+  logger.log(`🌍 Process TZ: ${process.env.TZ}`);
+  logger.log(`🌍 Current Time (WIB): ${TimezoneUtil.formatDateTime()}`);
+  logger.log(`🌍 Current Time (ISO): ${TimezoneUtil.toISOString()}`);
+  logger.log(`🌍 Unix Timestamp: ${TimezoneUtil.getCurrentTimestamp()}`);
+  logger.log('🌍 ================================================');
+  logger.log('');
+
   // ============================================
-  // ⚡ ULTRA-AGGRESSIVE TIMEOUT CONFIGURATION
+  // TIMEOUT CONFIGURATION
   // ============================================
   app.use((req: Request, res: Response, next: NextFunction) => {
     const path = req.path;
     
-    // ✅ MORE AGGRESSIVE timeouts
-    let timeout = 3000; // Default 3s (reduced from 5s)
+    let timeout = 3000;
     
     if (path.includes('/binary-orders')) {
-      timeout = 2000; // ✅ 2s for orders (reduced from 3s)
+      timeout = 2000;
     } else if (path.includes('/price')) {
-      timeout = 1500; // ✅ 1.5s for prices (reduced from 2s)
+      timeout = 1500;
     } else if (path.includes('/health')) {
-      timeout = 800; // ✅ 800ms for health (reduced from 1s)
+      timeout = 800;
     } else if (path.includes('/auth/login') || path.includes('/auth/register')) {
-      timeout = 5000; // ✅ 5s for auth (bcrypt is slow)
+      timeout = 5000;
     }
     
     req.setTimeout(timeout);
     res.setTimeout(timeout);
     
-    // Timeout handler
     req.on('timeout', () => {
       logger.warn(`⚠️ Request timeout (${timeout}ms): ${req.method} ${req.url}`);
       if (!res.headersSent) {
@@ -55,7 +70,8 @@ async function bootstrap() {
           error: 'Request timeout',
           timeout: `${timeout}ms`,
           statusCode: 408,
-          timestamp: new Date().toISOString(),
+          timestamp: TimezoneUtil.toISOString(), // ✅ Use TimezoneUtil
+          timestampWIB: TimezoneUtil.formatDateTime(), // ✅ Add WIB time
           path: req.url,
         });
       }
@@ -64,14 +80,14 @@ async function bootstrap() {
     next();
   });
 
-  // ⚡ OPTIMIZED Keep-alive with longer timeout
+  // Keep-alive
   app.use((req: Request, res: Response, next: NextFunction) => {
     res.setHeader('Connection', 'keep-alive');
-    res.setHeader('Keep-Alive', 'timeout=60, max=1000'); // ✅ INCREASED
+    res.setHeader('Keep-Alive', 'timeout=60, max=1000');
     next();
   });
 
-  // ⚡ Early response for preflight
+  // Preflight
   app.use((req: Request, res: Response, next: NextFunction) => {
     if (req.method === 'OPTIONS') {
       res.status(200).end();
@@ -81,18 +97,17 @@ async function bootstrap() {
   });
 
   // ============================================
-  // ⚡ OPTIMIZED SECURITY & COMPRESSION
+  // SECURITY & COMPRESSION
   // ============================================
   app.use(helmet({
     contentSecurityPolicy: false,
-    crossOriginEmbedderPolicy: false, // ✅ NEW: Better performance
+    crossOriginEmbedderPolicy: false,
   }));
 
   app.use(compression({
-    level: 6, // Balanced
-    threshold: 512, // ✅ REDUCED from 1KB for more compression
+    level: 6,
+    threshold: 512,
     filter: (req, res) => {
-      // Don't compress event streams
       if (req.headers['accept'] === 'text/event-stream') {
         return false;
       }
@@ -101,7 +116,7 @@ async function bootstrap() {
   }));
 
   // ============================================
-  // ⚡ OPTIMIZED VALIDATION
+  // VALIDATION
   // ============================================
   app.useGlobalPipes(
     new ValidationPipe({
@@ -112,7 +127,6 @@ async function bootstrap() {
         enableImplicitConversion: true,
       },
       disableErrorMessages: configService.get('nodeEnv') === 'production',
-      // ✅ NEW: Skip validation for simple requests
       skipMissingProperties: false,
       skipNullProperties: false,
       skipUndefinedProperties: false,
@@ -120,11 +134,10 @@ async function bootstrap() {
   );
 
   // ============================================
-  // ⚡ SELECTIVE INTERCEPTORS
+  // INTERCEPTORS
   // ============================================
   const nodeEnv = configService.get('nodeEnv');
   
-  // Only use logging in development
   if (nodeEnv === 'development') {
     app.useGlobalInterceptors(new LoggingInterceptor());
   }
@@ -133,7 +146,7 @@ async function bootstrap() {
   app.useGlobalFilters(new AllExceptionsFilter());
 
   // ============================================
-  // ⚡ OPTIMIZED CORS
+  // CORS
   // ============================================
   const corsOrigin = configService.get('cors.origin');
   app.enableCors({
@@ -142,9 +155,9 @@ async function bootstrap() {
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
     exposedHeaders: ['X-Total-Count', 'X-Page', 'X-Per-Page'],
-    maxAge: 86400, // Cache preflight for 24 hours
-    preflightContinue: false, // ✅ NEW: Don't pass preflight to next handler
-    optionsSuccessStatus: 204, // ✅ NEW: Faster preflight response
+    maxAge: 86400,
+    preflightContinue: false,
+    optionsSuccessStatus: 204,
   });
 
   // ============================================
@@ -155,12 +168,12 @@ async function bootstrap() {
   app.setGlobalPrefix(`${apiPrefix}/${apiVersion}`);
 
   // ============================================
-  // ⚡ CONDITIONAL SWAGGER
+  // SWAGGER
   // ============================================
   if (nodeEnv !== 'production') {
     const config = new DocumentBuilder()
       .setTitle('Binary Option Trading API')
-      .setDescription('⚡ ULTRA-FAST Binary Option Trading System')
+      .setDescription('⚡ ULTRA-FAST Binary Option Trading System with Timezone Support')
       .setVersion('3.2')
       .addBearerAuth()
       .addTag('auth', 'Authentication')
@@ -183,7 +196,7 @@ async function bootstrap() {
   }
 
   // ============================================
-  // ⚡ OPTIMIZED SERVER STARTUP
+  // SERVER STARTUP
   // ============================================
   const port = configService.get('port');
   
@@ -200,34 +213,28 @@ async function bootstrap() {
     }
     logger.log(`⚡ Health: http://localhost:${port}/${apiPrefix}/${apiVersion}/health`);
     logger.log('⚡ ================================================');
+    logger.log('⚡ TIMEZONE SYNC:');
+    logger.log(`⚡   • Backend: ${timezone} (WIB = UTC+7)`);
+    logger.log(`⚡   • Simulator: Asia/Jakarta (WIB = UTC+7)`);
+    logger.log(`⚡   • Current: ${TimezoneUtil.formatDateTime()}`);
+    logger.log('⚡ ================================================');
     logger.log('⚡ PERFORMANCE OPTIMIZATIONS:');
-    logger.log('⚡   • Order Creation: < 300ms target (IMPROVED)');
-    logger.log('⚡   • Price Fetch: < 100ms target (IMPROVED)');
-    logger.log('⚡   • Auth Login: < 400ms target (IMPROVED)');
-    logger.log('⚡   • Settlement: Every 3 seconds');
-    logger.log('⚡   • Multi-layer aggressive caching');
-    logger.log('⚡   • 15-connection pool (INCREASED)');
-    logger.log('⚡   • Keep-alive connections (60s)');
-    logger.log('⚡   • Optimized bcrypt (10 rounds)');
+    logger.log('⚡   • Order Creation: < 300ms target');
+    logger.log('⚡   • Price Fetch: < 100ms target');
+    logger.log('⚡   • Settlement: Every 2 seconds');
+    logger.log('⚡   • Multi-layer caching');
+    logger.log('⚡   • 15-connection pool');
     logger.log('⚡ ================================================');
     logger.log('⚡ AGGRESSIVE TIMEOUTS:');
-    logger.log('⚡   • Binary Orders: 2s (REDUCED)');
-    logger.log('⚡   • Price Requests: 1.5s (REDUCED)');
-    logger.log('⚡   • Health Check: 800ms (REDUCED)');
-    logger.log('⚡   • Auth: 5s (bcrypt intensive)');
-    logger.log('⚡   • Others: 3s (REDUCED)');
-    logger.log('⚡ ================================================');
-    logger.log('⚡ CACHE CONFIGURATION:');
-    logger.log('⚡   • Firebase: 3s TTL (aggressive)');
-    logger.log('⚡   • Assets: 20s TTL');
-    logger.log('⚡   • Balance: 2s TTL (very fresh)');
-    logger.log('⚡   • Orders: 5s TTL');
-    logger.log('⚡   • Users: 60s TTL');
+    logger.log('⚡   • Binary Orders: 2s');
+    logger.log('⚡   • Price Requests: 1.5s');
+    logger.log('⚡   • Health Check: 800ms');
+    logger.log('⚡   • Auth: 5s');
     logger.log('⚡ ================================================');
     logger.log('');
   });
 
-  // ⚡ GRACEFUL SHUTDOWN
+  // ✅ GRACEFUL SHUTDOWN
   process.on('SIGTERM', async () => {
     logger.log('⚠️ SIGTERM received, shutting down gracefully...');
     await app.close();
