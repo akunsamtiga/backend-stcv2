@@ -1,5 +1,5 @@
 // src/admin/admin.service.ts
-// ✅ COMPLETE VERSION - Full Real/Demo balance management for admin
+// ✅ FIXED: Initial demo balance 10 juta untuk createUser
 
 import { Injectable, NotFoundException, ConflictException, Logger, BadRequestException } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
@@ -26,7 +26,7 @@ export class AdminService {
   // ============================================
 
   /**
-   * ✅ CREATE USER - With both Real and Demo accounts
+   * ✅ CREATE USER - With 10 million demo balance
    */
   async createUser(createUserDto: CreateUserDto, createdBy: string) {
     const db = this.firebaseService.getFirestore();
@@ -62,7 +62,7 @@ export class AdminService {
     const balanceId2 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
 
     await Promise.all([
-      // Real account
+      // Real account - starts with 0
       db.collection(COLLECTIONS.BALANCE).doc(balanceId1).set({
         id: balanceId1,
         user_id: userId,
@@ -72,24 +72,28 @@ export class AdminService {
         description: 'Initial real balance',
         createdAt: timestamp,
       }),
-      // Demo account
+      // ✅ FIXED: Demo account - starts with 10 MILLION
       db.collection(COLLECTIONS.BALANCE).doc(balanceId2).set({
         id: balanceId2,
         user_id: userId,
         accountType: BALANCE_ACCOUNT_TYPE.DEMO,
         type: BALANCE_TYPES.DEPOSIT,
-        amount: 10000, // ✅ Give demo users starting balance
-        description: 'Initial demo balance',
+        amount: 10000000, // ✅ 10 juta (was 10000)
+        description: 'Initial demo balance - 10 million',
         createdAt: timestamp,
       }),
     ]);
 
-    this.logger.log(`User created with both accounts: ${createUserDto.email}`);
+    this.logger.log(`✅ User created by admin: ${createUserDto.email} (Real: Rp 0, Demo: Rp 10,000,000)`);
 
     const { password, ...userWithoutPassword } = userData;
     return {
       message: 'User created successfully with real and demo accounts',
       user: userWithoutPassword,
+      initialBalances: {
+        real: 0,
+        demo: 10000000,
+      },
     };
   }
 
@@ -193,40 +197,35 @@ export class AdminService {
   }
 
   // ============================================
-  // BALANCE MANAGEMENT - Real/Demo
+  // BALANCE MANAGEMENT
   // ============================================
 
   /**
-   * ✅ MANAGE USER BALANCE - Real or Demo
+   * ✅ MANAGE USER BALANCE
    */
   async manageUserBalance(
     userId: string, 
     manageBalanceDto: ManageBalanceDto,
     adminId: string
   ) {
-    // Validate user exists
     await this.getUserById(userId);
 
     const { accountType } = manageBalanceDto;
 
-    // ✅ Validate account type
     if (accountType !== BALANCE_ACCOUNT_TYPE.REAL && accountType !== BALANCE_ACCOUNT_TYPE.DEMO) {
       throw new BadRequestException('Invalid account type. Must be "real" or "demo"');
     }
 
-    // Get current balance for specific account
     const currentBalance = await this.balanceService.getCurrentBalance(userId, accountType);
 
-    // Validate withdrawal
     if (manageBalanceDto.type === 'withdrawal' && currentBalance < manageBalanceDto.amount) {
       throw new BadRequestException(
         `Insufficient ${accountType} balance. Current: ${currentBalance}, Requested: ${manageBalanceDto.amount}`
       );
     }
 
-    // Create balance entry
     const result = await this.balanceService.createBalanceEntry(userId, {
-      accountType, // ✅ Specify account type
+      accountType,
       type: manageBalanceDto.type === 'deposit' ? BALANCE_TYPES.DEPOSIT : BALANCE_TYPES.WITHDRAWAL,
       amount: manageBalanceDto.amount,
       description: `${manageBalanceDto.description} (by admin)`,
@@ -246,22 +245,16 @@ export class AdminService {
   }
 
   /**
-   * ✅ GET USER BALANCE DETAIL - Both Accounts
+   * ✅ GET USER BALANCE DETAIL
    */
   async getUserBalance(userId: string) {
-    // Check if user exists
     const user = await this.getUserById(userId);
-
-    // Get both balances
     const summary = await this.balanceService.getBothBalances(userId);
-
-    // Get recent transactions (all)
     const history = await this.balanceService.getBalanceHistory(userId, { 
       page: 1, 
       limit: 20 
     });
 
-    // Separate transactions by account type
     const realTransactions = history.transactions.filter(
       t => t.accountType === BALANCE_ACCOUNT_TYPE.REAL
     );
@@ -293,11 +286,10 @@ export class AdminService {
   }
 
   /**
-   * ✅ GET ALL USERS WITH BOTH BALANCES
+   * ✅ GET ALL USERS WITH BALANCE
    */
   async getAllUsersWithBalance() {
     const db = this.firebaseService.getFirestore();
-
     const usersSnapshot = await db.collection(COLLECTIONS.USERS).get();
     
     const usersWithBalance = await Promise.all(
@@ -323,7 +315,6 @@ export class AdminService {
       })
     );
 
-    // Calculate totals
     const totalRealBalance = usersWithBalance.reduce((sum, user) => sum + user.realBalance, 0);
     const totalDemoBalance = usersWithBalance.reduce((sum, user) => sum + user.demoBalance, 0);
     const activeUsers = usersWithBalance.filter(u => u.isActive).length;
@@ -341,7 +332,7 @@ export class AdminService {
   }
 
   // ============================================
-  // USER HISTORY - With Real/Demo Separation
+  // USER HISTORY
   // ============================================
 
   /**
@@ -349,34 +340,26 @@ export class AdminService {
    */
   async getUserHistory(userId: string) {
     const user = await this.getUserById(userId);
-
     const db = this.firebaseService.getFirestore();
 
-    // Get all balance transactions
     const balanceSnapshot = await db.collection(COLLECTIONS.BALANCE)
       .where('user_id', '==', userId)
       .orderBy('createdAt', 'desc')
       .get();
 
     const balanceHistory = balanceSnapshot.docs.map(doc => doc.data() as Balance);
-
-    // Separate by account type
     const realBalanceHistory = balanceHistory.filter(b => b.accountType === BALANCE_ACCOUNT_TYPE.REAL);
     const demoBalanceHistory = balanceHistory.filter(b => b.accountType === BALANCE_ACCOUNT_TYPE.DEMO);
 
-    // Get all orders
     const ordersSnapshot = await db.collection(COLLECTIONS.ORDERS)
       .where('user_id', '==', userId)
       .orderBy('createdAt', 'desc')
       .get();
 
     const ordersHistory = ordersSnapshot.docs.map(doc => doc.data() as BinaryOrder);
-
-    // Separate orders by account type
     const realOrders = ordersHistory.filter(o => o.accountType === BALANCE_ACCOUNT_TYPE.REAL);
     const demoOrders = ordersHistory.filter(o => o.accountType === BALANCE_ACCOUNT_TYPE.DEMO);
 
-    // Calculate statistics for real account
     const realStats = this.calculateAccountStats(realBalanceHistory, realOrders);
     const demoStats = this.calculateAccountStats(demoBalanceHistory, demoOrders);
 
@@ -408,27 +391,20 @@ export class AdminService {
    * ✅ GET USER TRADING STATISTICS
    */
   async getUserTradingStats(userId: string) {
-    // Check if user exists
     const user = await this.getUserById(userId);
-
     const db = this.firebaseService.getFirestore();
 
-    // Get all orders
     const ordersSnapshot = await db.collection(COLLECTIONS.ORDERS)
       .where('user_id', '==', userId)
       .get();
 
     const orders = ordersSnapshot.docs.map(doc => doc.data() as BinaryOrder);
-
-    // Separate by account type
     const realOrders = orders.filter(o => o.accountType === BALANCE_ACCOUNT_TYPE.REAL);
     const demoOrders = orders.filter(o => o.accountType === BALANCE_ACCOUNT_TYPE.DEMO);
 
-    // Calculate stats for real account
     const realStats = this.calculateTradingStats(realOrders);
     const demoStats = this.calculateTradingStats(demoOrders);
 
-    // Recent activity (last 7 days)
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
     
@@ -480,31 +456,25 @@ export class AdminService {
   async getSystemStatistics() {
     const db = this.firebaseService.getFirestore();
 
-    // Get all users
     const usersSnapshot = await db.collection(COLLECTIONS.USERS).get();
     const users = usersSnapshot.docs.map(doc => doc.data() as User);
 
-    // Get all orders
     const ordersSnapshot = await db.collection(COLLECTIONS.ORDERS).get();
     const orders = ordersSnapshot.docs.map(doc => doc.data() as BinaryOrder);
 
-    // Get all balance transactions
     const balanceSnapshot = await db.collection(COLLECTIONS.BALANCE).get();
     const transactions = balanceSnapshot.docs.map(doc => doc.data() as Balance);
 
-    // Separate by account type
     const realOrders = orders.filter(o => o.accountType === BALANCE_ACCOUNT_TYPE.REAL);
     const demoOrders = orders.filter(o => o.accountType === BALANCE_ACCOUNT_TYPE.DEMO);
 
     const realTransactions = transactions.filter(t => t.accountType === BALANCE_ACCOUNT_TYPE.REAL);
     const demoTransactions = transactions.filter(t => t.accountType === BALANCE_ACCOUNT_TYPE.DEMO);
 
-    // Calculate statistics
     const totalUsers = users.length;
     const activeUsers = users.filter(u => u.isActive).length;
     const adminUsers = users.filter(u => u.role !== 'user').length;
 
-    // Real account stats
     const realStats = {
       totalOrders: realOrders.length,
       activeOrders: realOrders.filter(o => o.status === ORDER_STATUS.ACTIVE).length,
@@ -520,7 +490,6 @@ export class AdminService {
         .reduce((sum, t) => sum + t.amount, 0),
     };
 
-    // Demo account stats
     const demoStats = {
       totalOrders: demoOrders.length,
       activeOrders: demoOrders.filter(o => o.status === ORDER_STATUS.ACTIVE).length,
@@ -536,7 +505,6 @@ export class AdminService {
         .reduce((sum, t) => sum + t.amount, 0),
     };
 
-    // Calculate win rates
     const realWinRate = (realStats.wonOrders + realStats.lostOrders) > 0 
       ? Math.round((realStats.wonOrders / (realStats.wonOrders + realStats.lostOrders)) * 100) 
       : 0;
@@ -586,9 +554,6 @@ export class AdminService {
   // HELPER METHODS
   // ============================================
 
-  /**
-   * ✅ HELPER: Calculate account statistics
-   */
   private calculateAccountStats(transactions: Balance[], orders: BinaryOrder[]) {
     const totalDeposits = transactions
       .filter(t => t.type === BALANCE_TYPES.DEPOSIT)
@@ -629,11 +594,7 @@ export class AdminService {
     };
   }
 
-  /**
-   * ✅ HELPER: Calculate trading statistics
-   */
   private calculateTradingStats(orders: BinaryOrder[]) {
-    // Overall stats
     const overall = {
       totalOrders: orders.length,
       wonOrders: orders.filter(o => o.status === ORDER_STATUS.WON).length,
@@ -642,7 +603,6 @@ export class AdminService {
       totalProfit: orders.reduce((sum, o) => sum + (o.profit || 0), 0),
     };
 
-    // Group by asset
     const byAsset = orders.reduce((acc, order) => {
       if (!acc[order.asset_name]) {
         acc[order.asset_name] = {
@@ -666,7 +626,6 @@ export class AdminService {
       return acc;
     }, {} as Record<string, any>);
 
-    // Group by direction
     const byDirection = orders.reduce((acc, order) => {
       if (!acc[order.direction]) {
         acc[order.direction] = {

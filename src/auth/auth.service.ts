@@ -1,5 +1,5 @@
 // src/auth/auth.service.ts
-// ⚡ OPTIMIZED VERSION - Faster login/register
+// ✅ FIXED: Initial demo balance 10 juta (10,000,000)
 
 import { Injectable, UnauthorizedException, ConflictException, Logger, OnModuleInit } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -15,28 +15,23 @@ import { User } from '../common/interfaces';
 export class AuthService implements OnModuleInit {
   private readonly logger = new Logger(AuthService.name);
   
-  // ⚡ USER CACHE for faster lookups
   private userCache: Map<string, { user: User; timestamp: number }> = new Map();
-  private readonly USER_CACHE_TTL = 60000; // 60 seconds
+  private readonly USER_CACHE_TTL = 60000;
   
-  // ⚡ REDUCED BCRYPT ROUNDS for better performance
-  private readonly BCRYPT_ROUNDS = 10; // ✅ REDUCED from 12 to 10
+  private readonly BCRYPT_ROUNDS = 10;
   
-  // ⚡ TOKEN CACHE (optional - for repeated logins)
   private tokenCache: Map<string, { token: string; timestamp: number }> = new Map();
-  private readonly TOKEN_CACHE_TTL = 300000; // 5 minutes
+  private readonly TOKEN_CACHE_TTL = 300000;
 
   constructor(
     private firebaseService: FirebaseService,
     private jwtService: JwtService,
     private configService: ConfigService,
   ) {
-    // Cleanup cache every minute
     setInterval(() => this.cleanupCache(), 60000);
   }
 
   async onModuleInit() {
-    // Wait for Firestore
     setTimeout(async () => {
       try {
         await this.firebaseService.waitForFirestore(10000);
@@ -70,7 +65,6 @@ export class AuthService implements OnModuleInit {
         .get();
 
       if (snapshot.empty) {
-        // ✅ Use optimized bcrypt rounds
         const hashedPassword = await bcrypt.hash(password, this.BCRYPT_ROUNDS);
         const userId = await this.firebaseService.generateId(COLLECTIONS.USERS);
         const timestamp = new Date().toISOString();
@@ -90,7 +84,7 @@ export class AuthService implements OnModuleInit {
         const balanceId2 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
 
         await Promise.all([
-          // Real account
+          // Real account - starts with 0
           db.collection(COLLECTIONS.BALANCE).doc(balanceId1).set({
             id: balanceId1,
             user_id: userId,
@@ -100,19 +94,19 @@ export class AuthService implements OnModuleInit {
             description: 'Initial real balance',
             createdAt: timestamp,
           }),
-          // Demo account
+          // ✅ FIXED: Demo account - starts with 10 MILLION (10,000,000)
           db.collection(COLLECTIONS.BALANCE).doc(balanceId2).set({
             id: balanceId2,
             user_id: userId,
             accountType: BALANCE_ACCOUNT_TYPE.DEMO,
             type: BALANCE_TYPES.DEPOSIT,
-            amount: 10000,
-            description: 'Initial demo balance',
+            amount: 10000000, // ✅ 10 juta (was 10000)
+            description: 'Initial demo balance - 10 million',
             createdAt: timestamp,
           }),
         ]);
 
-        this.logger.log(`✅ Super admin created with both accounts: ${email}`);
+        this.logger.log(`✅ Super admin created: ${email} (Real: Rp 0, Demo: Rp 10,000,000)`);
       } else {
         this.logger.log(`ℹ️ Super admin already exists: ${email}`);
       }
@@ -127,15 +121,13 @@ export class AuthService implements OnModuleInit {
   }
 
   /**
-   * ⚡ OPTIMIZED REGISTER - Target: <500ms
-   * ✅ UPDATED: Create both Real and Demo accounts
+   * ✅ REGISTER - With 10 million demo balance
    */
   async register(registerDto: RegisterDto) {
     const startTime = Date.now();
     const db = this.firebaseService.getFirestore();
     const { email, password } = registerDto;
 
-    // ✅ Check existing user
     const usersSnapshot = await db.collection(COLLECTIONS.USERS)
       .where('email', '==', email)
       .limit(1)
@@ -145,7 +137,6 @@ export class AuthService implements OnModuleInit {
       throw new ConflictException('Email already registered');
     }
 
-    // ⚡ Hash password with optimized rounds
     const hashedPassword = await bcrypt.hash(password, this.BCRYPT_ROUNDS);
     const userId = await this.firebaseService.generateId(COLLECTIONS.USERS);
     const timestamp = new Date().toISOString();
@@ -160,10 +151,9 @@ export class AuthService implements OnModuleInit {
       updatedAt: timestamp,
     };
 
-    // ⚡ Write user (wait for this)
     await db.collection(COLLECTIONS.USERS).doc(userId).set(userData);
 
-    // ✅ UPDATED: Create initial balance for BOTH accounts
+    // ✅ Create initial balance for BOTH accounts
     const balanceId1 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
     const balanceId2 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
 
@@ -178,28 +168,25 @@ export class AuthService implements OnModuleInit {
         description: 'Initial real balance',
         createdAt: timestamp,
       }),
-      // Demo account - starts with 10,000
+      // ✅ FIXED: Demo account - starts with 10 MILLION
       db.collection(COLLECTIONS.BALANCE).doc(balanceId2).set({
         id: balanceId2,
         user_id: userId,
         accountType: BALANCE_ACCOUNT_TYPE.DEMO,
         type: BALANCE_TYPES.DEPOSIT,
-        amount: 10000,
-        description: 'Initial demo balance',
+        amount: 10000000, // ✅ 10 juta (was 10000)
+        description: 'Initial demo balance - 10 million',
         createdAt: timestamp,
       }),
     ]);
 
-    this.logger.log(`✅ Initial balances created for user ${userId} (Real: 0, Demo: 10000)`);
+    this.logger.log(`✅ User registered: ${email} (Real: Rp 0, Demo: Rp 10,000,000)`);
 
-    // ⚡ Generate token
     const token = this.generateToken(userId, email, USER_ROLES.USER);
-
-    // Cache user
     this.cacheUser(userId, userData as User);
 
     const duration = Date.now() - startTime;
-    this.logger.log(`✅ User registered in ${duration}ms: ${email}`);
+    this.logger.log(`✅ Registration completed in ${duration}ms`);
 
     return {
       message: 'Registration successful with real and demo accounts',
@@ -208,19 +195,22 @@ export class AuthService implements OnModuleInit {
         email,
         role: USER_ROLES.USER,
       },
+      initialBalances: {
+        real: 0,
+        demo: 10000000,
+      },
       token,
     };
   }
 
   /**
-   * ⚡ OPTIMIZED LOGIN - Target: <400ms
+   * LOGIN
    */
   async login(loginDto: LoginDto) {
     const startTime = Date.now();
     const db = this.firebaseService.getFirestore();
     const { email, password } = loginDto;
 
-    // ✅ STEP 1: Get user (<100ms)
     const usersSnapshot = await db.collection(COLLECTIONS.USERS)
       .where('email', '==', email)
       .limit(1)
@@ -233,21 +223,16 @@ export class AuthService implements OnModuleInit {
     const userDoc = usersSnapshot.docs[0];
     const user = userDoc.data() as User;
 
-    // ✅ STEP 2: Check active status (<1ms)
     if (!user.isActive) {
       throw new UnauthorizedException('Account is deactivated');
     }
 
-    // ✅ STEP 3: Verify password (<100ms with optimized rounds)
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
       throw new UnauthorizedException('Invalid email or password');
     }
 
-    // ✅ STEP 4: Generate token (<50ms)
     const token = this.generateToken(user.id, user.email, user.role);
-
-    // Cache user
     this.cacheUser(user.id, user);
 
     const duration = Date.now() - startTime;
@@ -265,7 +250,7 @@ export class AuthService implements OnModuleInit {
   }
 
   /**
-   * ⚡ GENERATE TOKEN (with optional caching)
+   * GENERATE TOKEN
    */
   private generateToken(userId: string, email: string, role: string): string {
     const payload = { sub: userId, email, role };
@@ -279,7 +264,7 @@ export class AuthService implements OnModuleInit {
   }
 
   /**
-   * ⚡ USER CACHING
+   * USER CACHING
    */
   private cacheUser(userId: string, user: User): void {
     this.userCache.set(userId, {
@@ -302,19 +287,17 @@ export class AuthService implements OnModuleInit {
   }
 
   /**
-   * ⚡ CACHE CLEANUP
+   * CACHE CLEANUP
    */
   private cleanupCache(): void {
     const now = Date.now();
     
-    // Clean user cache
     for (const [userId, cached] of this.userCache.entries()) {
       if (now - cached.timestamp > this.USER_CACHE_TTL) {
         this.userCache.delete(userId);
       }
     }
 
-    // Clean token cache
     for (const [key, cached] of this.tokenCache.entries()) {
       if (now - cached.timestamp > this.TOKEN_CACHE_TTL) {
         this.tokenCache.delete(key);
@@ -323,16 +306,14 @@ export class AuthService implements OnModuleInit {
   }
 
   /**
-   * GET USER BY ID (with caching)
+   * GET USER BY ID
    */
   async getUserById(userId: string): Promise<User | null> {
-    // Try cache first
     const cached = this.getCachedUser(userId);
     if (cached) {
       return cached;
     }
 
-    // Fetch from database
     const db = this.firebaseService.getFirestore();
     const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
     

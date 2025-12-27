@@ -1,5 +1,5 @@
 // src/binary-orders/binary-orders.service.ts
-// ✅ UPDATED: Full Real/Demo trading support
+// ✅ FIXED: ULTRA-STRICT balance validation before order creation
 
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
@@ -17,7 +17,6 @@ import { BinaryOrder, Asset } from '../common/interfaces';
 export class BinaryOrdersService {
   private readonly logger = new Logger(BinaryOrdersService.name);
   
-  // ✅ SEPARATE CACHES for Real and Demo orders
   private orderCache: Map<string, BinaryOrder> = new Map();
   private realActiveOrdersCache: BinaryOrder[] = [];
   private demoActiveOrdersCache: BinaryOrder[] = [];
@@ -49,46 +48,73 @@ export class BinaryOrdersService {
   }
 
   /**
-   * ✅ CREATE ORDER - With Account Type Selection
+   * ✅ CREATE ORDER - ULTRA-STRICT VALIDATION
    */
   async createOrder(userId: string, createOrderDto: CreateBinaryOrderDto) {
     const startTime = Date.now();
-    const { accountType } = createOrderDto;
+    const { accountType, amount } = createOrderDto;
     
     try {
-      // ✅ Validate account type
+      // ✅ Step 1: Validate account type
       if (accountType !== BALANCE_ACCOUNT_TYPE.REAL && accountType !== BALANCE_ACCOUNT_TYPE.DEMO) {
         throw new BadRequestException('Invalid account type. Must be "real" or "demo"');
       }
 
+      // ✅ Step 2: Validate duration
       if (!this.isValidDuration(createOrderDto.duration)) {
         throw new BadRequestException(
           `Invalid duration. Allowed: ${ALL_DURATIONS.join(', ')} minutes`
         );
       }
 
-      // ✅ Get balance from specific account
-      const [currentBalance, asset, priceData] = await Promise.all([
-        this.balanceService.getCurrentBalance(userId, accountType),
+      // ✅ Step 3: Validate amount (minimum 1000)
+      if (amount < 1000) {
+        throw new BadRequestException('Minimum order amount is Rp 1,000');
+      }
+
+      // ✅ Step 4: Get asset & price (parallel)
+      const [asset, priceData] = await Promise.all([
         this.getCachedAssetFast(createOrderDto.asset_id),
         this.getFastPriceWithFallback(createOrderDto.asset_id),
       ]);
 
-      // ✅ Check balance for specific account
-      if (currentBalance < createOrderDto.amount) {
-        throw new BadRequestException(
-          `Insufficient ${accountType} balance. Available: ${currentBalance}, Required: ${createOrderDto.amount}`
-        );
-      }
-
+      // ✅ Step 5: Validate asset
       if (!asset.isActive) {
         throw new BadRequestException('Asset not active');
       }
 
+      // ✅ Step 6: Validate price
       if (!priceData || !priceData.price) {
-        throw new BadRequestException('Price unavailable');
+        throw new BadRequestException('Price unavailable, please try again');
       }
 
+      // ✅ Step 7: CRITICAL - Get FRESH balance with STRICT validation
+      this.logger.log(`🔍 Checking ${accountType} balance for user ${userId}...`);
+      
+      const currentBalance = await this.balanceService.getCurrentBalanceStrict(
+        userId, 
+        accountType
+      );
+
+      this.logger.log(
+        `💰 User ${userId} - ${accountType} balance: ${currentBalance}, Required: ${amount}`
+      );
+
+      // ✅ Step 8: STRICT balance validation
+      if (currentBalance < amount) {
+        throw new BadRequestException(
+          `Insufficient ${accountType} balance. Available: Rp ${currentBalance.toLocaleString()}, Required: Rp ${amount.toLocaleString()}`
+        );
+      }
+
+      // ✅ Step 9: Extra safety check
+      if (currentBalance === 0) {
+        throw new BadRequestException(
+          `Cannot create order with zero balance. Please deposit first.`
+        );
+      }
+
+      // ✅ Step 10: Generate order
       const orderId = await this.firebaseService.generateId(COLLECTIONS.ORDERS);
       const timestamp = new Date().toISOString();
       const expiryTime = CalculationUtil.calculateExpiryTime(
@@ -99,7 +125,7 @@ export class BinaryOrdersService {
       const orderData: BinaryOrder = {
         id: orderId,
         user_id: userId,
-        accountType, // ✅ Store account type
+        accountType,
         asset_id: asset.id,
         asset_name: asset.name,
         direction: createOrderDto.direction as 'CALL' | 'PUT',
@@ -117,23 +143,39 @@ export class BinaryOrdersService {
 
       const db = this.firebaseService.getFirestore();
       
-      // ✅ Write order
+      // ✅ Step 11: Write order FIRST (so we can rollback if debit fails)
       await db.collection(COLLECTIONS.ORDERS).doc(orderId).set(orderData);
 
-      // ✅ Deduct from specific account (background)
-      this.balanceService.createBalanceEntry(userId, {
-        accountType, // ✅ Use same account type
-        type: BALANCE_TYPES.ORDER_DEBIT,
-        amount: createOrderDto.amount,
-        description: `[${accountType.toUpperCase()}] Order #${orderId.slice(-8)} - ${asset.symbol} ${createOrderDto.direction}`,
-      }).catch(err => {
-        this.logger.error(`Balance debit failed: ${err.message}`);
-      });
+      this.logger.log(`✅ Order ${orderId} created, now debiting balance...`);
 
-      // ✅ Update cache
+      // ✅ Step 12: Debit balance (SYNCHRONOUS & CRITICAL)
+      try {
+        await this.balanceService.createBalanceEntry(userId, {
+          accountType,
+          type: BALANCE_TYPES.ORDER_DEBIT,
+          amount: createOrderDto.amount,
+          description: `[${accountType.toUpperCase()}] Order #${orderId.slice(-8)} - ${asset.symbol} ${createOrderDto.direction}`,
+        }, true); // ✅ CRITICAL = true (wait for completion)
+
+        this.logger.log(`✅ Balance debited successfully`);
+
+      } catch (debitError) {
+        // ✅ ROLLBACK: Delete order if debit fails
+        this.logger.error(`❌ Balance debit failed, rolling back order: ${debitError.message}`);
+        
+        await db.collection(COLLECTIONS.ORDERS).doc(orderId).delete();
+        
+        throw new BadRequestException(
+          `Failed to debit balance: ${debitError.message}`
+        );
+      }
+
+      // ✅ Step 13: Clear balance cache (force refresh next time)
+      this.balanceService.clearUserCache(userId);
+
+      // ✅ Step 14: Update order cache
       this.orderCache.set(orderId, orderData);
       
-      // ✅ Add to correct cache based on account type
       if (accountType === BALANCE_ACCOUNT_TYPE.REAL) {
         this.realActiveOrdersCache.push(orderData);
         this.lastRealCacheUpdate = 0;
@@ -141,6 +183,13 @@ export class BinaryOrdersService {
         this.demoActiveOrdersCache.push(orderData);
         this.lastDemoCacheUpdate = 0;
       }
+
+      // ✅ Step 15: Verify balance after order
+      const newBalance = await this.balanceService.getCurrentBalance(userId, accountType, true);
+      
+      this.logger.log(
+        `✅ Order complete - New ${accountType} balance: ${newBalance} (deducted ${amount})`
+      );
 
       const duration = Date.now() - startTime;
       this.orderCreateCount++;
@@ -154,18 +203,19 @@ export class BinaryOrdersService {
         message: `${accountType} order created successfully`,
         order: orderData,
         accountType,
+        balanceAfter: newBalance,
         executionTime: duration,
       };
 
     } catch (error) {
       const duration = Date.now() - startTime;
-      this.logger.error(`Order creation failed after ${duration}ms: ${error.message}`);
+      this.logger.error(`❌ Order creation failed after ${duration}ms: ${error.message}`);
       throw error;
     }
   }
 
   /**
-   * ✅ SETTLEMENT CRON - Process both Real and Demo
+   * ✅ SETTLEMENT CRON
    */
   @Cron('*/2 * * * * *')
   async processExpiredOrders() {
@@ -177,13 +227,11 @@ export class BinaryOrdersService {
     try {
       const now = new Date();
       
-      // ✅ Get active orders from both accounts
       const [realOrders, demoOrders] = await Promise.all([
         this.getActiveOrdersFromDB(BALANCE_ACCOUNT_TYPE.REAL),
         this.getActiveOrdersFromDB(BALANCE_ACCOUNT_TYPE.DEMO),
       ]);
 
-      // ✅ Filter expired orders
       const expiredRealOrders = realOrders.filter(order => {
         const exitTime = new Date(order.exit_time!);
         return exitTime.getTime() - now.getTime() <= 1000;
@@ -204,15 +252,13 @@ export class BinaryOrdersService {
         `⚡ Processing ${totalExpired} expired orders (Real: ${expiredRealOrders.length}, Demo: ${expiredDemoOrders.length})`
       );
 
-      // ✅ Settle both in parallel
       const PARALLEL_LIMIT = 20;
       
       await Promise.all([
-  this.settleBatch(expiredRealOrders, PARALLEL_LIMIT),
-  this.settleBatch(expiredDemoOrders, PARALLEL_LIMIT),
-]);
+        this.settleBatch(expiredRealOrders, PARALLEL_LIMIT),
+        this.settleBatch(expiredDemoOrders, PARALLEL_LIMIT),
+      ]);
 
-      // ✅ Clear caches
       this.clearAllCache();
 
       const duration = Date.now() - startTime;
@@ -226,17 +272,16 @@ export class BinaryOrdersService {
   }
 
   /**
-   * ✅ BATCH SETTLEMENT HELPER
+   * ✅ BATCH SETTLEMENT
    */
   private async settleBatch(orders: BinaryOrder[], batchSize: number): Promise<void> {
-  for (let i = 0; i < orders.length; i += batchSize) {
-    const batch = orders.slice(i, i + batchSize);
-    await Promise.allSettled(
-      batch.map(order => this.settleOrderInstant(order))
-    );
+    for (let i = 0; i < orders.length; i += batchSize) {
+      const batch = orders.slice(i, i + batchSize);
+      await Promise.allSettled(
+        batch.map(order => this.settleOrderInstant(order))
+      );
+    }
   }
-}
-
 
   /**
    * ✅ SETTLE SINGLE ORDER
@@ -275,7 +320,6 @@ export class BinaryOrdersService {
 
       const db = this.firebaseService.getFirestore();
       
-      // ✅ Update order
       await db.collection(COLLECTIONS.ORDERS)
         .doc(order.id)
         .update({
@@ -284,19 +328,18 @@ export class BinaryOrdersService {
           profit,
         });
 
-      // ✅ Credit balance to SAME account type if won
+      // ✅ Credit balance if won
       if (result === 'WON') {
         const totalReturn = order.amount + profit;
         
         await this.balanceService.createBalanceEntry(order.user_id, {
-          accountType: order.accountType, // ✅ Use same account type
+          accountType: order.accountType,
           type: BALANCE_TYPES.ORDER_PROFIT,
           amount: totalReturn,
           description: `[${order.accountType.toUpperCase()}] Won #${order.id.slice(-8)} - ${asset.symbol} +${profit.toFixed(0)}`,
         }, true);
       }
 
-      // ✅ Invalidate caches
       this.orderCache.delete(order.id);
       if (order.accountType === BALANCE_ACCOUNT_TYPE.REAL) {
         this.lastRealCacheUpdate = 0;
@@ -318,7 +361,7 @@ export class BinaryOrdersService {
   }
 
   /**
-   * ✅ GET ACTIVE ORDERS - Filter by Account Type
+   * ✅ GET ACTIVE ORDERS
    */
   private async getActiveOrdersFromDB(accountType?: 'real' | 'demo'): Promise<BinaryOrder[]> {
     const db = this.firebaseService.getFirestore();
@@ -334,7 +377,7 @@ export class BinaryOrdersService {
   }
 
   /**
-   * ✅ GET ORDERS - With Account Type Filter
+   * ✅ GET ORDERS
    */
   async getOrders(
     userId: string, 
@@ -458,9 +501,6 @@ export class BinaryOrdersService {
     this.logger.debug('⚡ All caches cleared');
   }
 
-  /**
-   * PERFORMANCE STATS
-   */
   getPerformanceStats() {
     return {
       ordersCreated: this.orderCreateCount,
