@@ -1,5 +1,5 @@
 // src/binary-orders/binary-orders.service.ts
-// ✅ UPDATED: Using TimezoneUtil for consistent timezone with simulator
+// ✅ UPDATED: getOrders method accepts accountType from DTO
 
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
@@ -42,7 +42,6 @@ export class BinaryOrdersService {
   ) {
     setInterval(() => this.cleanupStaleCache(), 10000);
     
-    // ✅ Log timezone info on startup
     this.logger.log(`🌍 Timezone: Asia/Jakarta (WIB = UTC+7)`);
     this.logger.log(`⏰ Current time: ${TimezoneUtil.formatDateTime()}`);
   }
@@ -52,47 +51,40 @@ export class BinaryOrdersService {
   }
 
   /**
-   * ✅ CREATE ORDER - Using TimezoneUtil
+   * ✅ CREATE ORDER
    */
   async createOrder(userId: string, createOrderDto: CreateBinaryOrderDto) {
     const startTime = Date.now();
     const { accountType, amount } = createOrderDto;
     
     try {
-      // Validate account type
       if (accountType !== BALANCE_ACCOUNT_TYPE.REAL && accountType !== BALANCE_ACCOUNT_TYPE.DEMO) {
         throw new BadRequestException('Invalid account type. Must be "real" or "demo"');
       }
 
-      // Validate duration
       if (!this.isValidDuration(createOrderDto.duration)) {
         throw new BadRequestException(
           `Invalid duration. Allowed: ${ALL_DURATIONS.join(', ')} minutes`
         );
       }
 
-      // Validate amount
       if (amount < 1000) {
         throw new BadRequestException('Minimum order amount is Rp 1,000');
       }
 
-      // Get asset & price
       const [asset, priceData] = await Promise.all([
         this.getCachedAssetFast(createOrderDto.asset_id),
         this.getFastPriceWithFallback(createOrderDto.asset_id),
       ]);
 
-      // Validate asset
       if (!asset.isActive) {
         throw new BadRequestException('Asset not active');
       }
 
-      // Validate price
       if (!priceData || !priceData.price) {
         throw new BadRequestException('Price unavailable, please try again');
       }
 
-      // ✅ STRICT balance validation
       this.logger.log(`🔍 Checking ${accountType} balance for user ${userId}...`);
       
       const currentBalance = await this.balanceService.getCurrentBalanceStrict(
@@ -116,16 +108,13 @@ export class BinaryOrdersService {
         );
       }
 
-      // ✅ Generate order with TimezoneUtil
       const orderId = await this.firebaseService.generateId(COLLECTIONS.ORDERS);
       
-      // ✅ Use TimezoneUtil for consistent timestamps
       const entryTimestamp = TimezoneUtil.getCurrentTimestamp();
       const entryDate = TimezoneUtil.fromTimestamp(entryTimestamp);
       const expiryDate = TimezoneUtil.addMinutes(entryDate, createOrderDto.duration);
       const expiryTimestamp = TimezoneUtil.toTimestamp(expiryDate);
       
-      // ✅ Get formatted datetime info
       const entryDateTimeInfo = TimezoneUtil.getDateTimeInfo(entryDate);
       const expiryDateTimeInfo = TimezoneUtil.getDateTimeInfo(expiryDate);
 
@@ -139,9 +128,9 @@ export class BinaryOrdersService {
         amount: createOrderDto.amount,
         duration: createOrderDto.duration,
         entry_price: priceData.price,
-        entry_time: entryDateTimeInfo.datetime_iso, // ISO format
+        entry_time: entryDateTimeInfo.datetime_iso,
         exit_price: null,
-        exit_time: expiryDateTimeInfo.datetime_iso, // ISO format
+        exit_time: expiryDateTimeInfo.datetime_iso,
         status: ORDER_STATUS.ACTIVE,
         profit: null,
         profitRate: asset.profitRate,
@@ -150,15 +139,13 @@ export class BinaryOrdersService {
 
       const db = this.firebaseService.getFirestore();
       
-      // Write order
       await db.collection(COLLECTIONS.ORDERS).doc(orderId).set(orderData);
 
       this.logger.log(`✅ Order ${orderId} created, now debiting balance...`);
       this.logger.log(`📅 Entry: ${entryDateTimeInfo.datetime} WIB`);
       this.logger.log(`📅 Expiry: ${expiryDateTimeInfo.datetime} WIB`);
-      this.logger.log(`⏱️  Duration: ${createOrderDto.duration} minutes`);
+      this.logger.log(`⏱️ Duration: ${createOrderDto.duration} minutes`);
 
-      // Debit balance
       try {
         await this.balanceService.createBalanceEntry(userId, {
           accountType,
@@ -170,7 +157,6 @@ export class BinaryOrdersService {
         this.logger.log(`✅ Balance debited successfully`);
 
       } catch (debitError) {
-        // Rollback: Delete order if debit fails
         this.logger.error(`❌ Balance debit failed, rolling back order: ${debitError.message}`);
         
         await db.collection(COLLECTIONS.ORDERS).doc(orderId).delete();
@@ -180,10 +166,8 @@ export class BinaryOrdersService {
         );
       }
 
-      // Clear cache
       this.balanceService.clearUserCache(userId);
 
-      // Update cache
       this.orderCache.set(orderId, orderData);
       
       if (accountType === BALANCE_ACCOUNT_TYPE.REAL) {
@@ -194,7 +178,6 @@ export class BinaryOrdersService {
         this.lastDemoCacheUpdate = 0;
       }
 
-      // Verify balance
       const newBalance = await this.balanceService.getCurrentBalance(userId, accountType, true);
       
       this.logger.log(
@@ -230,7 +213,7 @@ export class BinaryOrdersService {
   }
 
   /**
-   * ✅ SETTLEMENT CRON - Using TimezoneUtil
+   * ✅ SETTLEMENT CRON
    */
   @Cron('*/2 * * * * *')
   async processExpiredOrders() {
@@ -240,7 +223,6 @@ export class BinaryOrdersService {
     const startTime = Date.now();
 
     try {
-      // ✅ Get current timestamp using TimezoneUtil
       const currentTimestamp = TimezoneUtil.getCurrentTimestamp();
       const currentDateTime = TimezoneUtil.formatDateTime();
       
@@ -301,7 +283,7 @@ export class BinaryOrdersService {
   }
 
   /**
-   * ✅ SETTLE SINGLE ORDER - Using TimezoneUtil
+   * ✅ SETTLE SINGLE ORDER
    */
   private async settleOrderInstant(order: BinaryOrder): Promise<void> {
     const startTime = Date.now();
@@ -337,7 +319,6 @@ export class BinaryOrdersService {
 
       const db = this.firebaseService.getFirestore();
       
-      // ✅ Use TimezoneUtil for settlement timestamp
       const settlementDateTime = TimezoneUtil.formatDateTime();
       
       await db.collection(COLLECTIONS.ORDERS)
@@ -346,10 +327,9 @@ export class BinaryOrdersService {
           exit_price: priceData.price,
           status: result,
           profit,
-          settled_at: TimezoneUtil.toISOString(), // Add settlement timestamp
+          settled_at: TimezoneUtil.toISOString(),
         });
 
-      // Credit balance if won
       if (result === 'WON') {
         const totalReturn = order.amount + profit;
         
@@ -382,7 +362,7 @@ export class BinaryOrdersService {
   }
 
   /**
-   * GET ACTIVE ORDERS
+   * ✅ GET ACTIVE ORDERS FROM DB
    */
   private async getActiveOrdersFromDB(accountType?: 'real' | 'demo'): Promise<BinaryOrder[]> {
     const db = this.firebaseService.getFirestore();
@@ -398,25 +378,26 @@ export class BinaryOrdersService {
   }
 
   /**
-   * GET ORDERS
+   * ✅ GET ORDERS - UPDATED to accept QueryBinaryOrderDto directly
    */
   async getOrders(
     userId: string, 
-    queryDto: QueryBinaryOrderDto,
-    accountType?: 'real' | 'demo'
+    queryDto: QueryBinaryOrderDto
   ) {
-    const { status, page = 1, limit = 20 } = queryDto;
+    const { status, page = 1, limit = 20, accountType } = queryDto;
 
     const db = this.firebaseService.getFirestore();
     let query = db.collection(COLLECTIONS.ORDERS)
       .where('user_id', '==', userId);
 
-    if (accountType) {
-      query = query.where('accountType', '==', accountType);
+    // ✅ Apply accountType filter if provided
+    if (accountType && (accountType === 'real' || accountType === 'demo')) {
+      query = query.where('accountType', '==', accountType) as any;
     }
 
+    // ✅ Apply status filter if provided
     if (status) {
-      query = query.where('status', '==', status);
+      query = query.where('status', '==', status) as any;
     }
 
     const snapshot = await query
@@ -463,7 +444,6 @@ export class BinaryOrdersService {
       throw new BadRequestException('Unauthorized');
     }
 
-    // ✅ Add timing info
     const expiryTimestamp = TimezoneUtil.toTimestamp(new Date(order.exit_time!));
     const expiryInfo = CalculationUtil.formatExpiryInfo(expiryTimestamp);
 
@@ -476,7 +456,7 @@ export class BinaryOrdersService {
   }
 
   /**
-   * HELPER METHODS
+   * HELPER: Get cached asset
    */
   private async getCachedAssetFast(assetId: string): Promise<Asset> {
     const cached = this.assetCache.get(assetId);
@@ -492,6 +472,9 @@ export class BinaryOrdersService {
     return asset;
   }
 
+  /**
+   * HELPER: Get fast price with fallback
+   */
   private async getFastPriceWithFallback(assetId: string) {
     try {
       const asset = await this.getCachedAssetFast(assetId);
@@ -508,6 +491,9 @@ export class BinaryOrdersService {
     }
   }
 
+  /**
+   * CLEANUP STALE CACHE
+   */
   private cleanupStaleCache(): void {
     const now = Date.now();
     
@@ -524,6 +510,9 @@ export class BinaryOrdersService {
     }
   }
 
+  /**
+   * CLEAR ALL CACHE
+   */
   clearAllCache(): void {
     this.orderCache.clear();
     this.realActiveOrdersCache = [];
@@ -533,6 +522,9 @@ export class BinaryOrdersService {
     this.logger.debug('⚡ All caches cleared');
   }
 
+  /**
+   * PERFORMANCE STATS
+   */
   getPerformanceStats() {
     return {
       ordersCreated: this.orderCreateCount,
