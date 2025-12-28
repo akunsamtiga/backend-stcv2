@@ -1,27 +1,43 @@
-import { Injectable, NotFoundException, ConflictException, Logger, RequestTimeoutException } from '@nestjs/common';
+// src/assets/assets.service.ts
+// ✅ UPDATED: Full asset control dengan defaults
+
+import { Injectable, NotFoundException, ConflictException, Logger, RequestTimeoutException, BadRequestException } from '@nestjs/common';
 import { FirebaseService } from '../firebase/firebase.service';
 import { PriceFetcherService } from './services/price-fetcher.service';
 import { CreateAssetDto } from './dto/create-asset.dto';
 import { UpdateAssetDto } from './dto/update-asset.dto';
-import { COLLECTIONS } from '../common/constants';
+import { COLLECTIONS, ALL_DURATIONS } from '../common/constants';
 import { Asset } from '../common/interfaces';
 
 @Injectable()
 export class AssetsService {
   private readonly logger = new Logger(AssetsService.name);
   
-  // ⚡ Asset cache for ultra-fast access
   private assetCache: Map<string, { asset: Asset; timestamp: number }> = new Map();
   private allAssetsCache: { assets: Asset[]; timestamp: number } | null = null;
   
-  private readonly ASSET_CACHE_TTL = 60000; // 60 seconds (assets don't change often)
-  private readonly ALL_ASSETS_CACHE_TTL = 30000; // 30 seconds
+  private readonly ASSET_CACHE_TTL = 60000;
+  private readonly ALL_ASSETS_CACHE_TTL = 30000;
+
+  // ✅ DEFAULT SETTINGS
+  private readonly DEFAULT_SIMULATOR_SETTINGS = {
+    initialPrice: 40.022,
+    dailyVolatilityMin: 0.001,
+    dailyVolatilityMax: 0.005,
+    secondVolatilityMin: 0.00001,
+    secondVolatilityMax: 0.00008,
+  };
+
+  private readonly DEFAULT_TRADING_SETTINGS = {
+    minOrderAmount: 1000,
+    maxOrderAmount: 1000000,
+    allowedDurations: [...ALL_DURATIONS] as number[],
+  };
 
   constructor(
     private firebaseService: FirebaseService,
     private priceFetcherService: PriceFetcherService,
   ) {
-    // ⚡ Warmup cache on startup - WAIT FOR FIRESTORE
     setTimeout(async () => {
       try {
         await this.firebaseService.waitForFirestore(10000);
@@ -29,33 +45,90 @@ export class AssetsService {
       } catch (error) {
         this.logger.error(`Cache warmup delayed: ${error.message}`);
       }
-    }, 3000); // Wait 3 seconds for Firebase to fully initialize
+    }, 3000);
     
-    // ⚡ Periodic cache refresh
-    setInterval(() => this.refreshCache(), 60000); // Every minute
+    setInterval(() => this.refreshCache(), 60000);
   }
 
   /**
-   * CREATE ASSET
+   * ✅ CREATE ASSET - With validation and defaults
    */
   async createAsset(createAssetDto: CreateAssetDto, createdBy: string) {
     const db = this.firebaseService.getFirestore();
 
+    // Validate symbol uniqueness
     const existingSnapshot = await db.collection(COLLECTIONS.ASSETS)
       .where('symbol', '==', createAssetDto.symbol)
       .limit(1)
       .get();
 
     if (!existingSnapshot.empty) {
-      throw new ConflictException(`Asset ${createAssetDto.symbol} already exists`);
+      throw new ConflictException(`Asset with symbol ${createAssetDto.symbol} already exists`);
+    }
+
+    // Validate dataSource requirements
+    if (createAssetDto.dataSource === 'realtime_db' && !createAssetDto.realtimeDbPath) {
+      throw new BadRequestException('realtimeDbPath is required for realtime_db data source');
+    }
+
+    if (createAssetDto.dataSource === 'api' && !createAssetDto.apiEndpoint) {
+      throw new BadRequestException('apiEndpoint is required for api data source');
+    }
+
+    // ✅ Apply defaults for simulator settings
+    const simulatorSettings = createAssetDto.simulatorSettings 
+      ? {
+          ...this.DEFAULT_SIMULATOR_SETTINGS,
+          ...createAssetDto.simulatorSettings,
+          // Auto-calculate min/max if not provided
+          minPrice: createAssetDto.simulatorSettings.minPrice || 
+                    (createAssetDto.simulatorSettings.initialPrice * 0.5),
+          maxPrice: createAssetDto.simulatorSettings.maxPrice || 
+                    (createAssetDto.simulatorSettings.initialPrice * 2.0),
+        }
+      : this.DEFAULT_SIMULATOR_SETTINGS;
+
+    // Validate volatility ranges
+    if (simulatorSettings.dailyVolatilityMin > simulatorSettings.dailyVolatilityMax) {
+      throw new BadRequestException('dailyVolatilityMin must be <= dailyVolatilityMax');
+    }
+
+    if (simulatorSettings.secondVolatilityMin > simulatorSettings.secondVolatilityMax) {
+      throw new BadRequestException('secondVolatilityMin must be <= secondVolatilityMax');
+    }
+
+    // ✅ Apply defaults for trading settings
+    const tradingSettings = createAssetDto.tradingSettings 
+      ? {
+          ...this.DEFAULT_TRADING_SETTINGS,
+          ...createAssetDto.tradingSettings,
+        }
+      : this.DEFAULT_TRADING_SETTINGS;
+
+    // Validate trading settings
+    if (tradingSettings.minOrderAmount > tradingSettings.maxOrderAmount) {
+      throw new BadRequestException('minOrderAmount must be <= maxOrderAmount');
+    }
+
+    if (!tradingSettings.allowedDurations || tradingSettings.allowedDurations.length === 0) {
+      throw new BadRequestException('allowedDurations must contain at least one duration');
     }
 
     const assetId = await this.firebaseService.generateId(COLLECTIONS.ASSETS);
     const timestamp = new Date().toISOString();
 
-    const assetData = {
+    const assetData: Asset = {
       id: assetId,
-      ...createAssetDto,
+      name: createAssetDto.name,
+      symbol: createAssetDto.symbol,
+      profitRate: createAssetDto.profitRate,
+      isActive: createAssetDto.isActive,
+      dataSource: createAssetDto.dataSource as any,
+      realtimeDbPath: createAssetDto.realtimeDbPath,
+      apiEndpoint: createAssetDto.apiEndpoint,
+      description: createAssetDto.description,
+      simulatorSettings,
+      tradingSettings,
       createdAt: timestamp,
       updatedAt: timestamp,
       createdBy,
@@ -63,19 +136,22 @@ export class AssetsService {
 
     await db.collection(COLLECTIONS.ASSETS).doc(assetId).set(assetData);
 
-    // Invalidate cache
     this.invalidateCache();
 
-    this.logger.log(`Asset created: ${createAssetDto.symbol}`);
+    this.logger.log(`✅ Asset created: ${createAssetDto.symbol}`);
+    this.logger.log(`   Initial Price: ${simulatorSettings.initialPrice}`);
+    this.logger.log(`   Volatility: ${simulatorSettings.secondVolatilityMin} - ${simulatorSettings.secondVolatilityMax}`);
+    this.logger.log(`   Min Order: ${tradingSettings.minOrderAmount}`);
+    this.logger.log(`   Durations: ${tradingSettings.allowedDurations.join(', ')}`);
 
     return {
-      message: 'Asset created',
+      message: 'Asset created successfully',
       asset: assetData,
     };
   }
 
   /**
-   * UPDATE ASSET
+   * ✅ UPDATE ASSET - With validation
    */
   async updateAsset(assetId: string, updateAssetDto: UpdateAssetDto) {
     const db = this.firebaseService.getFirestore();
@@ -85,20 +161,99 @@ export class AssetsService {
       throw new NotFoundException('Asset not found');
     }
 
-    await this.firebaseService.updateWithTimestamp(COLLECTIONS.ASSETS, assetId, updateAssetDto);
+    const currentAsset = assetDoc.data() as Asset;
 
-    // Invalidate cache
+    // Validate symbol uniqueness if updating symbol
+    if (updateAssetDto.symbol && updateAssetDto.symbol !== currentAsset.symbol) {
+      const existingSnapshot = await db.collection(COLLECTIONS.ASSETS)
+        .where('symbol', '==', updateAssetDto.symbol)
+        .limit(1)
+        .get();
+
+      if (!existingSnapshot.empty) {
+        throw new ConflictException(`Asset with symbol ${updateAssetDto.symbol} already exists`);
+      }
+    }
+
+    // Validate dataSource requirements
+    if (updateAssetDto.dataSource === 'realtime_db') {
+      const realtimeDbPath = updateAssetDto.realtimeDbPath || currentAsset.realtimeDbPath;
+      if (!realtimeDbPath) {
+        throw new BadRequestException('realtimeDbPath is required for realtime_db data source');
+      }
+    }
+
+    if (updateAssetDto.dataSource === 'api') {
+      const apiEndpoint = updateAssetDto.apiEndpoint || currentAsset.apiEndpoint;
+      if (!apiEndpoint) {
+        throw new BadRequestException('apiEndpoint is required for api data source');
+      }
+    }
+
+    // ✅ Merge simulator settings
+    let simulatorSettings = currentAsset.simulatorSettings || this.DEFAULT_SIMULATOR_SETTINGS;
+    
+    if (updateAssetDto.simulatorSettings) {
+      simulatorSettings = {
+        ...simulatorSettings,
+        ...updateAssetDto.simulatorSettings,
+      };
+
+      // Validate volatility ranges
+      if (simulatorSettings.dailyVolatilityMin > simulatorSettings.dailyVolatilityMax) {
+        throw new BadRequestException('dailyVolatilityMin must be <= dailyVolatilityMax');
+      }
+
+      if (simulatorSettings.secondVolatilityMin > simulatorSettings.secondVolatilityMax) {
+        throw new BadRequestException('secondVolatilityMin must be <= secondVolatilityMax');
+      }
+    }
+
+    // ✅ Merge trading settings
+    let tradingSettings = currentAsset.tradingSettings || this.DEFAULT_TRADING_SETTINGS;
+    
+    if (updateAssetDto.tradingSettings) {
+      tradingSettings = {
+        ...tradingSettings,
+        ...updateAssetDto.tradingSettings,
+      };
+
+      // Validate trading settings
+      if (tradingSettings.minOrderAmount > tradingSettings.maxOrderAmount) {
+        throw new BadRequestException('minOrderAmount must be <= maxOrderAmount');
+      }
+
+      if (!tradingSettings.allowedDurations || tradingSettings.allowedDurations.length === 0) {
+        throw new BadRequestException('allowedDurations must contain at least one duration');
+      }
+    }
+
+    const updateData = {
+      ...updateAssetDto,
+      simulatorSettings,
+      tradingSettings,
+      updatedAt: new Date().toISOString(),
+    };
+
+    await db.collection(COLLECTIONS.ASSETS).doc(assetId).update(updateData);
+
     this.invalidateCache();
 
-    this.logger.log(`Asset updated: ${assetId}`);
+    this.logger.log(`✅ Asset updated: ${assetId}`);
+    if (updateAssetDto.simulatorSettings) {
+      this.logger.log(`   Simulator settings changed`);
+    }
+    if (updateAssetDto.tradingSettings) {
+      this.logger.log(`   Trading settings changed`);
+    }
 
     return {
-      message: 'Asset updated',
+      message: 'Asset updated successfully',
     };
   }
 
   /**
-   * DELETE ASSET
+   * ✅ DELETE ASSET
    */
   async deleteAsset(assetId: string) {
     const db = this.firebaseService.getFirestore();
@@ -110,24 +265,21 @@ export class AssetsService {
 
     await db.collection(COLLECTIONS.ASSETS).doc(assetId).delete();
 
-    // Invalidate cache
     this.invalidateCache();
 
-    this.logger.log(`Asset deleted: ${assetId}`);
+    this.logger.log(`🗑️ Asset deleted: ${assetId}`);
 
     return {
-      message: 'Asset deleted',
+      message: 'Asset deleted successfully',
     };
   }
 
   /**
    * ⚡ GET ALL ASSETS (CACHED)
-   * Target: < 50ms with cache
    */
   async getAllAssets(activeOnly: boolean = false) {
     const startTime = Date.now();
     
-    // ✅ Try cache first
     if (this.allAssetsCache && !activeOnly) {
       const age = Date.now() - this.allAssetsCache.timestamp;
       
@@ -142,7 +294,6 @@ export class AssetsService {
       }
     }
 
-    // ✅ Fetch from database
     const db = this.firebaseService.getFirestore();
     let query = db.collection(COLLECTIONS.ASSETS);
     
@@ -151,9 +302,20 @@ export class AssetsService {
     }
 
     const snapshot = await query.get();
-    const assets = snapshot.docs.map(doc => doc.data() as Asset);
+    const assets = snapshot.docs.map(doc => {
+      const data = doc.data() as Asset;
+      
+      // ✅ Apply defaults if missing
+      if (!data.simulatorSettings) {
+        data.simulatorSettings = this.DEFAULT_SIMULATOR_SETTINGS;
+      }
+      if (!data.tradingSettings) {
+        data.tradingSettings = this.DEFAULT_TRADING_SETTINGS;
+      }
+      
+      return data;
+    });
 
-    // ✅ Update cache
     if (!activeOnly) {
       this.allAssetsCache = {
         assets,
@@ -161,7 +323,6 @@ export class AssetsService {
       };
     }
 
-    // ✅ Update individual asset cache
     for (const asset of assets) {
       this.assetCache.set(asset.id, {
         asset,
@@ -180,12 +341,10 @@ export class AssetsService {
 
   /**
    * ⚡ GET ASSET BY ID (ULTRA-FAST)
-   * Target: < 20ms with cache
    */
   async getAssetById(assetId: string): Promise<Asset> {
     const startTime = Date.now();
     
-    // ✅ Try cache first
     const cached = this.assetCache.get(assetId);
     if (cached) {
       const age = Date.now() - cached.timestamp;
@@ -197,7 +356,6 @@ export class AssetsService {
       }
     }
 
-    // ✅ Fetch from database
     const db = this.firebaseService.getFirestore();
     const assetDoc = await db.collection(COLLECTIONS.ASSETS).doc(assetId).get();
     
@@ -205,9 +363,16 @@ export class AssetsService {
       throw new NotFoundException('Asset not found');
     }
 
-    const asset = assetDoc.data() as Asset;
+    let asset = assetDoc.data() as Asset;
 
-    // ✅ Update cache
+    // ✅ Apply defaults if missing
+    if (!asset.simulatorSettings) {
+      asset.simulatorSettings = this.DEFAULT_SIMULATOR_SETTINGS;
+    }
+    if (!asset.tradingSettings) {
+      asset.tradingSettings = this.DEFAULT_TRADING_SETTINGS;
+    }
+
     this.assetCache.set(assetId, {
       asset,
       timestamp: Date.now(),
@@ -220,21 +385,18 @@ export class AssetsService {
   }
 
   /**
-   * ⚡ GET CURRENT PRICE (ULTRA-FAST)
-   * Target: < 200ms total
+   * ⚡ GET CURRENT PRICE
    */
   async getCurrentPrice(assetId: string) {
     const startTime = Date.now();
     
     try {
-      // ✅ Step 1: Get asset from cache (< 20ms)
       const asset = await this.getAssetById(assetId);
 
-      // ✅ Step 2: Get price with fast cache (< 100ms)
       const priceData = await Promise.race([
-        this.priceFetcherService.getCurrentPrice(asset, true), // Use fast cache
+        this.priceFetcherService.getCurrentPrice(asset, true),
         new Promise<never>((_, reject) => 
-          setTimeout(() => reject(new Error('Price timeout')), 2000) // 2s max
+          setTimeout(() => reject(new Error('Price timeout')), 2000)
         ),
       ]);
 
@@ -270,11 +432,17 @@ export class AssetsService {
   }
 
   /**
-   * ⚡ WARMUP CACHE (on startup)
+   * ✅ GET ASSET SETTINGS (detailed view for Super Admin)
+   */
+  async getAssetSettings(assetId: string): Promise<Asset> {
+    return this.getAssetById(assetId);
+  }
+
+  /**
+   * WARMUP, REFRESH, INVALIDATE
    */
   private async warmupCache(): Promise<void> {
     try {
-      // ✅ Check if Firestore is ready
       if (!this.firebaseService.isFirestoreReady()) {
         this.logger.warn('⚠️ Firestore not ready, skipping cache warmup');
         return;
@@ -286,7 +454,6 @@ export class AssetsService {
       
       this.logger.log(`✅ Cache warmed: ${assets.length} assets`);
       
-      // Also prefetch prices for active assets
       const activeAssets = assets.filter(a => a.isActive);
       if (activeAssets.length > 0) {
         await this.priceFetcherService.prefetchPrices(activeAssets);
@@ -297,15 +464,10 @@ export class AssetsService {
     }
   }
 
-  /**
-   * ⚡ REFRESH CACHE (periodic)
-   */
   private async refreshCache(): Promise<void> {
     try {
-      // Refresh all assets cache
       await this.getAllAssets(false);
       
-      // Refresh prices for active assets
       const activeAssets = this.allAssetsCache?.assets.filter(a => a.isActive) || [];
       if (activeAssets.length > 0) {
         await this.priceFetcherService.prefetchPrices(activeAssets);
@@ -317,22 +479,15 @@ export class AssetsService {
     }
   }
 
-  /**
-   * INVALIDATE CACHE
-   */
   private invalidateCache(): void {
     this.assetCache.clear();
     this.allAssetsCache = null;
     this.logger.debug('Asset cache invalidated');
   }
 
-  /**
-   * ⚡ BATCH GET ASSETS
-   */
   async batchGetAssets(assetIds: string[]): Promise<Map<string, Asset>> {
     const results = new Map<string, Asset>();
     
-    // Try cache first
     const uncachedIds: string[] = [];
     
     for (const assetId of assetIds) {
@@ -347,7 +502,6 @@ export class AssetsService {
       uncachedIds.push(assetId);
     }
 
-    // Fetch uncached in parallel
     if (uncachedIds.length > 0) {
       const promises = uncachedIds.map(id => 
         this.getAssetById(id).catch(() => null)
@@ -365,17 +519,11 @@ export class AssetsService {
     return results;
   }
 
-  /**
-   * ⚡ GET ACTIVE ASSETS (Cached)
-   */
   async getActiveAssets(): Promise<Asset[]> {
     const { assets } = await this.getAllAssets(true);
     return assets;
   }
 
-  /**
-   * PERFORMANCE STATS
-   */
   getPerformanceStats() {
     return {
       cachedAssets: this.assetCache.size,

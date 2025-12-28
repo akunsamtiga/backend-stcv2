@@ -1,5 +1,5 @@
 // src/common/interfaces/index.ts
-// ✅ UPDATED: Balance and BinaryOrder interfaces with accountType
+// ✅ UPDATED: Asset interface dengan full control fields
 
 export interface ApiResponse<T = any> {
   success: boolean;
@@ -36,19 +36,19 @@ export interface User {
   createdBy?: string;
 }
 
-/**
- * ✅ UPDATED: Balance interface with accountType (real/demo)
- */
 export interface Balance {
   id: string;
   user_id: string;
-  accountType: 'real' | 'demo'; // ✅ NEW: Separate real and demo balance
+  accountType: 'real' | 'demo';
   type: 'deposit' | 'withdrawal' | 'order_debit' | 'order_profit' | 'win' | 'lose';
   amount: number;
   description?: string;
   createdAt: string;
 }
 
+/**
+ * ✅ UPDATED: Asset interface dengan kontrol penuh untuk Super Admin
+ */
 export interface Asset {
   id: string;
   name: string;
@@ -59,17 +59,34 @@ export interface Asset {
   realtimeDbPath?: string;
   apiEndpoint?: string;
   description?: string;
+  
+  // ✅ NEW: Simulator Settings (controllable by Super Admin)
+  simulatorSettings?: {
+    initialPrice: number;
+    dailyVolatilityMin: number;
+    dailyVolatilityMax: number;
+    secondVolatilityMin: number;
+    secondVolatilityMax: number;
+    minPrice?: number; // Optional: minimum allowed price
+    maxPrice?: number; // Optional: maximum allowed price
+  };
+  
+  // ✅ NEW: Trading Settings
+  tradingSettings?: {
+    minOrderAmount: number;
+    maxOrderAmount: number;
+    allowedDurations: number[]; // e.g., [1,2,3,4,5,15,30,45,60]
+  };
+  
   createdAt: string;
   updatedAt?: string;
+  createdBy?: string;
 }
 
-/**
- * ✅ UPDATED: BinaryOrder interface with accountType
- */
 export interface BinaryOrder {
   id: string;
   user_id: string;
-  accountType: 'real' | 'demo'; // ✅ NEW: Track which account was used
+  accountType: 'real' | 'demo';
   asset_id: string;
   asset_name: string;
   direction: 'CALL' | 'PUT';
@@ -91,9 +108,6 @@ export interface RealtimePrice {
   datetime: string;
 }
 
-/**
- * ✅ NEW: Balance summary for both accounts
- */
 export interface BalanceSummary {
   realBalance: number;
   demoBalance: number;

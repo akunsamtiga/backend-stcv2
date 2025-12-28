@@ -1,5 +1,5 @@
 // src/auth/auth.service.ts
-// ✅ FIXED: Initial demo balance 10 juta (10,000,000)
+// ✅ UPDATED: Create default IDX_STC asset saat super admin dibuat
 
 import { Injectable, UnauthorizedException, ConflictException, Logger, OnModuleInit } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -42,6 +42,76 @@ export class AuthService implements OnModuleInit {
     }, 2000);
   }
 
+  /**
+   * ✅ CREATE DEFAULT IDX_STC ASSET
+   */
+  private async createDefaultAssetIfNotExists() {
+    try {
+      const db = this.firebaseService.getFirestore();
+      
+      // Check if IDX_STC already exists
+      const assetSnapshot = await db.collection(COLLECTIONS.ASSETS)
+        .where('symbol', '==', 'IDX_STC')
+        .limit(1)
+        .get();
+
+      if (!assetSnapshot.empty) {
+        this.logger.log('ℹ️ Default asset IDX_STC already exists');
+        return;
+      }
+
+      // Create default IDX_STC asset
+      const assetId = await this.firebaseService.generateId(COLLECTIONS.ASSETS);
+      const timestamp = new Date().toISOString();
+
+      const defaultAsset = {
+        id: assetId,
+        name: 'IDX STC',
+        symbol: 'IDX_STC',
+        profitRate: 85,
+        isActive: true,
+        dataSource: 'realtime_db',
+        realtimeDbPath: '/idx_stc/current_price',
+        description: 'Indonesian Stock Index - Default Asset',
+        
+        // ✅ Default simulator settings
+        simulatorSettings: {
+          initialPrice: 40.022,
+          dailyVolatilityMin: 0.001,
+          dailyVolatilityMax: 0.005,
+          secondVolatilityMin: 0.00001,
+          secondVolatilityMax: 0.00008,
+          minPrice: 20.011,  // 50% of initial
+          maxPrice: 80.044,  // 200% of initial
+        },
+        
+        // ✅ Default trading settings
+        tradingSettings: {
+          minOrderAmount: 1000,
+          maxOrderAmount: 1000000,
+          allowedDurations: [1, 2, 3, 4, 5, 15, 30, 45, 60],
+        },
+        
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        createdBy: 'system',
+      };
+
+      await db.collection(COLLECTIONS.ASSETS).doc(assetId).set(defaultAsset);
+
+      this.logger.log('✅ Default asset IDX_STC created successfully');
+      this.logger.log('   Initial Price: 40.022');
+      this.logger.log('   Volatility: 0.00001 - 0.00008');
+      this.logger.log('   Profit Rate: 85%');
+
+    } catch (error) {
+      this.logger.error(`❌ Failed to create default asset: ${error.message}`);
+    }
+  }
+
+  /**
+   * CREATE SUPER ADMIN
+   */
   private async createSuperAdminIfNotExists() {
     try {
       if (!this.firebaseService.isFirestoreReady()) {
@@ -79,12 +149,11 @@ export class AuthService implements OnModuleInit {
           updatedAt: timestamp,
         });
 
-        // ✅ Create initial balance for BOTH accounts
+        // Create initial balance for BOTH accounts
         const balanceId1 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
         const balanceId2 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
 
         await Promise.all([
-          // Real account - starts with 0
           db.collection(COLLECTIONS.BALANCE).doc(balanceId1).set({
             id: balanceId1,
             user_id: userId,
@@ -94,21 +163,27 @@ export class AuthService implements OnModuleInit {
             description: 'Initial real balance',
             createdAt: timestamp,
           }),
-          // ✅ FIXED: Demo account - starts with 10 MILLION (10,000,000)
           db.collection(COLLECTIONS.BALANCE).doc(balanceId2).set({
             id: balanceId2,
             user_id: userId,
             accountType: BALANCE_ACCOUNT_TYPE.DEMO,
             type: BALANCE_TYPES.DEPOSIT,
-            amount: 10000000, // ✅ 10 juta (was 10000)
+            amount: 10000000,
             description: 'Initial demo balance - 10 million',
             createdAt: timestamp,
           }),
         ]);
 
         this.logger.log(`✅ Super admin created: ${email} (Real: Rp 0, Demo: Rp 10,000,000)`);
+        
+        // ✅ Create default asset after super admin
+        await this.createDefaultAssetIfNotExists();
+        
       } else {
         this.logger.log(`ℹ️ Super admin already exists: ${email}`);
+        
+        // ✅ Still check for default asset
+        await this.createDefaultAssetIfNotExists();
       }
     } catch (error) {
       this.logger.error(`❌ Failed to create super admin: ${error.message}`);
@@ -121,7 +196,7 @@ export class AuthService implements OnModuleInit {
   }
 
   /**
-   * ✅ REGISTER - With 10 million demo balance
+   * REGISTER
    */
   async register(registerDto: RegisterDto) {
     const startTime = Date.now();
@@ -153,12 +228,11 @@ export class AuthService implements OnModuleInit {
 
     await db.collection(COLLECTIONS.USERS).doc(userId).set(userData);
 
-    // ✅ Create initial balance for BOTH accounts
+    // Create initial balance for BOTH accounts
     const balanceId1 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
     const balanceId2 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
 
     await Promise.all([
-      // Real account - starts with 0
       db.collection(COLLECTIONS.BALANCE).doc(balanceId1).set({
         id: balanceId1,
         user_id: userId,
@@ -168,13 +242,12 @@ export class AuthService implements OnModuleInit {
         description: 'Initial real balance',
         createdAt: timestamp,
       }),
-      // ✅ FIXED: Demo account - starts with 10 MILLION
       db.collection(COLLECTIONS.BALANCE).doc(balanceId2).set({
         id: balanceId2,
         user_id: userId,
         accountType: BALANCE_ACCOUNT_TYPE.DEMO,
         type: BALANCE_TYPES.DEPOSIT,
-        amount: 10000000, // ✅ 10 juta (was 10000)
+        amount: 10000000,
         description: 'Initial demo balance - 10 million',
         createdAt: timestamp,
       }),
@@ -305,9 +378,6 @@ export class AuthService implements OnModuleInit {
     }
   }
 
-  /**
-   * GET USER BY ID
-   */
   async getUserById(userId: string): Promise<User | null> {
     const cached = this.getCachedUser(userId);
     if (cached) {
@@ -327,9 +397,6 @@ export class AuthService implements OnModuleInit {
     return user;
   }
 
-  /**
-   * PERFORMANCE STATS
-   */
   getPerformanceStats() {
     return {
       userCacheSize: this.userCache.size,
