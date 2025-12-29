@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Binary Option Trading System - Production-Ready Test Suite Runner
-=================================================================
-Runs critical tests for production deployment (Skip simulator test)
+Binary Option Trading System - Enhanced Production Test Suite Runner
+====================================================================
+Orchestrates all tests with better error handling and reporting
 """
 
 import subprocess
@@ -13,39 +13,49 @@ from typing import List, Dict, Optional
 from dataclasses import dataclass
 from datetime import datetime
 import argparse
+import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ============================================
 # CONFIGURATION
 # ============================================
 TEST_FILES = {
     "backend": {
-        "file": "test_backend.py",
+        "file": "test_backend_improved.py",
         "name": "🧪 Backend API Tests",
-        "description": "Tests all backend endpoints",
+        "description": "Tests all backend endpoints comprehensively",
         "critical": True,
-        "enabled": True
+        "enabled": True,
+        "timeout": 300,  # 5 minutes
+        "parallel_safe": False
     },
     "performance": {
         "file": "test_performance.py",
         "name": "⚡ Performance Tests",
         "description": "Tests system under load",
         "critical": False,
-        "enabled": True
+        "enabled": True,
+        "timeout": 600,  # 10 minutes
+        "parallel_safe": False
     },
     "integration": {
-        "file": "test_integration.py",
+        "file": "test_integration_improved.py",
         "name": "🔄 Integration Tests",
         "description": "Tests end-to-end workflow",
         "critical": True,
-        "enabled": True
+        "enabled": True,
+        "timeout": 180,  # 3 minutes
+        "parallel_safe": False
     },
     "simulator": {
-        "file": "test_simulator.py",
+        "file": "test_simulator_improved.py",
         "name": "🔬 Simulator Tests",
-        "description": "Tests price simulator functionality",
+        "description": "Tests multi-asset price simulator functionality",
         "critical": False,
-        "enabled": False,  # ✅ DISABLED: Verified working in Integration Test Step 11
-        "skip_reason": "Simulator already verified working in Integration Test (Step 11: data fresh, 1.0s age)"
+        "enabled": True,  # Now enabled with improved version
+        "timeout": 120,  # 2 minutes
+        "parallel_safe": True,
+        "skip_reason": ""  # No longer skipped
     }
 }
 
@@ -77,6 +87,7 @@ class TestSuiteResult:
     critical: bool
     skipped: bool = False
     skip_reason: str = ""
+    error: Optional[str] = None
 
 # ============================================
 # UTILS
@@ -93,9 +104,9 @@ def print_banner():
     banner = f"""
 {Colors.BOLD}{Colors.CYAN}╔══════════════════════════════════════════════════════════════════════╗
 ║                                                                      ║
-║      BINARY OPTION TRADING SYSTEM - PRODUCTION TEST SUITE           ║
+║      BINARY OPTION TRADING SYSTEM - ENHANCED TEST SUITE v2.0         ║
 ║                                                                      ║
-║                    Ready for Production Deployment                   ║
+║                    Comprehensive Testing Framework                    ║
 ║                                                                      ║
 ╚══════════════════════════════════════════════════════════════════════╝{Colors.END}
 """
@@ -110,24 +121,62 @@ def print_test_suite_info():
             status_badge = f"{Colors.YELLOW}[SKIPPED]{Colors.END}"
             print(f"  {status_badge} {info['name']}")
             print(f"      📄 {info['file']}")
-            print(f"      📝 {info['description']}")
+            print(f"      📋 {info['description']}")
             if 'skip_reason' in info:
                 print(f"      ⚠️  Reason: {info['skip_reason']}")
             print()
         else:
             critical_badge = f"{Colors.RED}[CRITICAL]{Colors.END}" if info['critical'] else f"{Colors.YELLOW}[OPTIONAL]{Colors.END}"
+            parallel_badge = "🔀 Parallel-safe" if info.get('parallel_safe', False) else "🔒 Sequential"
             print(f"  {critical_badge} {info['name']}")
             print(f"      📄 {info['file']}")
-            print(f"      📝 {info['description']}")
+            print(f"      📋 {info['description']}")
+            print(f"      ⏱️  Timeout: {info['timeout']}s")
+            print(f"      {parallel_badge}")
             print()
 
 def check_file_exists(filepath: str) -> bool:
     """Check if test file exists"""
     return os.path.isfile(filepath)
 
-def run_test_suite(test_key: str, test_info: Dict) -> TestSuiteResult:
+def check_dependencies() -> Dict[str, bool]:
+    """Check if all dependencies are available"""
+    checks = {
+        "python3": False,
+        "server": False,
+        "test_files": False
+    }
+    
+    # Check Python 3
+    try:
+        result = subprocess.run(
+            [sys.executable, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        checks["python3"] = result.returncode == 0
+    except:
+        pass
+    
+    # Check if server is running
+    try:
+        import requests
+        response = requests.get("http://localhost:3000/api/v1/health", timeout=3)
+        checks["server"] = response.status_code == 200
+    except:
+        pass
+    
+    # Check test files
+    enabled_tests = [info['file'] for info in TEST_FILES.values() if info.get('enabled', True)]
+    checks["test_files"] = all(check_file_exists(f) for f in enabled_tests)
+    
+    return checks
+
+def run_test_suite(test_key: str, test_info: Dict, verbose: bool = False) -> TestSuiteResult:
     """Run a single test suite"""
     filename = test_info['file']
+    timeout = test_info.get('timeout', 300)
     
     # Check if test is disabled
     if not test_info.get('enabled', True):
@@ -141,7 +190,7 @@ def run_test_suite(test_key: str, test_info: Dict) -> TestSuiteResult:
         return TestSuiteResult(
             name=test_info['name'],
             file=filename,
-            passed=True,  # Treat as passed since it's intentionally skipped
+            passed=True,
             exit_code=0,
             duration=0,
             output=skip_reason,
@@ -163,8 +212,9 @@ def run_test_suite(test_key: str, test_info: Dict) -> TestSuiteResult:
             passed=False,
             exit_code=-1,
             duration=0,
-            output=f"File not found: {filename}",
-            critical=test_info['critical']
+            output="",
+            critical=test_info['critical'],
+            error=f"File not found: {filename}"
         )
     
     # Make file executable
@@ -177,16 +227,20 @@ def run_test_suite(test_key: str, test_info: Dict) -> TestSuiteResult:
     start_time = time.time()
     
     try:
+        args = [sys.executable, filename]
+        if verbose:
+            args.append('-v')
+        
         result = subprocess.run(
-            [sys.executable, filename],
+            args,
             capture_output=True,
             text=True,
-            timeout=300  # 5 minute timeout
+            timeout=timeout
         )
         
         duration = time.time() - start_time
         
-        # Print output in real-time style
+        # Print output
         if result.stdout:
             print(result.stdout)
         
@@ -216,7 +270,7 @@ def run_test_suite(test_key: str, test_info: Dict) -> TestSuiteResult:
         
     except subprocess.TimeoutExpired:
         duration = time.time() - start_time
-        print(f"\n{Colors.RED}{Colors.BOLD}⏱️ TEST TIMEOUT (exceeded 5 minutes){Colors.END}")
+        print(f"\n{Colors.RED}{Colors.BOLD}⏱️  TEST TIMEOUT (exceeded {timeout}s){Colors.END}")
         
         return TestSuiteResult(
             name=test_info['name'],
@@ -224,8 +278,9 @@ def run_test_suite(test_key: str, test_info: Dict) -> TestSuiteResult:
             passed=False,
             exit_code=-1,
             duration=duration,
-            output="Test exceeded timeout limit",
-            critical=test_info['critical']
+            output="",
+            critical=test_info['critical'],
+            error=f"Test exceeded timeout limit ({timeout}s)"
         )
         
     except Exception as e:
@@ -238,15 +293,16 @@ def run_test_suite(test_key: str, test_info: Dict) -> TestSuiteResult:
             passed=False,
             exit_code=-1,
             duration=duration,
-            output=str(e),
-            critical=test_info['critical']
+            output="",
+            critical=test_info['critical'],
+            error=str(e)
         )
 
 def print_summary(results: List[TestSuiteResult], total_duration: float):
     """Print comprehensive test summary"""
     print_header("📊 COMPREHENSIVE TEST SUMMARY")
     
-    # Filter out skipped tests for statistics
+    # Filter results
     active_results = [r for r in results if not r.skipped]
     skipped_results = [r for r in results if r.skipped]
     
@@ -282,6 +338,9 @@ def print_summary(results: List[TestSuiteResult], total_duration: float):
     print(f"  {Colors.GREEN}✓ Passed:{Colors.END}              {critical_passed}")
     print(f"  {Colors.RED}✗ Failed:{Colors.END}              {critical_failed}")
     
+    if critical_failed > 0:
+        print(f"\n  {Colors.RED}{Colors.BOLD}⚠️  WARNING: {critical_failed} CRITICAL TEST(S) FAILED!{Colors.END}")
+    
     # Individual Results
     print(f"\n{Colors.BOLD}Individual Test Suite Results:{Colors.END}\n")
     
@@ -298,9 +357,11 @@ def print_summary(results: List[TestSuiteResult], total_duration: float):
         if not result.skipped:
             print(f"        ⏱️  Duration: {result.duration:.2f}s")
             print(f"        🔢 Exit Code: {result.exit_code}")
+            if result.error:
+                print(f"        {Colors.RED}❌ Error: {result.error}{Colors.END}")
         print()
     
-    # Performance Summary (only for active tests)
+    # Performance Summary
     if active_results:
         print(f"{Colors.BOLD}Performance Summary:{Colors.END}\n")
         
@@ -309,7 +370,7 @@ def print_summary(results: List[TestSuiteResult], total_duration: float):
         avg_duration = sum(r.duration for r in active_results) / len(active_results)
         
         print(f"  ⚡ Fastest Suite:       {fastest.name} ({fastest.duration:.2f}s)")
-        print(f"  🐢 Slowest Suite:       {slowest.name} ({slowest.duration:.2f}s)")
+        print(f"  🐌 Slowest Suite:       {slowest.name} ({slowest.duration:.2f}s)")
         print(f"  📊 Average Duration:    {avg_duration:.2f}s")
     
     # Final Verdict
@@ -322,9 +383,9 @@ def print_summary(results: List[TestSuiteResult], total_duration: float):
         print(f"{Colors.GREEN}")
         print(f"  Your Binary Option Trading System is working perfectly:")
         print(f"    ✅ Backend API: All endpoints working")
-        print(f"    ✅ Performance: Excellent (order creation < 500ms)")
         print(f"    ✅ Integration: Full workflow verified")
-        print(f"    ✅ Simulator: Verified running (data fresh)")
+        if any(r.name == "⚡ Performance Tests" and r.passed for r in results):
+            print(f"    ✅ Performance: Excellent")
         print(f"{Colors.END}")
     elif critical_failed == 0 and failed > 0:
         print(f"{Colors.YELLOW}{Colors.BOLD}")
@@ -350,6 +411,8 @@ def print_summary(results: List[TestSuiteResult], total_duration: float):
                 print(f"     • Check {result.file} for details")
                 if result.critical:
                     print(f"     • {Colors.RED}CRITICAL: Must be fixed before production{Colors.END}")
+                if result.error:
+                    print(f"     • Error: {result.error}")
                 print()
     
     # Production readiness check
@@ -357,20 +420,46 @@ def print_summary(results: List[TestSuiteResult], total_duration: float):
         print(f"{Colors.BOLD}{Colors.GREEN}🚀 PRODUCTION DEPLOYMENT CHECKLIST:{Colors.END}\n")
         print(f"  ✅ All critical tests passed")
         print(f"  ✅ Backend API working perfectly")
-        print(f"  ✅ Order creation & settlement working")
-        print(f"  ✅ Simulator providing real-time data")
-        print(f"  ✅ Performance meeting targets")
+        print(f"  ✅ Integration workflow verified")
         print()
         print(f"{Colors.GREEN}  → You can deploy to production now!{Colors.END}")
         print()
 
-def run_selected_tests(test_keys: List[str]) -> List[TestSuiteResult]:
+def save_results_to_file(results: List[TestSuiteResult], filename: str = "test_results.json"):
+    """Save test results to JSON file"""
+    try:
+        data = {
+            "timestamp": datetime.now().isoformat(),
+            "results": [
+                {
+                    "name": r.name,
+                    "file": r.file,
+                    "passed": r.passed,
+                    "exit_code": r.exit_code,
+                    "duration": r.duration,
+                    "critical": r.critical,
+                    "skipped": r.skipped,
+                    "skip_reason": r.skip_reason,
+                    "error": r.error
+                }
+                for r in results
+            ]
+        }
+        
+        with open(filename, 'w') as f:
+            json.dump(data, f, indent=2)
+        
+        print(f"{Colors.CYAN}📝 Results saved to: {filename}{Colors.END}")
+    except Exception as e:
+        print(f"{Colors.YELLOW}⚠️  Failed to save results: {str(e)}{Colors.END}")
+
+def run_selected_tests(test_keys: List[str], verbose: bool = False) -> List[TestSuiteResult]:
     """Run selected test suites"""
     results = []
     
     for key in test_keys:
         if key in TEST_FILES:
-            result = run_test_suite(key, TEST_FILES[key])
+            result = run_test_suite(key, TEST_FILES[key], verbose)
             results.append(result)
             
             # Small delay between tests
@@ -380,26 +469,10 @@ def run_selected_tests(test_keys: List[str]) -> List[TestSuiteResult]:
     
     return results
 
-def run_all_tests() -> List[TestSuiteResult]:
-    """Run all enabled test suites"""
-    results = []
-    
-    for key, info in TEST_FILES.items():
-        result = run_test_suite(key, info)
-        results.append(result)
-        
-        # Small delay between tests
-        time.sleep(1)
-    
-    return results
-
-# ============================================
-# MAIN
-# ============================================
 def main():
     """Main test runner"""
     parser = argparse.ArgumentParser(
-        description='Binary Option Trading System - Production Test Suite Runner',
+        description='Binary Option Trading System - Enhanced Test Suite Runner',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
@@ -435,10 +508,46 @@ def main():
         help='Include simulator test (normally skipped)'
     )
     
+    parser.add_argument(
+        '-v', '--verbose',
+        action='store_true',
+        help='Verbose output'
+    )
+    
+    parser.add_argument(
+        '--check-deps',
+        action='store_true',
+        help='Check dependencies and exit'
+    )
+    
+    parser.add_argument(
+        '--save-results',
+        action='store_true',
+        help='Save results to JSON file'
+    )
+    
     args = parser.parse_args()
     
     # Print banner
     print_banner()
+    
+    # Check dependencies
+    if args.check_deps:
+        print_header("🔍 CHECKING DEPENDENCIES")
+        checks = check_dependencies()
+        
+        for name, status in checks.items():
+            symbol = "✅" if status else "❌"
+            print(f"  {symbol} {name}: {'OK' if status else 'FAILED'}")
+        
+        all_ok = all(checks.values())
+        print()
+        if all_ok:
+            print(f"{Colors.GREEN}✅ All dependencies OK{Colors.END}")
+            sys.exit(0)
+        else:
+            print(f"{Colors.RED}❌ Some dependencies failed{Colors.END}")
+            sys.exit(1)
     
     # List tests if requested
     if args.list:
@@ -482,17 +591,21 @@ def main():
                 print(f"    Reason: {info['skip_reason']}")
     
     print(f"\n{Colors.YELLOW}⏳ Starting test execution...{Colors.END}")
-    time.sleep(2)
+    time.sleep(1)
     
     # Run tests
     start_time = time.time()
     
     try:
-        results = run_selected_tests(test_keys)
+        results = run_selected_tests(test_keys, args.verbose)
         total_duration = time.time() - start_time
         
         # Print summary
         print_summary(results, total_duration)
+        
+        # Save results if requested
+        if args.save_results:
+            save_results_to_file(results)
         
         # Exit with appropriate code
         active_results = [r for r in results if not r.skipped]
