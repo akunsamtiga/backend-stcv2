@@ -1,5 +1,5 @@
 // src/assets/assets.service.ts
-// ✅ UPDATED: Full asset control dengan defaults
+// ✅ UPDATED: Path validation untuk realtime_db
 
 import { Injectable, NotFoundException, ConflictException, Logger, RequestTimeoutException, BadRequestException } from '@nestjs/common';
 import { FirebaseService } from '../firebase/firebase.service';
@@ -19,7 +19,6 @@ export class AssetsService {
   private readonly ASSET_CACHE_TTL = 60000;
   private readonly ALL_ASSETS_CACHE_TTL = 30000;
 
-  // ✅ DEFAULT SETTINGS
   private readonly DEFAULT_SIMULATOR_SETTINGS = {
     initialPrice: 40.022,
     dailyVolatilityMin: 0.001,
@@ -50,13 +49,9 @@ export class AssetsService {
     setInterval(() => this.refreshCache(), 60000);
   }
 
-  /**
-   * ✅ CREATE ASSET - With validation and defaults
-   */
   async createAsset(createAssetDto: CreateAssetDto, createdBy: string) {
     const db = this.firebaseService.getFirestore();
 
-    // Validate symbol uniqueness
     const existingSnapshot = await db.collection(COLLECTIONS.ASSETS)
       .where('symbol', '==', createAssetDto.symbol)
       .limit(1)
@@ -66,21 +61,37 @@ export class AssetsService {
       throw new ConflictException(`Asset with symbol ${createAssetDto.symbol} already exists`);
     }
 
-    // Validate dataSource requirements
-    if (createAssetDto.dataSource === 'realtime_db' && !createAssetDto.realtimeDbPath) {
-      throw new BadRequestException('realtimeDbPath is required for realtime_db data source');
+    if (createAssetDto.dataSource === 'realtime_db') {
+      if (!createAssetDto.realtimeDbPath) {
+        throw new BadRequestException('realtimeDbPath is required for realtime_db data source');
+      }
+
+      if (createAssetDto.realtimeDbPath.endsWith('/current_price')) {
+        throw new BadRequestException(
+          'realtimeDbPath should NOT include /current_price. ' +
+          'Example: "/idx_stc" (not "/idx_stc/current_price"). ' +
+          'The system will automatically append /current_price when fetching prices.'
+        );
+      }
+
+      if (!createAssetDto.realtimeDbPath.startsWith('/')) {
+        throw new BadRequestException(
+          'realtimeDbPath must start with /. Example: "/idx_stc"'
+        );
+      }
+
+      this.logger.log(`✅ Valid realtimeDbPath: ${createAssetDto.realtimeDbPath}`);
+      this.logger.log(`   Price will be fetched from: ${createAssetDto.realtimeDbPath}/current_price`);
     }
 
     if (createAssetDto.dataSource === 'api' && !createAssetDto.apiEndpoint) {
       throw new BadRequestException('apiEndpoint is required for api data source');
     }
 
-    // ✅ Apply defaults for simulator settings
     const simulatorSettings = createAssetDto.simulatorSettings 
       ? {
           ...this.DEFAULT_SIMULATOR_SETTINGS,
           ...createAssetDto.simulatorSettings,
-          // Auto-calculate min/max if not provided
           minPrice: createAssetDto.simulatorSettings.minPrice || 
                     (createAssetDto.simulatorSettings.initialPrice * 0.5),
           maxPrice: createAssetDto.simulatorSettings.maxPrice || 
@@ -88,7 +99,6 @@ export class AssetsService {
         }
       : this.DEFAULT_SIMULATOR_SETTINGS;
 
-    // Validate volatility ranges
     if (simulatorSettings.dailyVolatilityMin > simulatorSettings.dailyVolatilityMax) {
       throw new BadRequestException('dailyVolatilityMin must be <= dailyVolatilityMax');
     }
@@ -97,7 +107,6 @@ export class AssetsService {
       throw new BadRequestException('secondVolatilityMin must be <= secondVolatilityMax');
     }
 
-    // ✅ Apply defaults for trading settings
     const tradingSettings = createAssetDto.tradingSettings 
       ? {
           ...this.DEFAULT_TRADING_SETTINGS,
@@ -105,7 +114,6 @@ export class AssetsService {
         }
       : this.DEFAULT_TRADING_SETTINGS;
 
-    // Validate trading settings
     if (tradingSettings.minOrderAmount > tradingSettings.maxOrderAmount) {
       throw new BadRequestException('minOrderAmount must be <= maxOrderAmount');
     }
@@ -150,9 +158,6 @@ export class AssetsService {
     };
   }
 
-  /**
-   * ✅ UPDATE ASSET - With validation
-   */
   async updateAsset(assetId: string, updateAssetDto: UpdateAssetDto) {
     const db = this.firebaseService.getFirestore();
 
@@ -163,7 +168,6 @@ export class AssetsService {
 
     const currentAsset = assetDoc.data() as Asset;
 
-    // Validate symbol uniqueness if updating symbol
     if (updateAssetDto.symbol && updateAssetDto.symbol !== currentAsset.symbol) {
       const existingSnapshot = await db.collection(COLLECTIONS.ASSETS)
         .where('symbol', '==', updateAssetDto.symbol)
@@ -175,11 +179,24 @@ export class AssetsService {
       }
     }
 
-    // Validate dataSource requirements
     if (updateAssetDto.dataSource === 'realtime_db') {
       const realtimeDbPath = updateAssetDto.realtimeDbPath || currentAsset.realtimeDbPath;
+      
       if (!realtimeDbPath) {
         throw new BadRequestException('realtimeDbPath is required for realtime_db data source');
+      }
+
+      if (realtimeDbPath.endsWith('/current_price')) {
+        throw new BadRequestException(
+          'realtimeDbPath should NOT include /current_price. ' +
+          'Example: "/idx_stc" (not "/idx_stc/current_price")'
+        );
+      }
+
+      if (!realtimeDbPath.startsWith('/')) {
+        throw new BadRequestException(
+          'realtimeDbPath must start with /. Example: "/idx_stc"'
+        );
       }
     }
 
@@ -190,7 +207,6 @@ export class AssetsService {
       }
     }
 
-    // ✅ Merge simulator settings
     let simulatorSettings = currentAsset.simulatorSettings || this.DEFAULT_SIMULATOR_SETTINGS;
     
     if (updateAssetDto.simulatorSettings) {
@@ -199,7 +215,6 @@ export class AssetsService {
         ...updateAssetDto.simulatorSettings,
       };
 
-      // Validate volatility ranges
       if (simulatorSettings.dailyVolatilityMin > simulatorSettings.dailyVolatilityMax) {
         throw new BadRequestException('dailyVolatilityMin must be <= dailyVolatilityMax');
       }
@@ -209,7 +224,6 @@ export class AssetsService {
       }
     }
 
-    // ✅ Merge trading settings
     let tradingSettings = currentAsset.tradingSettings || this.DEFAULT_TRADING_SETTINGS;
     
     if (updateAssetDto.tradingSettings) {
@@ -218,7 +232,6 @@ export class AssetsService {
         ...updateAssetDto.tradingSettings,
       };
 
-      // Validate trading settings
       if (tradingSettings.minOrderAmount > tradingSettings.maxOrderAmount) {
         throw new BadRequestException('minOrderAmount must be <= maxOrderAmount');
       }
@@ -252,9 +265,6 @@ export class AssetsService {
     };
   }
 
-  /**
-   * ✅ DELETE ASSET
-   */
   async deleteAsset(assetId: string) {
     const db = this.firebaseService.getFirestore();
 
@@ -274,9 +284,6 @@ export class AssetsService {
     };
   }
 
-  /**
-   * ⚡ GET ALL ASSETS (CACHED)
-   */
   async getAllAssets(activeOnly: boolean = false) {
     const startTime = Date.now();
     
@@ -305,7 +312,6 @@ export class AssetsService {
     const assets = snapshot.docs.map(doc => {
       const data = doc.data() as Asset;
       
-      // ✅ Apply defaults if missing
       if (!data.simulatorSettings) {
         data.simulatorSettings = this.DEFAULT_SIMULATOR_SETTINGS;
       }
@@ -339,9 +345,6 @@ export class AssetsService {
     };
   }
 
-  /**
-   * ⚡ GET ASSET BY ID (ULTRA-FAST)
-   */
   async getAssetById(assetId: string): Promise<Asset> {
     const startTime = Date.now();
     
@@ -365,7 +368,6 @@ export class AssetsService {
 
     let asset = assetDoc.data() as Asset;
 
-    // ✅ Apply defaults if missing
     if (!asset.simulatorSettings) {
       asset.simulatorSettings = this.DEFAULT_SIMULATOR_SETTINGS;
     }
@@ -384,9 +386,6 @@ export class AssetsService {
     return asset;
   }
 
-  /**
-   * ⚡ GET CURRENT PRICE
-   */
   async getCurrentPrice(assetId: string) {
     const startTime = Date.now();
     
@@ -431,16 +430,10 @@ export class AssetsService {
     }
   }
 
-  /**
-   * ✅ GET ASSET SETTINGS (detailed view for Super Admin)
-   */
   async getAssetSettings(assetId: string): Promise<Asset> {
     return this.getAssetById(assetId);
   }
 
-  /**
-   * WARMUP, REFRESH, INVALIDATE
-   */
   private async warmupCache(): Promise<void> {
     try {
       if (!this.firebaseService.isFirestoreReady()) {

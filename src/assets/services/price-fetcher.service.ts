@@ -1,5 +1,5 @@
 // src/assets/services/price-fetcher.service.ts
-// ✅ FIXED: More robust price fetching with better error handling
+// ✅ FIXED: Type errors in generateMockPrice
 
 import { Injectable, Logger } from '@nestjs/common';
 import { FirebaseService } from '../../firebase/firebase.service';
@@ -9,19 +9,16 @@ import { Asset, RealtimePrice } from '../../common/interfaces';
 export class PriceFetcherService {
   private readonly logger = new Logger(PriceFetcherService.name);
   
-  // ✅ INCREASED TIMEOUTS
-  private readonly TIMEOUT_MS = 2000; // 2 seconds (was 1s)
+  private readonly TIMEOUT_MS = 2000;
   
-  // ✅ Multi-layer cache
   private priceCache: Map<string, {
     price: RealtimePrice;
     timestamp: number;
   }> = new Map();
   
-  // ✅ Adjusted cache TTLs
-  private readonly FAST_CACHE_TTL = 2000; // 2 seconds (was 1s)
-  private readonly NORMAL_CACHE_TTL = 5000; // 5 seconds (was 3s)
-  private readonly STALE_CACHE_TTL = 30000; // 30 seconds for emergency fallback
+  private readonly FAST_CACHE_TTL = 2000;
+  private readonly NORMAL_CACHE_TTL = 5000;
+  private readonly STALE_CACHE_TTL = 30000;
   
   private fetchCount = 0;
   private cacheHits = 0;
@@ -33,9 +30,6 @@ export class PriceFetcherService {
     setInterval(() => this.cleanupStaleCache(), 5000);
   }
 
-  /**
-   * ✅ GET CURRENT PRICE - IMPROVED WITH RETRY
-   */
   async getCurrentPrice(
     asset: Asset, 
     useFastCache = false
@@ -43,7 +37,6 @@ export class PriceFetcherService {
     const startTime = Date.now();
     
     try {
-      // ✅ Step 1: Try cache first
       const cacheTTL = useFastCache ? this.FAST_CACHE_TTL : this.NORMAL_CACHE_TTL;
       const cached = this.getCachedPrice(asset.id, cacheTTL);
       
@@ -54,17 +47,14 @@ export class PriceFetcherService {
         return cached;
       }
 
-      // ✅ Step 2: Fetch with timeout and retry
-      const price = await this.fetchWithRetry(asset, 2); // 2 retries
+      const price = await this.fetchWithRetry(asset, 3);
       
       if (price) {
-        // ✅ Cache the result
         this.priceCache.set(asset.id, {
           price,
           timestamp: Date.now(),
         });
 
-        // ✅ Reset failure counter on success
         this.consecutiveFailures = 0;
       }
 
@@ -88,26 +78,21 @@ export class PriceFetcherService {
         `❌ Price fetch failed after ${duration}ms (failure ${this.consecutiveFailures}/${this.MAX_CONSECUTIVE_FAILURES}): ${error.message}`
       );
       
-      // ✅ Try stale cache as last resort
       const staleCache = this.getStaleCache(asset.id);
       if (staleCache) {
         this.logger.warn(`⚠️ Using stale cache for ${asset.symbol} (${this.getStaleAge(asset.id)}s old)`);
         return staleCache;
       }
 
-      // ✅ Auto-reconnect if too many failures
       if (this.consecutiveFailures >= this.MAX_CONSECUTIVE_FAILURES) {
         this.logger.error('❌ Too many consecutive failures, cache might need warming');
-        this.consecutiveFailures = 0; // Reset to avoid constant warnings
+        this.consecutiveFailures = 0;
       }
       
       return null;
     }
   }
 
-  /**
-   * ✅ FETCH WITH RETRY LOGIC
-   */
   private async fetchWithRetry(asset: Asset, maxRetries: number): Promise<RealtimePrice | null> {
     let lastError: Error | null = null;
 
@@ -126,7 +111,7 @@ export class PriceFetcherService {
         lastError = error;
         
         if (attempt < maxRetries) {
-          const delay = 200 * (attempt + 1); // 200ms, 400ms, 600ms
+          const delay = 200 * (attempt + 1);
           this.logger.debug(`Retry ${attempt + 1} for ${asset.symbol} in ${delay}ms`);
           await new Promise(resolve => setTimeout(resolve, delay));
         }
@@ -136,9 +121,6 @@ export class PriceFetcherService {
     throw lastError || new Error('Failed to fetch price');
   }
 
-  /**
-   * ✅ GET CACHED PRICE
-   */
   private getCachedPrice(assetId: string, maxAge: number): RealtimePrice | null {
     const cached = this.priceCache.get(assetId);
     if (!cached) return null;
@@ -151,16 +133,12 @@ export class PriceFetcherService {
     return cached.price;
   }
 
-  /**
-   * ✅ GET STALE CACHE (Emergency fallback)
-   */
   private getStaleCache(assetId: string): RealtimePrice | null {
     const cached = this.priceCache.get(assetId);
     if (!cached) return null;
 
     const age = Date.now() - cached.timestamp;
     
-    // Only use if less than STALE_CACHE_TTL
     if (age < this.STALE_CACHE_TTL) {
       return cached.price;
     }
@@ -168,9 +146,6 @@ export class PriceFetcherService {
     return null;
   }
 
-  /**
-   * ✅ GET STALE AGE
-   */
   private getStaleAge(assetId: string): number {
     const cached = this.priceCache.get(assetId);
     if (!cached) return 0;
@@ -178,9 +153,6 @@ export class PriceFetcherService {
     return Math.round((Date.now() - cached.timestamp) / 1000);
   }
 
-  /**
-   * ✅ TIMEOUT WRAPPER
-   */
   private async fetchWithTimeout(asset: Asset): Promise<RealtimePrice | null> {
     return Promise.race([
       this.fetchPrice(asset),
@@ -190,13 +162,10 @@ export class PriceFetcherService {
     ]);
   }
 
-  /**
-   * ✅ CORE FETCH LOGIC
-   */
   private async fetchPrice(asset: Asset): Promise<RealtimePrice | null> {
     switch (asset.dataSource) {
       case 'realtime_db':
-        return await this.fetchFromRealtimeDbFast(asset);
+        return await this.fetchFromRealtimeDb(asset);
       
       case 'api':
         return await this.fetchFromApi(asset);
@@ -210,53 +179,59 @@ export class PriceFetcherService {
     }
   }
 
-  /**
-   * ✅ REALTIME DB FETCH - IMPROVED
-   */
-  private async fetchFromRealtimeDbFast(asset: Asset): Promise<RealtimePrice | null> {
+  private async fetchFromRealtimeDb(asset: Asset): Promise<RealtimePrice | null> {
     if (!asset.realtimeDbPath) {
       this.logger.error(`Realtime DB path not configured for ${asset.symbol}`);
       return null;
     }
 
     try {
-      // ✅ Fetch with useCache=true for faster response
+      const fullPath = `${asset.realtimeDbPath}/current_price`;
+      
+      this.logger.debug(`📡 Fetching price from: ${fullPath}`);
+      
       const data = await this.firebaseService.getRealtimeDbValue(
-        asset.realtimeDbPath,
-        true // Use cache
+        fullPath,
+        true
       );
 
-      if (!data?.price) {
-        this.logger.warn(`⚠️ No price data at ${asset.realtimeDbPath}`);
+      if (!data) {
+        this.logger.warn(`⚠️ No data at ${fullPath}`);
         return null;
       }
 
-      // ✅ Validate data
+      if (!data.price) {
+        this.logger.warn(`⚠️ No price field at ${fullPath}, got: ${JSON.stringify(data)}`);
+        return null;
+      }
+
       const now = Math.floor(Date.now() / 1000);
       const dataTimestamp = data.timestamp || 0;
       const dataAge = now - dataTimestamp;
       
-      // ✅ More lenient age check - allow up to 30 seconds
       if (dataAge > 30) {
         this.logger.warn(
           `⚠️ Price for ${asset.symbol} is ${dataAge}s old - simulator may be slow or stopped`
         );
-        // Still return it, but warn
       }
 
-      // ✅ Validate price value
       const price = parseFloat(data.price);
       if (isNaN(price) || price <= 0) {
         this.logger.error(`Invalid price value for ${asset.symbol}: ${data.price}`);
         return null;
       }
 
-      // ✅ Return normalized data
-      return {
+      const result: RealtimePrice = {
         price: price,
         timestamp: dataTimestamp,
         datetime: data.datetime || new Date(dataTimestamp * 1000).toISOString(),
       };
+
+      this.logger.debug(
+        `✅ Got price for ${asset.symbol}: ${price} (${dataAge}s old) from ${fullPath}`
+      );
+
+      return result;
 
     } catch (error) {
       this.logger.error(`❌ Realtime DB error for ${asset.symbol}: ${error.message}`);
@@ -264,9 +239,6 @@ export class PriceFetcherService {
     }
   }
 
-  /**
-   * ✅ API FETCH
-   */
   private async fetchFromApi(asset: Asset): Promise<RealtimePrice | null> {
     if (!asset.apiEndpoint) {
       this.logger.error(`API endpoint not configured for ${asset.symbol}`);
@@ -277,14 +249,10 @@ export class PriceFetcherService {
     return null;
   }
 
-  /**
-   * ✅ MOCK PRICE - FIXED TypeScript errors
-   */
   private generateMockPrice(asset: Asset): RealtimePrice {
-    // ✅ FIXED: Proper type handling with explicit defaults
     const settings = asset.simulatorSettings;
-    const basePrice = settings?.initialPrice || 1000;
-    const volatility = settings?.secondVolatilityMax || 0.0001;
+    const basePrice = settings?.initialPrice ?? 1000;
+    const volatility = settings?.secondVolatilityMax ?? 0.0001;
     
     const variation = (Math.random() - 0.5) * 2 * basePrice * volatility;
     const price = basePrice + variation;
@@ -296,12 +264,9 @@ export class PriceFetcherService {
     };
   }
 
-  /**
-   * ✅ CLEANUP STALE CACHE
-   */
   private cleanupStaleCache(): void {
     const now = Date.now();
-    const MAX_AGE = 60000; // 60 seconds
+    const MAX_AGE = 60000;
     
     let cleaned = 0;
     for (const [assetId, cached] of this.priceCache.entries()) {
@@ -318,13 +283,10 @@ export class PriceFetcherService {
     }
   }
 
-  /**
-   * ✅ PREFETCH PRICES
-   */
   async prefetchPrices(assets: Asset[]): Promise<void> {
     const startTime = Date.now();
     
-    const PARALLEL_LIMIT = 3; // ✅ Reduced from 5 to avoid overwhelming
+    const PARALLEL_LIMIT = 3;
     for (let i = 0; i < assets.length; i += PARALLEL_LIMIT) {
       const batch = assets.slice(i, i + PARALLEL_LIMIT);
       
@@ -337,9 +299,6 @@ export class PriceFetcherService {
     this.logger.log(`⚡ Prefetched ${assets.length} prices in ${duration}ms`);
   }
 
-  /**
-   * ✅ BATCH FETCH
-   */
   async batchFetchPrices(assets: Asset[]): Promise<Map<string, RealtimePrice | null>> {
     const results = new Map<string, RealtimePrice | null>();
     
@@ -356,9 +315,6 @@ export class PriceFetcherService {
     return results;
   }
 
-  /**
-   * ✅ PERFORMANCE STATS
-   */
   getPerformanceStats() {
     const cacheHitRate = this.fetchCount > 0 
       ? Math.round((this.cacheHits / (this.fetchCount + this.cacheHits)) * 100)
@@ -375,17 +331,11 @@ export class PriceFetcherService {
     };
   }
 
-  /**
-   * CLEAR CACHE
-   */
   clearCache(): void {
     this.priceCache.clear();
     this.logger.log('🗑️ Price cache cleared');
   }
 
-  /**
-   * WARM UP CACHE
-   */
   async warmUpCache(assets: Asset[]): Promise<void> {
     this.logger.log(`⚡ Warming up cache for ${assets.length} assets...`);
     await this.prefetchPrices(assets);
