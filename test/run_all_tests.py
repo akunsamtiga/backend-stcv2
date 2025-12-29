@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ============================================
 TEST_FILES = {
     "backend": {
-        "file": "test_backend_improved.py",
+        "file": "test_backend.py",
         "name": "🧪 Backend API Tests",
         "description": "Tests all backend endpoints comprehensively",
         "critical": True,
@@ -39,7 +39,7 @@ TEST_FILES = {
         "parallel_safe": False
     },
     "integration": {
-        "file": "test_integration_improved.py",
+        "file": "test_integration.py",
         "name": "🔄 Integration Tests",
         "description": "Tests end-to-end workflow",
         "critical": True,
@@ -48,7 +48,7 @@ TEST_FILES = {
         "parallel_safe": False
     },
     "simulator": {
-        "file": "test_simulator_improved.py",
+        "file": "test_simulator.py",
         "name": "🔬 Simulator Tests",
         "description": "Tests multi-asset price simulator functionality",
         "critical": False,
