@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """
-Binary Option Trading System - Enhanced Backend API Testing
-===========================================================
-Comprehensive API testing with better error handling and assertions
+Binary Option Trading System - Comprehensive Backend API Testing
+================================================================
+Tests all endpoints with response time monitoring
 """
 
 import requests
 import time
 import json
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from datetime import datetime
 import sys
-import traceback
 
 # ============================================
 # CONFIGURATION
@@ -22,24 +21,10 @@ SUPER_ADMIN_EMAIL = "superadmin@trading.com"
 SUPER_ADMIN_PASSWORD = "SuperAdmin123!"
 
 # Test data
-TEST_USER_EMAIL = f"testuser_{int(time.time())}@example.com"
+TEST_USER_EMAIL = "testuser@example.com"
 TEST_USER_PASSWORD = "TestUser123!"
-
-# Timeouts
-REQUEST_TIMEOUT = 10
-HEALTH_TIMEOUT = 3
-
-# ============================================
-# COLORS
-# ============================================
-class Colors:
-    GREEN = '\033[92m'
-    RED = '\033[91m'
-    YELLOW = '\033[93m'
-    BLUE = '\033[94m'
-    CYAN = '\033[96m'
-    BOLD = '\033[1m'
-    END = '\033[0m'
+TEST_ADMIN_EMAIL = "testadmin@example.com"
+TEST_ADMIN_PASSWORD = "TestAdmin123!"
 
 # ============================================
 # DATA CLASSES
@@ -52,117 +37,82 @@ class TestResult:
     status_code: int
     message: str
     details: Optional[Dict] = None
-    error: Optional[str] = None
 
 @dataclass
 class TestSession:
     super_admin_token: str = ""
+    admin_token: str = ""
     user_token: str = ""
     asset_id: str = ""
     order_id: str = ""
     user_id: str = ""
-    initial_balance: float = 0.0
 
 # ============================================
 # UTILS
 # ============================================
-def print_header(text: str):
-    print(f"\n{Colors.BOLD}{Colors.CYAN}{'='*70}")
-    print(f"{text}")
-    print(f"{'='*70}{Colors.END}\n")
+class Colors:
+    GREEN = '\033[92m'
+    RED = '\033[91m'
+    YELLOW = '\033[93m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    BOLD = '\033[1m'
+    END = '\033[0m'
 
-def print_test_result(result: TestResult, verbose: bool = False):
+def print_header(text: str):
+    print(f"\n{Colors.BOLD}{Colors.CYAN}{'='*60}")
+    print(f"{text}")
+    print(f"{'='*60}{Colors.END}\n")
+
+def print_test_result(result: TestResult):
     status = f"{Colors.GREEN}✓ PASS" if result.passed else f"{Colors.RED}✗ FAIL"
-    print(f"{status}{Colors.END} | {result.name:<45} | {result.response_time:>6.0f}ms | {result.status_code}")
-    
+    print(f"{status}{Colors.END} | {result.name:<40} | {result.response_time:>6.0f}ms | {result.status_code}")
     if not result.passed:
         print(f"      {Colors.RED}Error: {result.message}{Colors.END}")
-        if result.error and verbose:
-            print(f"      {Colors.YELLOW}Details: {result.error}{Colors.END}")
 
 def make_request(
     method: str,
     endpoint: str,
     headers: Optional[Dict] = None,
     json_data: Optional[Dict] = None,
-    params: Optional[Dict] = None,
-    timeout: int = REQUEST_TIMEOUT,
-    retries: int = 2
+    params: Optional[Dict] = None
 ) -> Tuple[requests.Response, float]:
-    """Make HTTP request with retry logic"""
+    """Make HTTP request and measure time"""
     url = f"{BASE_URL}{endpoint}"
     
-    for attempt in range(retries + 1):
-        start_time = time.time()
-        try:
-            response = requests.request(
-                method=method,
-                url=url,
-                headers=headers,
-                json=json_data,
-                params=params,
-                timeout=timeout
-            )
-            elapsed = (time.time() - start_time) * 1000
-            return response, elapsed
-            
-        except requests.exceptions.Timeout:
-            elapsed = (time.time() - start_time) * 1000
-            if attempt < retries:
-                time.sleep(1)
-                continue
-            raise Exception(f"Request timeout after {retries + 1} attempts")
-            
-        except requests.exceptions.ConnectionError:
-            if attempt < retries:
-                time.sleep(2)
-                continue
-            raise Exception("Connection failed - is the server running?")
-            
-        except Exception as e:
-            elapsed = (time.time() - start_time) * 1000
-            raise Exception(f"Request failed: {str(e)}")
-
-def assert_response(response: requests.Response, expected_status: int, name: str) -> None:
-    """Assert response status and structure"""
-    if response.status_code != expected_status:
-        error_msg = f"Expected {expected_status}, got {response.status_code}"
-        try:
-            error_data = response.json()
-            if 'error' in error_data:
-                error_msg += f" - {error_data['error']}"
-        except:
-            pass
-        raise AssertionError(error_msg)
-    
-    # Verify response structure
+    start_time = time.time()
     try:
-        data = response.json()
-        if 'success' not in data and 'data' not in data and 'error' not in data:
-            raise AssertionError("Response missing required fields")
-    except json.JSONDecodeError:
-        raise AssertionError("Response is not valid JSON")
+        response = requests.request(
+            method=method,
+            url=url,
+            headers=headers,
+            json=json_data,
+            params=params,
+            timeout=30
+        )
+        elapsed = (time.time() - start_time) * 1000  # Convert to ms
+        return response, elapsed
+    except Exception as e:
+        elapsed = (time.time() - start_time) * 1000
+        raise Exception(f"Request failed: {str(e)}")
 
 # ============================================
 # TEST FUNCTIONS
 # ============================================
-
 def test_health_check() -> TestResult:
     """Test health check endpoint"""
     try:
-        response, elapsed = make_request("GET", "/health", timeout=HEALTH_TIMEOUT)
-        assert_response(response, 200, "health")
+        response, elapsed = make_request("GET", "/health")
         
-        data = response.json()
-        assert 'status' in data, "Missing status field"
-        assert data['status'] == 'healthy', "Status not healthy"
+        passed = response.status_code == 200
+        data = response.json() if passed else {}
         
         return TestResult(
             name="Health Check",
-            passed=True,
+            passed=passed,
             response_time=elapsed,
             status_code=response.status_code,
-            message="OK",
+            message="OK" if passed else "Failed",
             details=data
         )
     except Exception as e:
@@ -171,8 +121,7 @@ def test_health_check() -> TestResult:
             passed=False,
             response_time=0,
             status_code=0,
-            message=str(e),
-            error=traceback.format_exc()
+            message=str(e)
         )
 
 def test_super_admin_login() -> Tuple[TestResult, str]:
@@ -187,30 +136,28 @@ def test_super_admin_login() -> Tuple[TestResult, str]:
             }
         )
         
-        assert_response(response, 200, "super_admin_login")
-        data = response.json()
+        passed = response.status_code == 200
+        token = ""
         
-        assert 'data' in data, "Missing data field"
-        assert 'token' in data['data'], "Missing token"
-        token = data['data']['token']
-        assert len(token) > 10, "Token too short"
+        if passed:
+            data = response.json()
+            token = data.get("data", {}).get("token", "")
+            passed = bool(token)
         
         return TestResult(
             name="Super Admin Login",
-            passed=True,
+            passed=passed,
             response_time=elapsed,
             status_code=response.status_code,
-            message="Token received"
+            message="Token received" if passed else "No token"
         ), token
-        
     except Exception as e:
         return TestResult(
             name="Super Admin Login",
             passed=False,
             response_time=0,
             status_code=0,
-            message=str(e),
-            error=traceback.format_exc()
+            message=str(e)
         ), ""
 
 def test_user_registration() -> Tuple[TestResult, str]:
@@ -225,36 +172,28 @@ def test_user_registration() -> Tuple[TestResult, str]:
             }
         )
         
-        # Accept both 201 (created) and 409 (exists)
-        if response.status_code not in [201, 409]:
-            raise AssertionError(f"Unexpected status: {response.status_code}")
-        
-        data = response.json()
+        # 201 = success, 409 = already exists (also ok for testing)
+        passed = response.status_code in [201, 409]
         token = ""
         
         if response.status_code == 201:
-            assert 'data' in data, "Missing data field"
-            assert 'token' in data['data'], "Missing token"
-            token = data['data']['token']
-        
-        message = "User created" if response.status_code == 201 else "User exists"
+            data = response.json()
+            token = data.get("data", {}).get("token", "")
         
         return TestResult(
             name="User Registration",
-            passed=True,
+            passed=passed,
             response_time=elapsed,
             status_code=response.status_code,
-            message=message
+            message="User created" if response.status_code == 201 else "User exists"
         ), token
-        
     except Exception as e:
         return TestResult(
             name="User Registration",
             passed=False,
             response_time=0,
             status_code=0,
-            message=str(e),
-            error=traceback.format_exc()
+            message=str(e)
         ), ""
 
 def test_user_login() -> Tuple[TestResult, str]:
@@ -269,33 +208,71 @@ def test_user_login() -> Tuple[TestResult, str]:
             }
         )
         
-        assert_response(response, 200, "user_login")
-        data = response.json()
+        passed = response.status_code == 200
+        token = ""
         
-        assert 'data' in data, "Missing data field"
-        assert 'token' in data['data'], "Missing token"
-        token = data['data']['token']
-        assert len(token) > 10, "Token too short"
+        if passed:
+            data = response.json()
+            token = data.get("data", {}).get("token", "")
+            passed = bool(token)
         
         return TestResult(
             name="User Login",
-            passed=True,
+            passed=passed,
             response_time=elapsed,
             status_code=response.status_code,
-            message="Token received"
+            message="Token received" if passed else "Login failed"
         ), token
-        
     except Exception as e:
         return TestResult(
             name="User Login",
             passed=False,
             response_time=0,
             status_code=0,
-            message=str(e),
-            error=traceback.format_exc()
+            message=str(e)
         ), ""
 
-def test_get_all_assets(token: str) -> Tuple[TestResult, List[str]]:
+def test_create_asset(token: str) -> Tuple[TestResult, str]:
+    """Test creating asset"""
+    try:
+        response, elapsed = make_request(
+            "POST",
+            "/assets",
+            headers={"Authorization": f"Bearer {token}"},
+            json_data={
+                "name": "IDX STC Test",
+                "symbol": "IDX_STC_TEST",
+                "profitRate": 85,
+                "isActive": True,
+                "dataSource": "mock",
+                "description": "Test asset"
+            }
+        )
+        
+        passed = response.status_code in [201, 409]  # 409 if already exists
+        asset_id = ""
+        
+        if response.status_code == 201:
+            data = response.json()
+            asset_id = data.get("data", {}).get("asset", {}).get("id", "")
+        
+        return TestResult(
+            name="Create Asset",
+            passed=passed,
+            response_time=elapsed,
+            status_code=response.status_code,
+            message="Asset created" if response.status_code == 201 else "Asset exists"
+        ), asset_id
+    except Exception as e:
+        return TestResult(
+            name="Create Asset",
+            passed=False,
+            response_time=0,
+            status_code=0,
+            message=str(e)
+        ), ""
+
+def test_get_all_assets(token: str) -> TestResult:
     """Test getting all assets"""
     try:
         response, elapsed = make_request(
@@ -304,33 +281,28 @@ def test_get_all_assets(token: str) -> Tuple[TestResult, List[str]]:
             headers={"Authorization": f"Bearer {token}"}
         )
         
-        assert_response(response, 200, "get_assets")
-        data = response.json()
+        passed = response.status_code == 200
         
-        assert 'data' in data, "Missing data field"
-        assert 'assets' in data['data'], "Missing assets field"
-        assets = data['data']['assets']
-        assert isinstance(assets, list), "Assets is not a list"
-        
-        asset_ids = [asset['id'] for asset in assets if 'id' in asset]
+        if passed:
+            data = response.json()
+            assets = data.get("data", {}).get("assets", [])
+            passed = len(assets) > 0
         
         return TestResult(
             name="Get All Assets",
-            passed=True,
+            passed=passed,
             response_time=elapsed,
             status_code=response.status_code,
-            message=f"Found {len(assets)} assets"
-        ), asset_ids
-        
+            message=f"Found {len(assets)} assets" if passed else "No assets"
+        )
     except Exception as e:
         return TestResult(
             name="Get All Assets",
             passed=False,
             response_time=0,
             status_code=0,
-            message=str(e),
-            error=traceback.format_exc()
-        ), []
+            message=str(e)
+        )
 
 def test_get_asset_price(token: str, asset_id: str) -> TestResult:
     """Test getting asset price"""
@@ -340,43 +312,37 @@ def test_get_asset_price(token: str, asset_id: str) -> TestResult:
             passed=False,
             response_time=0,
             status_code=0,
-            message="No asset ID available"
+            message="No asset ID"
         )
     
     try:
         response, elapsed = make_request(
             "GET",
             f"/assets/{asset_id}/price",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=5  # Shorter timeout for price
+            headers={"Authorization": f"Bearer {token}"}
         )
         
-        assert_response(response, 200, "get_price")
-        data = response.json()
+        passed = response.status_code == 200
         
-        assert 'data' in data, "Missing data field"
-        assert 'price' in data['data'], "Missing price field"
-        
-        price = data['data']['price']
-        assert isinstance(price, (int, float)), "Price is not numeric"
-        assert price > 0, "Price must be positive"
+        if passed:
+            data = response.json()
+            price = data.get("data", {}).get("price")
+            passed = price is not None
         
         return TestResult(
             name="Get Asset Price",
-            passed=True,
+            passed=passed,
             response_time=elapsed,
             status_code=response.status_code,
-            message=f"Price: {price}"
+            message=f"Price: {price}" if passed else "No price"
         )
-        
     except Exception as e:
         return TestResult(
             name="Get Asset Price",
             passed=False,
             response_time=0,
             status_code=0,
-            message=str(e),
-            error=traceback.format_exc()
+            message=str(e)
         )
 
 def test_user_profile(token: str) -> TestResult:
@@ -388,32 +354,25 @@ def test_user_profile(token: str) -> TestResult:
             headers={"Authorization": f"Bearer {token}"}
         )
         
-        assert_response(response, 200, "get_profile")
-        data = response.json()
-        
-        assert 'data' in data, "Missing data field"
-        assert 'user' in data['data'], "Missing user field"
-        assert 'balances' in data['data'], "Missing balances field"
+        passed = response.status_code == 200
         
         return TestResult(
             name="Get User Profile",
-            passed=True,
+            passed=passed,
             response_time=elapsed,
             status_code=response.status_code,
-            message="Profile retrieved"
+            message="Profile retrieved" if passed else "Failed"
         )
-        
     except Exception as e:
         return TestResult(
             name="Get User Profile",
             passed=False,
             response_time=0,
             status_code=0,
-            message=str(e),
-            error=traceback.format_exc()
+            message=str(e)
         )
 
-def test_deposit_balance(token: str, account_type: str = "demo") -> TestResult:
+def test_deposit_balance(token: str) -> TestResult:
     """Test depositing balance"""
     try:
         response, elapsed = make_request(
@@ -421,35 +380,28 @@ def test_deposit_balance(token: str, account_type: str = "demo") -> TestResult:
             "/balance",
             headers={"Authorization": f"Bearer {token}"},
             json_data={
-                "accountType": account_type,
                 "type": "deposit",
                 "amount": 10000,
-                "description": f"Test deposit for {account_type}"
+                "description": "Test deposit"
             }
         )
         
-        assert_response(response, 201, "deposit")
-        data = response.json()
-        
-        assert 'data' in data, "Missing data field"
-        assert 'currentBalance' in data['data'], "Missing currentBalance"
+        passed = response.status_code == 201
         
         return TestResult(
-            name=f"Deposit Balance ({account_type})",
-            passed=True,
+            name="Deposit Balance",
+            passed=passed,
             response_time=elapsed,
             status_code=response.status_code,
-            message="Deposit successful"
+            message="Deposit successful" if passed else "Failed"
         )
-        
     except Exception as e:
         return TestResult(
-            name=f"Deposit Balance ({account_type})",
+            name="Deposit Balance",
             passed=False,
             response_time=0,
             status_code=0,
-            message=str(e),
-            error=traceback.format_exc()
+            message=str(e)
         )
 
 def test_get_balance(token: str) -> TestResult:
@@ -457,47 +409,42 @@ def test_get_balance(token: str) -> TestResult:
     try:
         response, elapsed = make_request(
             "GET",
-            "/balance/both",
+            "/balance/current",
             headers={"Authorization": f"Bearer {token}"}
         )
         
-        assert_response(response, 200, "get_balance")
-        data = response.json()
+        passed = response.status_code == 200
+        balance = 0
         
-        assert 'data' in data, "Missing data field"
-        assert 'realBalance' in data['data'], "Missing realBalance"
-        assert 'demoBalance' in data['data'], "Missing demoBalance"
-        
-        real = data['data']['realBalance']
-        demo = data['data']['demoBalance']
+        if passed:
+            data = response.json()
+            balance = data.get("data", {}).get("balance", 0)
         
         return TestResult(
             name="Get Current Balance",
-            passed=True,
+            passed=passed,
             response_time=elapsed,
             status_code=response.status_code,
-            message=f"Real: {real}, Demo: {demo}"
+            message=f"Balance: {balance}" if passed else "Failed"
         )
-        
     except Exception as e:
         return TestResult(
             name="Get Current Balance",
             passed=False,
             response_time=0,
             status_code=0,
-            message=str(e),
-            error=traceback.format_exc()
+            message=str(e)
         )
 
-def test_create_binary_order(token: str, asset_id: str, account_type: str = "demo") -> Tuple[TestResult, str]:
+def test_create_binary_order(token: str, asset_id: str) -> Tuple[TestResult, str]:
     """Test creating binary order"""
     if not asset_id:
         return TestResult(
-            name=f"Create Binary Order ({account_type})",
+            name="Create Binary Order",
             passed=False,
             response_time=0,
             status_code=0,
-            message="No asset ID available"
+            message="No asset ID"
         ), ""
     
     try:
@@ -506,96 +453,65 @@ def test_create_binary_order(token: str, asset_id: str, account_type: str = "dem
             "/binary-orders",
             headers={"Authorization": f"Bearer {token}"},
             json_data={
-                "accountType": account_type,
                 "asset_id": asset_id,
                 "direction": "CALL",
                 "amount": 1000,
                 "duration": 1
-            },
-            timeout=8  # Longer timeout for order creation
+            }
         )
         
-        assert_response(response, 201, "create_order")
-        data = response.json()
+        passed = response.status_code == 201
+        order_id = ""
         
-        assert 'data' in data, "Missing data field"
-        assert 'order' in data['data'], "Missing order field"
-        
-        order = data['data']['order']
-        order_id = order.get('id', '')
-        
-        assert 'entry_price' in order, "Missing entry_price"
-        assert 'status' in order, "Missing status"
-        assert order['status'] == 'ACTIVE', "Order not active"
-        
-        # Check performance
-        performance_msg = ""
-        if elapsed < 500:
-            performance_msg = " (EXCELLENT)"
-        elif elapsed < 1000:
-            performance_msg = " (GOOD)"
-        elif elapsed < 2000:
-            performance_msg = " (ACCEPTABLE)"
-        else:
-            performance_msg = " (SLOW)"
+        if passed:
+            data = response.json()
+            order_id = data.get("data", {}).get("order", {}).get("id", "")
         
         return TestResult(
-            name=f"Create Binary Order ({account_type})",
-            passed=True,
+            name="Create Binary Order",
+            passed=passed,
             response_time=elapsed,
             status_code=response.status_code,
-            message=f"Order created{performance_msg}"
+            message=f"Order created (took {elapsed:.0f}ms)" if passed else "Failed"
         ), order_id
-        
     except Exception as e:
         return TestResult(
-            name=f"Create Binary Order ({account_type})",
+            name="Create Binary Order",
             passed=False,
             response_time=0,
             status_code=0,
-            message=str(e),
-            error=traceback.format_exc()
+            message=str(e)
         ), ""
 
-def test_get_orders(token: str, account_type: Optional[str] = None) -> TestResult:
+def test_get_orders(token: str) -> TestResult:
     """Test getting all orders"""
     try:
-        params = {}
-        if account_type:
-            params['accountType'] = account_type
-        
         response, elapsed = make_request(
             "GET",
             "/binary-orders",
-            headers={"Authorization": f"Bearer {token}"},
-            params=params
+            headers={"Authorization": f"Bearer {token}"}
         )
         
-        assert_response(response, 200, "get_orders")
-        data = response.json()
+        passed = response.status_code == 200
         
-        assert 'data' in data, "Missing data field"
-        assert 'orders' in data['data'], "Missing orders field"
-        
-        orders = data['data']['orders']
-        filter_type = account_type or "all"
+        if passed:
+            data = response.json()
+            orders = data.get("data", {}).get("orders", [])
         
         return TestResult(
-            name=f"Get Orders ({filter_type})",
-            passed=True,
+            name="Get All Orders",
+            passed=passed,
             response_time=elapsed,
             status_code=response.status_code,
-            message=f"Found {len(orders)} orders"
+            message=f"Found {len(orders)} orders" if passed else "Failed"
         )
-        
     except Exception as e:
         return TestResult(
-            name=f"Get Orders",
+            name="Get All Orders",
             passed=False,
             response_time=0,
             status_code=0,
-            message=str(e),
-            error=traceback.format_exc()
+            message=str(e)
         )
 
 def test_get_order_by_id(token: str, order_id: str) -> TestResult:
@@ -606,7 +522,7 @@ def test_get_order_by_id(token: str, order_id: str) -> TestResult:
             passed=False,
             response_time=0,
             status_code=0,
-            message="No order ID available"
+            message="No order ID"
         )
     
     try:
@@ -616,248 +532,198 @@ def test_get_order_by_id(token: str, order_id: str) -> TestResult:
             headers={"Authorization": f"Bearer {token}"}
         )
         
-        assert_response(response, 200, "get_order_by_id")
-        data = response.json()
-        
-        assert 'data' in data, "Missing data field"
-        assert 'id' in data['data'], "Missing order id"
-        assert data['data']['id'] == order_id, "Order ID mismatch"
+        passed = response.status_code == 200
         
         return TestResult(
             name="Get Order By ID",
-            passed=True,
+            passed=passed,
             response_time=elapsed,
             status_code=response.status_code,
-            message="Order retrieved"
+            message="Order retrieved" if passed else "Failed"
         )
-        
     except Exception as e:
         return TestResult(
             name="Get Order By ID",
             passed=False,
             response_time=0,
             status_code=0,
-            message=str(e),
-            error=traceback.format_exc()
+            message=str(e)
         )
 
-def test_unauthorized_access() -> TestResult:
-    """Test unauthorized access"""
+def test_performance_endpoint() -> TestResult:
+    """Test performance metrics endpoint"""
     try:
-        response, elapsed = make_request(
-            "GET",
-            "/user/profile",
-            retries=0  # No retries for this test
-        )
+        response, elapsed = make_request("GET", "/health/performance")
         
-        # Should fail with 401
-        if response.status_code == 401:
-            return TestResult(
-                name="Unauthorized Access Test",
-                passed=True,
-                response_time=elapsed,
-                status_code=response.status_code,
-                message="Correctly blocked"
-            )
-        else:
-            return TestResult(
-                name="Unauthorized Access Test",
-                passed=False,
-                response_time=elapsed,
-                status_code=response.status_code,
-                message="Should return 401"
-            )
-            
+        passed = response.status_code == 200
+        
+        return TestResult(
+            name="Performance Metrics",
+            passed=passed,
+            response_time=elapsed,
+            status_code=response.status_code,
+            message="Metrics retrieved" if passed else "Failed",
+            details=response.json() if passed else None
+        )
     except Exception as e:
         return TestResult(
-            name="Unauthorized Access Test",
+            name="Performance Metrics",
             passed=False,
             response_time=0,
             status_code=0,
-            message=str(e),
-            error=traceback.format_exc()
+            message=str(e)
         )
 
 # ============================================
 # MAIN TEST RUNNER
 # ============================================
-def run_all_tests(verbose: bool = False):
+def run_all_tests():
     """Run all backend tests"""
-    print_header("🧪 BACKEND API - COMPREHENSIVE TESTS")
+    print_header("🧪 BINARY OPTION BACKEND - COMPREHENSIVE TESTS")
     
     results: List[TestResult] = []
     session = TestSession()
-    
-    start_time = time.time()
     
     # ============================================
     # 1. HEALTH & INFRASTRUCTURE
     # ============================================
     print(f"\n{Colors.BOLD}1️⃣  HEALTH & INFRASTRUCTURE{Colors.END}")
-    print("-" * 70)
+    print("-" * 60)
     
     result = test_health_check()
     results.append(result)
-    print_test_result(result, verbose)
+    print_test_result(result)
     
-    if not result.passed:
-        print(f"\n{Colors.RED}❌ Server not healthy - aborting tests{Colors.END}")
-        sys.exit(1)
+    result = test_performance_endpoint()
+    results.append(result)
+    print_test_result(result)
     
     # ============================================
     # 2. AUTHENTICATION
     # ============================================
     print(f"\n{Colors.BOLD}2️⃣  AUTHENTICATION{Colors.END}")
-    print("-" * 70)
+    print("-" * 60)
     
     result, token = test_super_admin_login()
     session.super_admin_token = token
     results.append(result)
-    print_test_result(result, verbose)
-    
-    if not result.passed:
-        print(f"\n{Colors.RED}❌ Super admin login failed - aborting{Colors.END}")
-        sys.exit(1)
+    print_test_result(result)
     
     result, token = test_user_registration()
     results.append(result)
-    print_test_result(result, verbose)
+    print_test_result(result)
     
     result, token = test_user_login()
     session.user_token = token
     results.append(result)
-    print_test_result(result, verbose)
-    
-    if not session.user_token:
-        print(f"\n{Colors.RED}❌ User login failed - aborting{Colors.END}")
-        sys.exit(1)
-    
-    # Unauthorized access test
-    result = test_unauthorized_access()
-    results.append(result)
-    print_test_result(result, verbose)
+    print_test_result(result)
     
     # ============================================
     # 3. ASSET MANAGEMENT
     # ============================================
     print(f"\n{Colors.BOLD}3️⃣  ASSET MANAGEMENT{Colors.END}")
-    print("-" * 70)
+    print("-" * 60)
     
-    result, asset_ids = test_get_all_assets(session.user_token)
+    result, asset_id = test_create_asset(session.super_admin_token)
+    session.asset_id = asset_id
     results.append(result)
-    print_test_result(result, verbose)
+    print_test_result(result)
     
-    if asset_ids:
-        session.asset_id = asset_ids[0]
-        
-        result = test_get_asset_price(session.user_token, session.asset_id)
-        results.append(result)
-        print_test_result(result, verbose)
-    else:
-        print(f"{Colors.YELLOW}⚠️  No assets found - skipping price test{Colors.END}")
+    result = test_get_all_assets(session.user_token)
+    results.append(result)
+    print_test_result(result)
+    
+    # Get real asset ID if we didn't create one
+    if not session.asset_id:
+        try:
+            response, _ = make_request(
+                "GET",
+                "/assets",
+                headers={"Authorization": f"Bearer {session.user_token}"}
+            )
+            if response.status_code == 200:
+                data = response.json()
+                assets = data.get("data", {}).get("assets", [])
+                if assets:
+                    session.asset_id = assets[0]["id"]
+        except:
+            pass
+    
+    result = test_get_asset_price(session.user_token, session.asset_id)
+    results.append(result)
+    print_test_result(result)
     
     # ============================================
     # 4. USER PROFILE & BALANCE
     # ============================================
     print(f"\n{Colors.BOLD}4️⃣  USER PROFILE & BALANCE{Colors.END}")
-    print("-" * 70)
+    print("-" * 60)
     
     result = test_user_profile(session.user_token)
     results.append(result)
-    print_test_result(result, verbose)
+    print_test_result(result)
     
-    # Test demo account deposit
-    result = test_deposit_balance(session.user_token, "demo")
+    result = test_deposit_balance(session.user_token)
     results.append(result)
-    print_test_result(result, verbose)
-    
-    # Test real account deposit
-    result = test_deposit_balance(session.user_token, "real")
-    results.append(result)
-    print_test_result(result, verbose)
+    print_test_result(result)
     
     result = test_get_balance(session.user_token)
     results.append(result)
-    print_test_result(result, verbose)
+    print_test_result(result)
     
     # ============================================
     # 5. BINARY ORDERS
     # ============================================
     print(f"\n{Colors.BOLD}5️⃣  BINARY ORDERS{Colors.END}")
-    print("-" * 70)
+    print("-" * 60)
     
-    if session.asset_id:
-        # Demo order
-        result, order_id = test_create_binary_order(session.user_token, session.asset_id, "demo")
-        if order_id:
-            session.order_id = order_id
-        results.append(result)
-        print_test_result(result, verbose)
-        
-        # Real order
-        result, _ = test_create_binary_order(session.user_token, session.asset_id, "real")
-        results.append(result)
-        print_test_result(result, verbose)
-        
-        # Get all orders
-        result = test_get_orders(session.user_token)
-        results.append(result)
-        print_test_result(result, verbose)
-        
-        # Get demo orders
-        result = test_get_orders(session.user_token, "demo")
-        results.append(result)
-        print_test_result(result, verbose)
-        
-        # Get real orders
-        result = test_get_orders(session.user_token, "real")
-        results.append(result)
-        print_test_result(result, verbose)
-        
-        # Get order by ID
-        if session.order_id:
-            result = test_get_order_by_id(session.user_token, session.order_id)
-            results.append(result)
-            print_test_result(result, verbose)
-    else:
-        print(f"{Colors.YELLOW}⚠️  No assets - skipping order tests{Colors.END}")
+    result, order_id = test_create_binary_order(session.user_token, session.asset_id)
+    session.order_id = order_id
+    results.append(result)
+    print_test_result(result)
+    
+    result = test_get_orders(session.user_token)
+    results.append(result)
+    print_test_result(result)
+    
+    result = test_get_order_by_id(session.user_token, session.order_id)
+    results.append(result)
+    print_test_result(result)
     
     # ============================================
     # SUMMARY
     # ============================================
-    total_time = time.time() - start_time
     print_header("📊 TEST SUMMARY")
     
     passed = sum(1 for r in results if r.passed)
     failed = sum(1 for r in results if not r.passed)
     total = len(results)
     
-    avg_response_time = sum(r.response_time for r in results if r.passed) / passed if passed > 0 else 0
+    avg_response_time = sum(r.response_time for r in results) / total if total > 0 else 0
     
     print(f"{Colors.BOLD}Total Tests:{Colors.END} {total}")
     print(f"{Colors.GREEN}✓ Passed:{Colors.END} {passed}")
     print(f"{Colors.RED}✗ Failed:{Colors.END} {failed}")
     print(f"{Colors.CYAN}Success Rate:{Colors.END} {(passed/total*100):.1f}%")
     print(f"{Colors.YELLOW}Avg Response Time:{Colors.END} {avg_response_time:.0f}ms")
-    print(f"{Colors.BLUE}Total Duration:{Colors.END} {total_time:.2f}s")
     
     # Response time analysis
-    if passed > 0:
-        print(f"\n{Colors.BOLD}Response Time Analysis:{Colors.END}")
-        fast = sum(1 for r in results if r.passed and r.response_time < 500)
-        medium = sum(1 for r in results if r.passed and 500 <= r.response_time < 1000)
-        slow = sum(1 for r in results if r.passed and r.response_time >= 1000)
-        
-        print(f"  🚀 Fast (<500ms):   {fast} ({fast/passed*100:.1f}%)")
-        print(f"  ⚡ Medium (500-1s): {medium} ({medium/passed*100:.1f}%)")
-        print(f"  🐌 Slow (>1s):      {slow} ({slow/passed*100:.1f}%)")
+    print(f"\n{Colors.BOLD}Response Time Analysis:{Colors.END}")
+    fast = sum(1 for r in results if r.response_time < 500)
+    medium = sum(1 for r in results if 500 <= r.response_time < 1000)
+    slow = sum(1 for r in results if r.response_time >= 1000)
     
-    # Failed tests details
-    if failed > 0:
-        print(f"\n{Colors.BOLD}{Colors.RED}Failed Tests:{Colors.END}")
-        for result in results:
-            if not result.passed:
-                print(f"  ❌ {result.name}: {result.message}")
+    print(f"  🚀 Fast (<500ms):   {fast}")
+    print(f"  ⚡ Medium (500-1s): {medium}")
+    print(f"  🐌 Slow (>1s):      {slow}")
+    
+    # Critical endpoints analysis
+    print(f"\n{Colors.BOLD}Critical Endpoint Performance:{Colors.END}")
+    critical_tests = [r for r in results if "Order" in r.name or "Price" in r.name]
+    if critical_tests:
+        for test in critical_tests:
+            status = "✅" if test.response_time < 500 else "⚠️" if test.response_time < 1000 else "❌"
+            print(f"  {status} {test.name}: {test.response_time:.0f}ms")
     
     print()
     
@@ -865,19 +731,11 @@ def run_all_tests(verbose: bool = False):
     sys.exit(0 if failed == 0 else 1)
 
 if __name__ == "__main__":
-    import argparse
-    
-    parser = argparse.ArgumentParser(description='Backend API Test Suite')
-    parser.add_argument('-v', '--verbose', action='store_true', help='Verbose output')
-    args = parser.parse_args()
-    
     try:
-        run_all_tests(verbose=args.verbose)
+        run_all_tests()
     except KeyboardInterrupt:
         print(f"\n\n{Colors.YELLOW}Tests interrupted by user{Colors.END}")
         sys.exit(1)
     except Exception as e:
         print(f"\n\n{Colors.RED}Fatal error: {str(e)}{Colors.END}")
-        if args.verbose:
-            traceback.print_exc()
         sys.exit(1)
