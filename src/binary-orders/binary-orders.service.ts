@@ -1,5 +1,5 @@
 // src/binary-orders/binary-orders.service.ts
-// ✅ UPDATED: getOrders method accepts accountType from DTO
+// ✅ FIXED: Improved price fetching with better timeout and retry
 
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
@@ -42,7 +42,7 @@ export class BinaryOrdersService {
   ) {
     setInterval(() => this.cleanupStaleCache(), 10000);
     
-    this.logger.log(`🌍 Timezone: Asia/Jakarta (WIB = UTC+7)`);
+    this.logger.log(`🌐 Timezone: Asia/Jakarta (WIB = UTC+7)`);
     this.logger.log(`⏰ Current time: ${TimezoneUtil.formatDateTime()}`);
   }
 
@@ -51,13 +51,54 @@ export class BinaryOrdersService {
   }
 
   /**
-   * ✅ CREATE ORDER
+   * ✅ IMPROVED: Get fast price with multiple retries
+   */
+  private async getFastPriceWithRetry(assetId: string, maxRetries = 3): Promise<any> {
+    let lastError: Error | null = null;
+    
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const asset = await this.getCachedAssetFast(assetId);
+        
+        // ✅ INCREASED TIMEOUT: 2 seconds instead of 800ms
+        const priceData = await Promise.race([
+          this.priceFetcherService.getCurrentPrice(asset, true),
+          new Promise<never>((_, reject) => 
+            setTimeout(() => reject(new Error('Timeout')), 2000)
+          ),
+        ]);
+
+        if (priceData && priceData.price) {
+          if (attempt > 0) {
+            this.logger.log(`✅ Price fetch succeeded on retry ${attempt + 1}`);
+          }
+          return priceData;
+        }
+
+      } catch (error) {
+        lastError = error;
+        
+        if (attempt < maxRetries - 1) {
+          const delay = 200 * (attempt + 1); // Exponential backoff
+          this.logger.warn(`⚠️ Price fetch attempt ${attempt + 1} failed, retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    }
+
+    this.logger.error(`❌ All ${maxRetries} price fetch attempts failed: ${lastError?.message}`);
+    return null;
+  }
+
+  /**
+   * ✅ CREATE ORDER - IMPROVED
    */
   async createOrder(userId: string, createOrderDto: CreateBinaryOrderDto) {
     const startTime = Date.now();
     const { accountType, amount } = createOrderDto;
     
     try {
+      // Validation
       if (accountType !== BALANCE_ACCOUNT_TYPE.REAL && accountType !== BALANCE_ACCOUNT_TYPE.DEMO) {
         throw new BadRequestException('Invalid account type. Must be "real" or "demo"');
       }
@@ -72,20 +113,38 @@ export class BinaryOrdersService {
         throw new BadRequestException('Minimum order amount is Rp 1,000');
       }
 
-      const [asset, priceData] = await Promise.all([
-        this.getCachedAssetFast(createOrderDto.asset_id),
-        this.getFastPriceWithFallback(createOrderDto.asset_id),
-      ]);
+      // ✅ IMPROVED: Fetch asset and price with better error handling
+      this.logger.log(`📡 Fetching asset ${createOrderDto.asset_id}...`);
+      const asset = await this.getCachedAssetFast(createOrderDto.asset_id);
 
       if (!asset.isActive) {
         throw new BadRequestException('Asset not active');
       }
 
+      this.logger.log(`📡 Fetching price for ${asset.symbol}...`);
+      const priceData = await this.getFastPriceWithRetry(createOrderDto.asset_id, 3);
+
       if (!priceData || !priceData.price) {
-        throw new BadRequestException('Price unavailable, please try again');
+        // ✅ BETTER ERROR MESSAGE
+        throw new BadRequestException(
+          `Price unavailable for ${asset.symbol}. The price simulator may be loading or experiencing connectivity issues. Please wait a moment and try again.`
+        );
       }
 
-      this.logger.log(`🔍 Checking ${accountType} balance for user ${userId}...`);
+      // Check price freshness
+      const now = TimezoneUtil.getCurrentTimestamp();
+      const dataAge = now - (priceData.timestamp || 0);
+      
+      if (dataAge > 10) {
+        this.logger.warn(
+          `⚠️ Price data is ${dataAge}s old for ${asset.symbol} - simulator may be lagging`
+        );
+      }
+
+      this.logger.log(`✅ Got price for ${asset.symbol}: ${priceData.price} (${dataAge}s old)`);
+
+      // Check balance
+      this.logger.log(`💰 Checking ${accountType} balance for user ${userId}...`);
       
       const currentBalance = await this.balanceService.getCurrentBalanceStrict(
         userId, 
@@ -108,6 +167,7 @@ export class BinaryOrdersService {
         );
       }
 
+      // Create order
       const orderId = await this.firebaseService.generateId(COLLECTIONS.ORDERS);
       
       const entryTimestamp = TimezoneUtil.getCurrentTimestamp();
@@ -283,27 +343,40 @@ export class BinaryOrdersService {
   }
 
   /**
-   * ✅ SETTLE SINGLE ORDER
+   * ✅ SETTLE SINGLE ORDER - IMPROVED
    */
   private async settleOrderInstant(order: BinaryOrder): Promise<void> {
     const startTime = Date.now();
     
     try {
-      const [asset, priceData] = await Promise.all([
-        this.getCachedAssetFast(order.asset_id),
-        Promise.race([
-          this.priceFetcherService.getCurrentPrice(
-            await this.getCachedAssetFast(order.asset_id),
-            false
-          ),
-          new Promise<any>((_, reject) => 
-            setTimeout(() => reject(new Error('Timeout')), 1000)
-          ),
-        ]),
-      ]);
+      const asset = await this.getCachedAssetFast(order.asset_id);
+      
+      // ✅ IMPROVED: Try multiple times to get price
+      let priceData: any = null;
+      let attempts = 0;
+      const maxAttempts = 3;
+
+      while (attempts < maxAttempts && !priceData?.price) {
+        try {
+          priceData = await Promise.race([
+            this.priceFetcherService.getCurrentPrice(asset, false),
+            new Promise<any>((_, reject) => 
+              setTimeout(() => reject(new Error('Timeout')), 2000)
+            ),
+          ]);
+
+          if (priceData?.price) break;
+
+        } catch (error) {
+          attempts++;
+          if (attempts < maxAttempts) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+        }
+      }
 
       if (!priceData?.price) {
-        this.logger.warn(`No price for order ${order.id}, retrying next cycle`);
+        this.logger.warn(`⚠️ No price for order ${order.id} after ${maxAttempts} attempts, retrying next cycle`);
         return;
       }
 
@@ -378,7 +451,7 @@ export class BinaryOrdersService {
   }
 
   /**
-   * ✅ GET ORDERS - UPDATED to accept QueryBinaryOrderDto directly
+   * ✅ GET ORDERS
    */
   async getOrders(
     userId: string, 
@@ -390,12 +463,10 @@ export class BinaryOrdersService {
     let query = db.collection(COLLECTIONS.ORDERS)
       .where('user_id', '==', userId);
 
-    // ✅ Apply accountType filter if provided
     if (accountType && (accountType === 'real' || accountType === 'demo')) {
       query = query.where('accountType', '==', accountType) as any;
     }
 
-    // ✅ Apply status filter if provided
     if (status) {
       query = query.where('status', '==', status) as any;
     }
@@ -470,25 +541,6 @@ export class BinaryOrdersService {
     this.assetCache.set(assetId, { asset, timestamp: now });
     
     return asset;
-  }
-
-  /**
-   * HELPER: Get fast price with fallback
-   */
-  private async getFastPriceWithFallback(assetId: string) {
-    try {
-      const asset = await this.getCachedAssetFast(assetId);
-      
-      return await Promise.race([
-        this.priceFetcherService.getCurrentPrice(asset, true),
-        new Promise<never>((_, reject) => 
-          setTimeout(() => reject(new Error('Timeout')), 800)
-        ),
-      ]);
-    } catch (error) {
-      this.logger.error(`Fast price fetch failed: ${error.message}`);
-      return null;
-    }
   }
 
   /**
