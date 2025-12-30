@@ -71,7 +71,7 @@ export class AuthService implements OnModuleInit {
         profitRate: 85,
         isActive: true,
         dataSource: 'realtime_db',
-        realtimeDbPath: '/idx_stc/current_price',
+        realtimeDbPath: '/idx_stc',
         description: 'Indonesian Stock Index - Default Asset',
         
         // ✅ Default simulator settings
