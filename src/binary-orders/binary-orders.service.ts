@@ -1,5 +1,5 @@
 // src/binary-orders/binary-orders.service.ts
-// ✅ FIXED: Improved price fetching with better timeout and retry
+// 🎯 BILLING-OPTIMIZED VERSION - Reduced settlement frequency & cached active orders
 
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
@@ -18,14 +18,16 @@ export class BinaryOrdersService {
   private readonly logger = new Logger(BinaryOrdersService.name);
   
   private orderCache: Map<string, BinaryOrder> = new Map();
-  private realActiveOrdersCache: BinaryOrder[] = [];
-  private demoActiveOrdersCache: BinaryOrder[] = [];
+  
+  // 🎯 IN-MEMORY CACHE for active orders (reduces Firestore reads)
+  private activeOrdersCache: Map<string, BinaryOrder[]> = new Map(); // accountType -> orders
+  private lastActiveOrdersFetch: Map<string, number> = new Map(); // accountType -> timestamp
+  private readonly ACTIVE_ORDERS_CACHE_TTL = 5000; // 5 seconds
+  
   private assetCache: Map<string, { asset: Asset; timestamp: number }> = new Map();
   
   private readonly ORDER_CACHE_TTL = 1000;
   private readonly ASSET_CACHE_TTL = 20000;
-  private lastRealCacheUpdate = 0;
-  private lastDemoCacheUpdate = 0;
   
   private processingLock = false;
   
@@ -33,6 +35,7 @@ export class BinaryOrdersService {
   private orderSettleCount = 0;
   private avgCreateTime = 0;
   private avgSettleTime = 0;
+  private settlementRunCount = 0;
 
   constructor(
     private firebaseService: FirebaseService,
@@ -44,6 +47,9 @@ export class BinaryOrdersService {
     
     this.logger.log(`🌐 Timezone: Asia/Jakarta (WIB = UTC+7)`);
     this.logger.log(`⏰ Current time: ${TimezoneUtil.formatDateTime()}`);
+    this.logger.log(`💰 Billing optimizations:`);
+    this.logger.log(`   • Settlement: Every 5 seconds (was 2s)`);
+    this.logger.log(`   • Active orders cached: 5s TTL`);
   }
 
   private isValidDuration(duration: number): duration is ValidDuration {
@@ -51,8 +57,41 @@ export class BinaryOrdersService {
   }
 
   /**
-   * ✅ IMPROVED: Get fast price with multiple retries
+   * 🎯 GET CACHED ACTIVE ORDERS - Reduce Firestore reads
    */
+  private async getCachedActiveOrders(accountType: 'real' | 'demo'): Promise<BinaryOrder[]> {
+    const now = Date.now();
+    const lastFetch = this.lastActiveOrdersFetch.get(accountType) || 0;
+    const age = now - lastFetch;
+
+    // Use cache if fresh
+    if (age < this.ACTIVE_ORDERS_CACHE_TTL) {
+      const cached = this.activeOrdersCache.get(accountType);
+      if (cached) {
+        this.logger.debug(`⚡ Using cached active orders for ${accountType} (${age}ms old)`);
+        return cached;
+      }
+    }
+
+    // Fetch fresh data
+    const orders = await this.getActiveOrdersFromDB(accountType);
+    
+    this.activeOrdersCache.set(accountType, orders);
+    this.lastActiveOrdersFetch.set(accountType, now);
+    
+    this.logger.debug(`📊 Fetched ${orders.length} active ${accountType} orders from Firestore`);
+    
+    return orders;
+  }
+
+  /**
+   * 🎯 CLEAR ACTIVE ORDERS CACHE - After settlement
+   */
+  private clearActiveOrdersCache(): void {
+    this.activeOrdersCache.clear();
+    this.lastActiveOrdersFetch.clear();
+  }
+
   private async getFastPriceWithRetry(assetId: string, maxRetries = 3): Promise<any> {
     let lastError: Error | null = null;
     
@@ -60,7 +99,6 @@ export class BinaryOrdersService {
       try {
         const asset = await this.getCachedAssetFast(assetId);
         
-        // ✅ INCREASED TIMEOUT: 2 seconds instead of 800ms
         const priceData = await Promise.race([
           this.priceFetcherService.getCurrentPrice(asset, true),
           new Promise<never>((_, reject) => 
@@ -79,7 +117,7 @@ export class BinaryOrdersService {
         lastError = error;
         
         if (attempt < maxRetries - 1) {
-          const delay = 200 * (attempt + 1); // Exponential backoff
+          const delay = 200 * (attempt + 1);
           this.logger.warn(`⚠️ Price fetch attempt ${attempt + 1} failed, retrying in ${delay}ms...`);
           await new Promise(resolve => setTimeout(resolve, delay));
         }
@@ -90,15 +128,11 @@ export class BinaryOrdersService {
     return null;
   }
 
-  /**
-   * ✅ CREATE ORDER - IMPROVED
-   */
   async createOrder(userId: string, createOrderDto: CreateBinaryOrderDto) {
     const startTime = Date.now();
     const { accountType, amount } = createOrderDto;
     
     try {
-      // Validation
       if (accountType !== BALANCE_ACCOUNT_TYPE.REAL && accountType !== BALANCE_ACCOUNT_TYPE.DEMO) {
         throw new BadRequestException('Invalid account type. Must be "real" or "demo"');
       }
@@ -113,7 +147,6 @@ export class BinaryOrdersService {
         throw new BadRequestException('Minimum order amount is Rp 1,000');
       }
 
-      // ✅ IMPROVED: Fetch asset and price with better error handling
       this.logger.log(`📡 Fetching asset ${createOrderDto.asset_id}...`);
       const asset = await this.getCachedAssetFast(createOrderDto.asset_id);
 
@@ -125,13 +158,11 @@ export class BinaryOrdersService {
       const priceData = await this.getFastPriceWithRetry(createOrderDto.asset_id, 3);
 
       if (!priceData || !priceData.price) {
-        // ✅ BETTER ERROR MESSAGE
         throw new BadRequestException(
           `Price unavailable for ${asset.symbol}. The price simulator may be loading or experiencing connectivity issues. Please wait a moment and try again.`
         );
       }
 
-      // Check price freshness
       const now = TimezoneUtil.getCurrentTimestamp();
       const dataAge = now - (priceData.timestamp || 0);
       
@@ -143,7 +174,6 @@ export class BinaryOrdersService {
 
       this.logger.log(`✅ Got price for ${asset.symbol}: ${priceData.price} (${dataAge}s old)`);
 
-      // Check balance
       this.logger.log(`💰 Checking ${accountType} balance for user ${userId}...`);
       
       const currentBalance = await this.balanceService.getCurrentBalanceStrict(
@@ -167,7 +197,6 @@ export class BinaryOrdersService {
         );
       }
 
-      // Create order
       const orderId = await this.firebaseService.generateId(COLLECTIONS.ORDERS);
       
       const entryTimestamp = TimezoneUtil.getCurrentTimestamp();
@@ -227,16 +256,10 @@ export class BinaryOrdersService {
       }
 
       this.balanceService.clearUserCache(userId);
-
       this.orderCache.set(orderId, orderData);
       
-      if (accountType === BALANCE_ACCOUNT_TYPE.REAL) {
-        this.realActiveOrdersCache.push(orderData);
-        this.lastRealCacheUpdate = 0;
-      } else {
-        this.demoActiveOrdersCache.push(orderData);
-        this.lastDemoCacheUpdate = 0;
-      }
+      // 🎯 Clear active orders cache to force refresh
+      this.clearActiveOrdersCache();
 
       const newBalance = await this.balanceService.getCurrentBalance(userId, accountType, true);
       
@@ -273,22 +296,29 @@ export class BinaryOrdersService {
   }
 
   /**
-   * ✅ SETTLEMENT CRON
+   * 🎯 OPTIMIZED SETTLEMENT CRON - Every 5 seconds (was 2s)
+   * 
+   * Billing Impact:
+   * - OLD: 43,200 checks/day (2s interval)
+   * - NEW: 17,280 checks/day (5s interval)
+   * - SAVINGS: 60% reduction in Firestore reads
    */
-  @Cron('*/2 * * * * *')
+  @Cron('*/5 * * * * *') // ✅ Changed from 2s to 5s
   async processExpiredOrders() {
     if (this.processingLock) return;
 
     this.processingLock = true;
+    this.settlementRunCount++;
     const startTime = Date.now();
 
     try {
       const currentTimestamp = TimezoneUtil.getCurrentTimestamp();
       const currentDateTime = TimezoneUtil.formatDateTime();
       
+      // 🎯 Use cached active orders (reduces Firestore reads by ~60%)
       const [realOrders, demoOrders] = await Promise.all([
-        this.getActiveOrdersFromDB(BALANCE_ACCOUNT_TYPE.REAL),
-        this.getActiveOrdersFromDB(BALANCE_ACCOUNT_TYPE.DEMO),
+        this.getCachedActiveOrders(BALANCE_ACCOUNT_TYPE.REAL),
+        this.getCachedActiveOrders(BALANCE_ACCOUNT_TYPE.DEMO),
       ]);
 
       const expiredRealOrders = realOrders.filter(order => {
@@ -304,6 +334,12 @@ export class BinaryOrdersService {
       const totalExpired = expiredRealOrders.length + expiredDemoOrders.length;
 
       if (totalExpired === 0) {
+        // Log every 10 runs to reduce log spam
+        if (this.settlementRunCount % 10 === 0) {
+          this.logger.debug(
+            `⏰ Settlement check #${this.settlementRunCount}: No expired orders (${realOrders.length + demoOrders.length} active)`
+          );
+        }
         return;
       }
 
@@ -318,6 +354,8 @@ export class BinaryOrdersService {
         this.settleBatch(expiredDemoOrders, PARALLEL_LIMIT),
       ]);
 
+      // 🎯 Clear cache after settlement
+      this.clearActiveOrdersCache();
       this.clearAllCache();
 
       const duration = Date.now() - startTime;
@@ -330,9 +368,6 @@ export class BinaryOrdersService {
     }
   }
 
-  /**
-   * ✅ BATCH SETTLEMENT
-   */
   private async settleBatch(orders: BinaryOrder[], batchSize: number): Promise<void> {
     for (let i = 0; i < orders.length; i += batchSize) {
       const batch = orders.slice(i, i + batchSize);
@@ -342,16 +377,12 @@ export class BinaryOrdersService {
     }
   }
 
-  /**
-   * ✅ SETTLE SINGLE ORDER - IMPROVED
-   */
   private async settleOrderInstant(order: BinaryOrder): Promise<void> {
     const startTime = Date.now();
     
     try {
       const asset = await this.getCachedAssetFast(order.asset_id);
       
-      // ✅ IMPROVED: Try multiple times to get price
       let priceData: any = null;
       let attempts = 0;
       const maxAttempts = 3;
@@ -415,11 +446,6 @@ export class BinaryOrdersService {
       }
 
       this.orderCache.delete(order.id);
-      if (order.accountType === BALANCE_ACCOUNT_TYPE.REAL) {
-        this.lastRealCacheUpdate = 0;
-      } else {
-        this.lastDemoCacheUpdate = 0;
-      }
 
       const duration = Date.now() - startTime;
       this.orderSettleCount++;
@@ -434,9 +460,6 @@ export class BinaryOrdersService {
     }
   }
 
-  /**
-   * ✅ GET ACTIVE ORDERS FROM DB
-   */
   private async getActiveOrdersFromDB(accountType?: 'real' | 'demo'): Promise<BinaryOrder[]> {
     const db = this.firebaseService.getFirestore();
     let query = db.collection(COLLECTIONS.ORDERS)
@@ -450,9 +473,6 @@ export class BinaryOrdersService {
     return snapshot.docs.map(doc => doc.data() as BinaryOrder);
   }
 
-  /**
-   * ✅ GET ORDERS
-   */
   async getOrders(
     userId: string, 
     queryDto: QueryBinaryOrderDto
@@ -498,9 +518,6 @@ export class BinaryOrdersService {
     };
   }
 
-  /**
-   * GET ORDER BY ID
-   */
   async getOrderById(userId: string, orderId: string) {
     const db = this.firebaseService.getFirestore();
     const orderDoc = await db.collection(COLLECTIONS.ORDERS).doc(orderId).get();
@@ -526,9 +543,6 @@ export class BinaryOrdersService {
     };
   }
 
-  /**
-   * HELPER: Get cached asset
-   */
   private async getCachedAssetFast(assetId: string): Promise<Asset> {
     const cached = this.assetCache.get(assetId);
     const now = Date.now();
@@ -543,9 +557,6 @@ export class BinaryOrdersService {
     return asset;
   }
 
-  /**
-   * CLEANUP STALE CACHE
-   */
   private cleanupStaleCache(): void {
     const now = Date.now();
     
@@ -560,33 +571,33 @@ export class BinaryOrdersService {
         this.assetCache.delete(assetId);
       }
     }
+
+    // Clear stale active orders cache
+    for (const [accountType, timestamp] of this.lastActiveOrdersFetch.entries()) {
+      if (now - timestamp > this.ACTIVE_ORDERS_CACHE_TTL * 10) {
+        this.activeOrdersCache.delete(accountType);
+        this.lastActiveOrdersFetch.delete(accountType);
+      }
+    }
   }
 
-  /**
-   * CLEAR ALL CACHE
-   */
   clearAllCache(): void {
     this.orderCache.clear();
-    this.realActiveOrdersCache = [];
-    this.demoActiveOrdersCache = [];
-    this.lastRealCacheUpdate = 0;
-    this.lastDemoCacheUpdate = 0;
+    this.clearActiveOrdersCache();
     this.logger.debug('⚡ All caches cleared');
   }
 
-  /**
-   * PERFORMANCE STATS
-   */
   getPerformanceStats() {
     return {
       ordersCreated: this.orderCreateCount,
       ordersSettled: this.orderSettleCount,
+      settlementRuns: this.settlementRunCount,
       avgCreateTime: Math.round(this.avgCreateTime),
       avgSettleTime: Math.round(this.avgSettleTime),
       cacheSize: {
         orders: this.orderCache.size,
-        realActiveOrders: this.realActiveOrdersCache.length,
-        demoActiveOrders: this.demoActiveOrdersCache.length,
+        realActiveOrders: this.activeOrdersCache.get('real')?.length || 0,
+        demoActiveOrders: this.activeOrdersCache.get('demo')?.length || 0,
         assets: this.assetCache.size,
       },
       performance: {
@@ -594,6 +605,12 @@ export class BinaryOrdersService {
         settleTimeTarget: 200,
         createTimeStatus: this.avgCreateTime < 300 ? 'EXCELLENT' : 'NEEDS_IMPROVEMENT',
         settleTimeStatus: this.avgSettleTime < 200 ? 'EXCELLENT' : 'NEEDS_IMPROVEMENT',
+      },
+      billing: {
+        settlementInterval: '5 seconds',
+        estimatedDailyChecks: 17280,
+        cacheTTL: `${this.ACTIVE_ORDERS_CACHE_TTL}ms`,
+        savingsVsOld: '60% fewer Firestore reads',
       },
       timezone: {
         name: 'Asia/Jakarta',
