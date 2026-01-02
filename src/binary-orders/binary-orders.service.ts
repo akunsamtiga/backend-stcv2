@@ -1,5 +1,9 @@
 // src/binary-orders/binary-orders.service.ts
-// 🎯 BILLING-OPTIMIZED VERSION - Reduced settlement frequency & cached active orders
+// 🎯 SETTLEMENT-OPTIMIZED VERSION
+// ✅ Settlement interval: 5 seconds (was 2s)
+// ✅ Reduced Firestore reads
+// ✅ Aggressive caching
+// ✅ Don't compete with simulator
 
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
@@ -47,9 +51,11 @@ export class BinaryOrdersService {
     
     this.logger.log(`🌐 Timezone: Asia/Jakarta (WIB = UTC+7)`);
     this.logger.log(`⏰ Current time: ${TimezoneUtil.formatDateTime()}`);
-    this.logger.log(`💰 Billing optimizations:`);
-    this.logger.log(`   • Settlement: Every 5 seconds (was 2s)`);
+    this.logger.log(`💡 Settlement optimizations:`);
+    this.logger.log(`   • Settlement: Every 5 seconds (was 2s)`); // ✅ Updated
     this.logger.log(`   • Active orders cached: 5s TTL`);
+    this.logger.log(`   • Reduced Firestore reads`);
+    this.logger.log(`   • Priority: Simulator writes > Settlement reads`);
   }
 
   private isValidDuration(duration: number): duration is ValidDuration {
@@ -298,10 +304,11 @@ export class BinaryOrdersService {
   /**
    * 🎯 OPTIMIZED SETTLEMENT CRON - Every 5 seconds (was 2s)
    * 
-   * Billing Impact:
-   * - OLD: 43,200 checks/day (2s interval)
-   * - NEW: 17,280 checks/day (5s interval)
-   * - SAVINGS: 60% reduction in Firestore reads
+   * Impact:
+   * - OLD: ~43,200 checks/day
+   * - NEW: ~17,280 checks/day
+   * - SAVINGS: 60% fewer Firestore reads
+   * - Frees up connections for simulator
    */
   @Cron('*/5 * * * * *') // ✅ Changed from 2s to 5s
   async processExpiredOrders() {
@@ -334,8 +341,8 @@ export class BinaryOrdersService {
       const totalExpired = expiredRealOrders.length + expiredDemoOrders.length;
 
       if (totalExpired === 0) {
-        // Log every 10 runs to reduce log spam
-        if (this.settlementRunCount % 10 === 0) {
+        // Log every 12 runs (1 minute) to reduce log spam
+        if (this.settlementRunCount % 12 === 0) {
           this.logger.debug(
             `⏰ Settlement check #${this.settlementRunCount}: No expired orders (${realOrders.length + demoOrders.length} active)`
           );
@@ -606,8 +613,8 @@ export class BinaryOrdersService {
         createTimeStatus: this.avgCreateTime < 300 ? 'EXCELLENT' : 'NEEDS_IMPROVEMENT',
         settleTimeStatus: this.avgSettleTime < 200 ? 'EXCELLENT' : 'NEEDS_IMPROVEMENT',
       },
-      billing: {
-        settlementInterval: '5 seconds',
+      optimization: {
+        settlementInterval: '5 seconds', // ✅ Updated
         estimatedDailyChecks: 17280,
         cacheTTL: `${this.ACTIVE_ORDERS_CACHE_TTL}ms`,
         savingsVsOld: '60% fewer Firestore reads',

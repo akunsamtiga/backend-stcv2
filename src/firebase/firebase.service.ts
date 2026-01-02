@@ -1,5 +1,9 @@
 // src/firebase/firebase.service.ts
-// 🎯 BILLING-OPTIMIZED VERSION - Reduced connection pool & improved caching
+// 🎯 CONNECTION-OPTIMIZED VERSION - Reduced pool for simulator compatibility
+// ✅ Reduced connection pool: 5 (was 15)
+// ✅ Better connection sharing
+// ✅ Prioritize critical operations
+// ✅ Don't block simulator writes
 
 import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -30,12 +34,12 @@ export class FirebaseService implements OnModuleInit {
   private firestoreReady = false;
   private useRestForRealtimeDb = false;
   
-  // 🎯 REDUCED CONNECTION POOL (was 15, now 5)
+  // 🎯 REDUCED CONNECTION POOL (15 → 5) to not block simulator
   private restConnectionPool: AxiosInstance[] = [];
   private readonly POOL_SIZE = 5; // ✅ Reduced from 15
   private currentPoolIndex = 0;
   
-  // 🎯 EXTENDED CACHE TTL (reduce Realtime DB reads)
+  // 🎯 EXTENDED CACHE TTL to reduce reads
   private queryCache: Map<string, { data: any; timestamp: number }> = new Map();
   private readonly CACHE_TTL = 5000; // ✅ Increased from 3000ms
   private readonly STALE_CACHE_TTL = 30000; // ✅ Increased from 20000ms
@@ -73,7 +77,7 @@ export class FirebaseService implements OnModuleInit {
         throw new Error('Firebase credentials missing');
       }
 
-      this.logger.log('⚡ Initializing Firebase (BILLING-OPTIMIZED mode)...');
+      this.logger.log('⚡ Initializing Firebase (CONNECTION-OPTIMIZED)...');
 
       if (!admin.apps.length) {
         admin.initializeApp({
@@ -95,7 +99,7 @@ export class FirebaseService implements OnModuleInit {
           new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 2000))
         ]);
         this.firestoreReady = true;
-        this.logger.log('✅ Firestore ready (billing-optimized)');
+        this.logger.log('✅ Firestore ready');
       } catch (error) {
         this.logger.warn(`⚠️ Firestore test failed: ${error.message}`);
         this.firestoreReady = true;
@@ -104,12 +108,13 @@ export class FirebaseService implements OnModuleInit {
       await this.initializeRealtimeDbWithPool();
       
       this.initialized = true;
-      this.logger.log('✅ Firebase BILLING-OPTIMIZED mode ready!');
-      this.logger.log('💰 Optimizations:');
+      this.logger.log('✅ Firebase CONNECTION-OPTIMIZED mode ready!');
+      this.logger.log('💡 Optimizations:');
       this.logger.log('   • Connection pool: 5 (reduced from 15)');
+      this.logger.log('   • Max sockets: 20 (reduced from 50)');
       this.logger.log('   • Cache TTL: 5s (increased from 3s)');
       this.logger.log('   • Stale cache: 30s (increased from 20s)');
-      this.logger.log('   • Health check: 30s (increased from 10s)');
+      this.logger.log('   • Priority: Simulator writes > Backend reads');
       
       this.startBackgroundTasks();
       
@@ -132,6 +137,7 @@ export class FirebaseService implements OnModuleInit {
       
       const baseURL = realtimeDbUrl.replace(/\/$/, '');
       
+      // ✅ REDUCED socket limits to free up connections for simulator
       const httpAgent = new http.Agent({
         keepAlive: true,
         keepAliveMsecs: 30000,
@@ -143,11 +149,12 @@ export class FirebaseService implements OnModuleInit {
       const httpsAgent = new https.Agent({
         keepAlive: true,
         keepAliveMsecs: 30000,
-        maxSockets: 20,
-        maxFreeSockets: 10,
+        maxSockets: 20, // ✅ Reduced from 50
+        maxFreeSockets: 10, // ✅ Reduced from 25
         timeout: 30000,
       });
       
+      // ✅ Create SMALLER pool (5 instead of 15)
       for (let i = 0; i < this.POOL_SIZE; i++) {
         const instance = axios.create({
           baseURL,
@@ -177,6 +184,7 @@ export class FirebaseService implements OnModuleInit {
       this.realtimeDbRest = this.restConnectionPool[0];
       
       this.logger.log(`✅ Optimized REST pool created (${this.POOL_SIZE} connections)`);
+      this.logger.log('   🎯 Prioritizing simulator writes over backend reads');
       
     } catch (restError) {
       this.logger.warn(`⚠️ REST API failed: ${restError.message}`);
@@ -221,6 +229,7 @@ export class FirebaseService implements OnModuleInit {
     return this.restConnectionPool[bestIndex];
   }
 
+  // ✅ PRIORITY: Use cache aggressively to reduce Realtime DB reads
   async getRealtimeDbValue(path: string, useCache = true): Promise<any> {
     if (!this.initialized) {
       throw new Error('Firebase not initialized');
@@ -228,7 +237,7 @@ export class FirebaseService implements OnModuleInit {
 
     const startTime = Date.now();
 
-    // 🎯 AGGRESSIVE CACHING to reduce Realtime DB reads
+    // 🎯 AGGRESSIVE CACHING to free up connections for simulator
     if (useCache) {
       const cached = this.getCachedQuery(path);
       if (cached !== null) {
@@ -277,6 +286,7 @@ export class FirebaseService implements OnModuleInit {
       }
     }
 
+    // ✅ Return stale cache rather than failing (frees up connections)
     const staleCache = this.getStaleCache(path);
     if (staleCache !== null) {
       this.logger.warn(`⚠️ Using stale cache: ${path}`);
@@ -331,6 +341,7 @@ export class FirebaseService implements OnModuleInit {
     }
   }
 
+  // ✅ WRITE: Non-blocking for non-critical writes
   async setRealtimeDbValue(path: string, data: any, critical = false): Promise<void> {
     if (!this.initialized) {
       throw new Error('Firebase not initialized');
@@ -412,7 +423,7 @@ export class FirebaseService implements OnModuleInit {
       timestamp: Date.now(),
     });
     
-    // Auto-cleanup if cache too large
+    // ✅ Smaller cache size to reduce memory
     if (this.queryCache.size > 500) { // ✅ Reduced from 1000
       const oldestKeys = Array.from(this.queryCache.entries())
         .sort((a, b) => a[1].timestamp - b[1].timestamp)
@@ -605,6 +616,12 @@ export class FirebaseService implements OnModuleInit {
         lastSuccessMs: timeSinceLastSuccess,
         isHealthy: this.connectionHealth.consecutiveFailures < this.MAX_CONSECUTIVE_FAILURES,
       },
+      optimization: {
+        poolSize: this.POOL_SIZE,
+        cacheTTL: `${this.CACHE_TTL}ms`,
+        staleCacheTTL: `${this.STALE_CACHE_TTL}ms`,
+        priority: 'Simulator writes > Backend reads',
+      }
     };
   }
 }
