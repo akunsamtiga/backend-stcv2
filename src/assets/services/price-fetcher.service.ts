@@ -4,6 +4,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { FirebaseService } from '../../firebase/firebase.service';
 import { Asset, RealtimePrice } from '../../common/interfaces';
+import { TimezoneUtil } from '../../common/utils';
 
 @Injectable()
 export class PriceFetcherService {
@@ -250,19 +251,19 @@ export class PriceFetcherService {
   }
 
   private generateMockPrice(asset: Asset): RealtimePrice {
-    const settings = asset.simulatorSettings;
-    const basePrice = settings?.initialPrice ?? 1000;
-    const volatility = settings?.secondVolatilityMax ?? 0.0001;
-    
-    const variation = (Math.random() - 0.5) * 2 * basePrice * volatility;
-    const price = basePrice + variation;
+  const settings = asset.simulatorSettings;
+  const basePrice = settings?.initialPrice ?? 1000;
+  const volatility = settings?.secondVolatilityMax ?? 0.0001;
+  
+  const variation = (Math.random() - 0.5) * 2 * basePrice * volatility;
+  const price = basePrice + variation;
 
-    return {
-      price: Math.round(price * 1000000) / 1000000,
-      timestamp: Math.floor(Date.now() / 1000),
-      datetime: new Date().toISOString(),
-    };
-  }
+  return {
+    price: Math.round(price * 1000000) / 1000000,
+    timestamp: TimezoneUtil.getCurrentTimestamp(),  // ✅ CONSISTENT
+    datetime: TimezoneUtil.formatDateTime(),        // ✅ CONSISTENT
+  };
+}
 
   private cleanupStaleCache(): void {
     const now = Date.now();
