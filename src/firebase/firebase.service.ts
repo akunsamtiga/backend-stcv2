@@ -1,10 +1,10 @@
-// src/firebase/firebase.service.ts
-// ✅ FIXED VERSION - Admin SDK Only + No TypeScript Errors
-
 import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as admin from 'firebase-admin';
 import * as dns from 'dns';
+import * as http from 'http';
+import * as https from 'https';
+import axios, { AxiosInstance } from 'axios';
 
 dns.setDefaultResultOrder('ipv4first');
 
@@ -21,22 +21,29 @@ export class FirebaseService implements OnModuleInit {
   
   private db: admin.firestore.Firestore;
   private realtimeDb: admin.database.Database | null = null;
+  private realtimeDbRest: AxiosInstance | null = null;
   
   private initialized = false;
   private firestoreReady = false;
+  private useRestForRealtimeDb = false;
+  
+  private restConnectionPool: AxiosInstance[] = [];
+  private readonly POOL_SIZE = 3;
+  private currentPoolIndex = 0;
   
   private queryCache: Map<string, { data: any; timestamp: number }> = new Map();
-  private readonly CACHE_TTL = 5000;
-  private readonly STALE_CACHE_TTL = 30000;
+  private readonly CACHE_TTL = 30000;
+  private readonly STALE_CACHE_TTL = 120000;
   
   private connectionHealth = {
+    restConnections: new Map<number, { lastSuccess: number; failures: number }>(),
     lastSuccessfulFetch: Date.now(),
     consecutiveFailures: 0,
   };
   
   private readonly MAX_RETRIES = 2;
-  private readonly RETRY_DELAY_MS = 100;
-  private readonly MAX_CONSECUTIVE_FAILURES = 3;
+  private readonly RETRY_DELAY_MS = 200;
+  private readonly MAX_CONSECUTIVE_FAILURES = 5;
   
   private operationCount = 0;
   private avgResponseTime = 0;
@@ -57,32 +64,34 @@ export class FirebaseService implements OnModuleInit {
       
       const serviceAccount = {
         projectId: this.configService.get('firebase.projectId'),
-        privateKey: this.configService.get('firebase.privateKey'),
+        privateKey: this.configService
+          .get<string>('firebase.privateKey')
+          ?.replace(/\\n/g, '\n'),
         clientEmail: this.configService.get('firebase.clientEmail'),
       };
 
+
       if (!serviceAccount.projectId || !serviceAccount.privateKey || !serviceAccount.clientEmail) {
-        throw new Error('Firebase credentials missing in .env');
+        throw new Error('Firebase credentials missing');
       }
 
-      this.logger.log('');
-      this.logger.log('⚡ ================================================');
-      this.logger.log('⚡ Initializing Firebase (ADMIN SDK ONLY)');
-      this.logger.log('⚡ ================================================');
+      this.logger.log('⚡ Initializing Firebase (OPTIMIZED MODE)...');
 
+      // NEW VERSION (CORRECT)
       if (!admin.apps.length) {
         admin.initializeApp({
           credential: admin.credential.cert(serviceAccount as admin.ServiceAccount),
-          databaseURL: this.configService.get('firebase.realtimeDbUrl'),
+          databaseURL: this.configService.get('firebase.realtimeDbUrl'), // ✅ ADD THIS!
         });
         this.logger.log('✅ Firebase Admin SDK initialized');
       }
 
       this.db = admin.firestore();
+      
       this.db.settings({
         ignoreUndefinedProperties: true,
         timestampsInSnapshots: true,
-        maxIdleChannels: 10,
+        maxIdleChannels: 5,
       });
 
       try {
@@ -97,172 +106,255 @@ export class FirebaseService implements OnModuleInit {
         this.firestoreReady = true;
       }
 
-      try {
-        const realtimeDbUrl = this.configService.get('firebase.realtimeDbUrl');
-        
-        if (!realtimeDbUrl) {
-          throw new Error('FIREBASE_REALTIME_DB_URL not configured in .env');
-        }
-
-        this.logger.log(`⚡ Connecting to Realtime DB: ${realtimeDbUrl}`);
-        
-        this.realtimeDb = admin.database();
-        
-        const testRef = this.realtimeDb.ref('/.info/connected');
-        const snapshot = await testRef.once('value');
-        const isConnected = snapshot.val();
-        
-        if (isConnected !== null) {
-          this.logger.log('✅ Realtime DB connection test passed');
-        }
-        
-        this.logger.log('✅ Realtime DB via Admin SDK ready');
-        
-      } catch (error) {
-        this.logger.error(`❌ Realtime DB initialization failed: ${error.message}`);
-        this.logger.error('   Check FIREBASE_REALTIME_DB_URL in .env');
-        throw error;
-      }
+      await this.initializeRealtimeDbWithPool();
       
       this.initialized = true;
-      
-      this.logger.log('');
-      this.logger.log('✅ ================================================');
-      this.logger.log('✅ Firebase READY - Admin SDK Mode');
-      this.logger.log('✅ ================================================');
-      this.logger.log('✅ Firestore: Ready');
-      this.logger.log('✅ Realtime DB: Ready (Admin SDK)');
-      this.logger.log('✅ Connection: Same as Simulator');
-      this.logger.log('✅ Cache: 5s TTL, 30s stale fallback');
-      this.logger.log('✅ ================================================');
-      this.logger.log('');
+      this.logger.log('✅ Firebase OPTIMIZED mode ready!');
+      this.logger.log('💡 Optimizations:');
+      this.logger.log('   • Connection pool: 3');
+      this.logger.log('   • Cache TTL: 30s');
+      this.logger.log('   • Stale cache: 120s');
+      this.logger.log('   • Aggressive caching for reads');
+      this.logger.log('   • Batch writes for efficiency');
       
       this.startBackgroundTasks();
       
     } catch (error) {
-      this.logger.error('');
-      this.logger.error('❌ ================================================');
-      this.logger.error('❌ Firebase Initialization FAILED');
-      this.logger.error('❌ ================================================');
-      this.logger.error(`❌ Error: ${error.message}`);
-      this.logger.error('❌ ================================================');
-      this.logger.error('');
+      this.logger.error(`❌ Firebase initialization failed: ${error.message}`);
       throw error;
     }
   }
 
+  private async initializeRealtimeDbWithPool() {
+    const realtimeDbUrl = this.configService.get('firebase.realtimeDbUrl');
+    
+    if (!realtimeDbUrl) {
+      this.logger.warn('⚠️ Realtime DB URL not configured');
+      return;
+    }
+
+    try {
+      this.logger.log('⚡ Creating optimized REST connection pool...');
+      
+      const baseURL = realtimeDbUrl.replace(/\/$/, '');
+      
+      const httpAgent = new http.Agent({
+        keepAlive: true,
+        keepAliveMsecs: 60000,
+        maxSockets: 10,
+        maxFreeSockets: 5,
+        timeout: 30000,
+      });
+      
+      const httpsAgent = new https.Agent({
+        keepAlive: true,
+        keepAliveMsecs: 60000,
+        maxSockets: 10,
+        maxFreeSockets: 5,
+        timeout: 30000,
+      });
+      
+      for (let i = 0; i < this.POOL_SIZE; i++) {
+        const instance = axios.create({
+          baseURL,
+          timeout: 3000,
+          family: 4,
+          headers: {
+            'Content-Type': 'application/json',
+            'Connection': 'keep-alive',
+          },
+          validateStatus: (status) => status >= 200 && status < 300,
+          maxRedirects: 0,
+          httpAgent: httpAgent,
+          httpsAgent: httpsAgent,
+        });
+        
+        this.restConnectionPool.push(instance);
+        this.connectionHealth.restConnections.set(i, {
+          lastSuccess: Date.now(),
+          failures: 0
+        });
+      }
+      
+      await this.restConnectionPool[0].get('/.json?shallow=true');
+      
+      this.useRestForRealtimeDb = true;
+      this.realtimeDbRest = this.restConnectionPool[0];
+      
+      this.logger.log(`✅ Optimized REST pool created (${this.POOL_SIZE} connections)`);
+      
+    } catch (restError) {
+      this.logger.warn(`⚠️ REST API failed: ${restError.message}`);
+      
+      try {
+        this.logger.log('⚡ Trying Admin SDK...');
+        this.realtimeDb = admin.database();
+        this.realtimeDb.goOffline();
+        this.realtimeDb.goOnline();
+        this.useRestForRealtimeDb = false;
+        this.logger.log('✅ Realtime DB via Admin SDK');
+      } catch (sdkError) {
+        this.logger.error('❌ Both methods failed');
+      }
+    }
+  }
+
+  private getNextConnection(): AxiosInstance {
+    if (this.restConnectionPool.length === 0) {
+      throw new Error('No REST connections available');
+    }
+    
+    let bestIndex = this.currentPoolIndex;
+    let bestScore = -Infinity;
+    
+    for (let i = 0; i < this.restConnectionPool.length; i++) {
+      const health = this.connectionHealth.restConnections.get(i);
+      if (!health) continue;
+      
+      const age = Date.now() - health.lastSuccess;
+      const failureScore = health.failures * 1000;
+      const score = 10000 - age - failureScore;
+      
+      if (score > bestScore) {
+        bestIndex = i;
+        bestScore = score;
+      }
+    }
+    
+    this.currentPoolIndex = (bestIndex + 1) % this.POOL_SIZE;
+    
+    return this.restConnectionPool[bestIndex];
+  }
+
   async getRealtimeDbValue(path: string, useCache = true): Promise<any> {
-    if (!this.initialized || !this.realtimeDb) {
+    if (!this.initialized) {
       throw new Error('Firebase not initialized');
     }
 
     const startTime = Date.now();
 
-    // Try cache first
     if (useCache) {
       const cached = this.getCachedQuery(path);
       if (cached !== null) {
         this.cacheHitRate++;
-        const cachedEntry = this.queryCache.get(path);
-        const age = cachedEntry ? Date.now() - cachedEntry.timestamp : 0;
-        this.logger.debug(`⚡ Cache hit: ${path} (${age}ms old)`);
+        this.logger.debug(`⚡ Cache hit: ${path}`);
         return cached;
       }
     }
 
     let lastError: Error | null = null;
     
-    // Retry logic
     for (let attempt = 0; attempt < this.MAX_RETRIES; attempt++) {
       try {
-        // ✅ Use Admin SDK directly
-        const snapshot = await this.realtimeDb.ref(path).once('value');
-        const data = snapshot.val();
+        const data = await this.fetchRealtimeDbWithTimeout(path);
         
-        // Success - reset failure counter
         this.connectionHealth.consecutiveFailures = 0;
         this.connectionHealth.lastSuccessfulFetch = Date.now();
 
-        // Cache the result
         if (useCache && data !== null) {
           this.cacheQuery(path, data);
         }
 
-        // Update stats
         const duration = Date.now() - startTime;
         this.operationCount++;
         this.avgResponseTime = (this.avgResponseTime * 0.9) + (duration * 0.1);
-        this.readCount++;
-
-        if (duration > 500) {
-          this.logger.warn(`⚠️ Slow read: ${path} (${duration}ms)`);
-        } else {
-          this.logger.debug(`⚡ Read: ${path} (${duration}ms)`);
-        }
 
         return data;
 
       } catch (error) {
         lastError = error;
-        this.logger.warn(`⚠️ Read attempt ${attempt + 1}/${this.MAX_RETRIES} failed for ${path}: ${error.message}`);
+        
+        const connIndex = this.currentPoolIndex;
+        const health = this.connectionHealth.restConnections.get(connIndex);
+        if (health) {
+          health.failures++;
+        }
         
         if (attempt < this.MAX_RETRIES - 1) {
           const delay = this.RETRY_DELAY_MS * Math.pow(1.5, attempt);
-          this.logger.debug(`   Retrying in ${delay}ms...`);
           await new Promise(resolve => setTimeout(resolve, delay));
         }
       }
     }
 
-    // All retries failed - try stale cache as fallback
     const staleCache = this.getStaleCache(path);
     if (staleCache !== null) {
-      const cachedEntry = this.queryCache.get(path);
-      const age = cachedEntry ? Date.now() - cachedEntry.timestamp : 0;
-      this.logger.warn(`⚠️ Using stale cache: ${path} (${Math.floor(age / 1000)}s old)`);
+      this.logger.warn(`⚠️ Using stale cache: ${path}`);
       this.connectionHealth.consecutiveFailures++;
       return staleCache;
     }
 
-    // Complete failure
     this.connectionHealth.consecutiveFailures++;
     const duration = Date.now() - startTime;
     
-    this.logger.error('');
-    this.logger.error(`❌ Read FAILED after ${this.MAX_RETRIES} retries (${duration}ms)`);
-    this.logger.error(`   Path: ${path}`);
-    this.logger.error(`   Error: ${lastError?.message || 'Unknown error'}`);
-    this.logger.error(`   Consecutive failures: ${this.connectionHealth.consecutiveFailures}`);
-    this.logger.error('');
+    this.logger.error(`❌ Get failed after ${this.MAX_RETRIES} retries (${duration}ms): ${lastError?.message}`);
     
-    throw lastError || new Error('Failed to fetch from Realtime DB');
+    if (this.connectionHealth.consecutiveFailures >= this.MAX_CONSECUTIVE_FAILURES) {
+      this.logger.error('❌ Too many failures, reconnecting...');
+      setImmediate(() => this.reconnectRealtimeDb());
+    }
+    
+    throw lastError || new Error('Failed to fetch');
+  }
+
+  private async fetchRealtimeDbWithTimeout(path: string): Promise<any> {
+    return Promise.race([
+      this.fetchRealtimeDb(path),
+      new Promise<never>((_, reject) => 
+        setTimeout(() => reject(new Error('Timeout')), 5000)
+      ),
+    ]);
+  }
+
+  private async fetchRealtimeDb(path: string): Promise<any> {
+    if (this.useRestForRealtimeDb && this.restConnectionPool.length > 0) {
+      const conn = this.getNextConnection();
+      const response = await conn.get(`${path}.json`);
+      
+      const connIndex = this.restConnectionPool.indexOf(conn);
+      if (connIndex >= 0) {
+        const health = this.connectionHealth.restConnections.get(connIndex);
+        if (health) {
+          health.lastSuccess = Date.now();
+          health.failures = Math.max(0, health.failures - 1);
+        }
+      }
+      
+      return response.data;
+      
+    } else if (this.realtimeDb) {
+      const snapshot = await this.realtimeDb.ref(path).once('value');
+      return snapshot.val();
+      
+    } else {
+      throw new Error('Realtime Database not available');
+    }
   }
 
   async setRealtimeDbValue(path: string, data: any, critical = false): Promise<void> {
-    if (!this.initialized || !this.realtimeDb) {
+    if (!this.initialized) {
       throw new Error('Firebase not initialized');
     }
 
     const writeOperation = async () => {
       for (let attempt = 0; attempt < this.MAX_RETRIES; attempt++) {
         try {
-          // ✅ Null check before using
-          if (!this.realtimeDb) {
-            throw new Error('Realtime DB not available');
+          if (this.useRestForRealtimeDb && this.restConnectionPool.length > 0) {
+            const conn = this.getNextConnection();
+            await conn.put(`${path}.json`, data);
+          } else if (this.realtimeDb) {
+            await this.realtimeDb.ref(path).set(data);
+          } else {
+            throw new Error('Realtime Database not available');
           }
-          
-          await this.realtimeDb.ref(path).set(data);
+
           this.writeCount++;
           this.queryCache.delete(path);
-          this.logger.debug(`✅ Write: ${path}`);
           return;
+
         } catch (error) {
-          this.logger.error(`❌ Write failed (attempt ${attempt + 1}): ${error.message}`);
-          
           if (attempt < this.MAX_RETRIES - 1) {
             await new Promise(resolve => setTimeout(resolve, this.RETRY_DELAY_MS));
-          } else {
-            throw error;
           }
         }
       }
@@ -281,16 +373,15 @@ export class FirebaseService implements OnModuleInit {
     
     this.isProcessingQueue = true;
     
-    try {
-      while (this.writeQueue.length > 0) {
-        const batch = this.writeQueue.splice(0, 5);
-        await Promise.allSettled(batch.map(write => write()));
-      }
-    } catch (error) {
-      this.logger.error(`Write queue error: ${error.message}`);
-    } finally {
-      this.isProcessingQueue = false;
+    while (this.writeQueue.length > 0) {
+      const batch = this.writeQueue.splice(0, 5);
+      
+      await Promise.allSettled(
+        batch.map(write => write())
+      );
     }
+    
+    this.isProcessingQueue = false;
   }
 
   private getCachedQuery(path: string): any | null {
@@ -319,53 +410,82 @@ export class FirebaseService implements OnModuleInit {
       timestamp: Date.now(),
     });
     
-    // Limit cache size
-    if (this.queryCache.size > 500) {
+    if (this.queryCache.size > 300) {
       const oldestKeys = Array.from(this.queryCache.entries())
         .sort((a, b) => a[1].timestamp - b[1].timestamp)
         .slice(0, 50)
         .map(([key]) => key);
       
       oldestKeys.forEach(key => this.queryCache.delete(key));
-      this.logger.debug(`🗑️ Cleaned ${oldestKeys.length} oldest cache entries`);
     }
   }
 
   private startBackgroundTasks() {
-    // Cache cleanup every minute
-    setInterval(() => {
-      const now = Date.now();
-      let cleaned = 0;
-
-      for (const [path, cached] of this.queryCache.entries()) {
-        if (now - cached.timestamp > this.STALE_CACHE_TTL) {
-          this.queryCache.delete(path);
-          cleaned++;
-        }
-      }
-
-      if (cleaned > 0) {
-        this.logger.debug(`🗑️ Cache cleanup: removed ${cleaned} stale entries`);
-      }
-    }, 60000);
-
-    // Process write queue regularly
+    setInterval(() => this.cleanupCache(), 60000);
+    setInterval(() => this.healthCheckConnections(), 60000);
     setInterval(() => this.processWriteQueue(), 200);
+    setInterval(() => this.resetDailyStats(), 86400000);
+  }
 
-    // Stats reset daily
-    setInterval(() => {
-      const hoursSinceReset = (Date.now() - this.lastStatsReset) / 3600000;
+  private cleanupCache(): void {
+    const now = Date.now();
+    let cleaned = 0;
+
+    for (const [path, cached] of this.queryCache.entries()) {
+      if (now - cached.timestamp > this.STALE_CACHE_TTL) {
+        this.queryCache.delete(path);
+        cleaned++;
+      }
+    }
+
+    if (cleaned > 0) {
+      this.logger.debug(`⚡ Cleaned ${cleaned} cache entries`);
+    }
+  }
+
+  private async healthCheckConnections(): Promise<void> {
+    if (!this.useRestForRealtimeDb || this.restConnectionPool.length === 0) return;
+
+    try {
+      const conn = this.restConnectionPool[0];
+      await conn.get('/.json?shallow=true&timeout=2000');
       
-      this.logger.log('');
-      this.logger.log('📊 Daily Stats Reset:');
-      this.logger.log(`   Reads: ${this.readCount} (${Math.round(this.readCount / hoursSinceReset)}/hour)`);
-      this.logger.log(`   Writes: ${this.writeCount} (${Math.round(this.writeCount / hoursSinceReset)}/hour)`);
-      this.logger.log('');
+    } catch (error) {
+      this.logger.warn(`⚠️ Health check failed: ${error.message}`);
       
-      this.readCount = 0;
-      this.writeCount = 0;
-      this.lastStatsReset = Date.now();
-    }, 86400000); // 24 hours
+      if (this.connectionHealth.consecutiveFailures >= 3) {
+        await this.reconnectRealtimeDb();
+      }
+    }
+  }
+
+  private async reconnectRealtimeDb(): Promise<void> {
+    this.logger.log('🔄 Reconnecting Realtime DB...');
+    
+    try {
+      this.restConnectionPool = [];
+      this.connectionHealth.restConnections.clear();
+      
+      await this.initializeRealtimeDbWithPool();
+      
+      this.connectionHealth.consecutiveFailures = 0;
+      this.logger.log('✅ Reconnection successful');
+      
+    } catch (error) {
+      this.logger.error(`❌ Reconnection failed: ${error.message}`);
+    }
+  }
+
+  private resetDailyStats(): void {
+    const hoursSinceReset = (Date.now() - this.lastStatsReset) / 3600000;
+    
+    this.logger.log('📊 Daily Stats:');
+    this.logger.log(`   • Reads: ${this.readCount} (${Math.round(this.readCount / hoursSinceReset)}/hour)`);
+    this.logger.log(`   • Writes: ${this.writeCount} (${Math.round(this.writeCount / hoursSinceReset)}/hour)`);
+    
+    this.readCount = 0;
+    this.writeCount = 0;
+    this.lastStatsReset = Date.now();
   }
 
   isFirestoreReady(): boolean {
@@ -396,7 +516,13 @@ export class FirebaseService implements OnModuleInit {
   }
 
   getRealtimeDatabase(): admin.database.Database {
-    if (!this.initialized || !this.realtimeDb) {
+    if (!this.initialized) {
+      throw new Error('Firebase not initialized');
+    }
+    if (this.useRestForRealtimeDb) {
+      throw new Error('Use getRealtimeDbValue() instead');
+    }
+    if (!this.realtimeDb) {
       throw new Error('Realtime Database not available');
     }
     return this.realtimeDb;
@@ -476,54 +602,27 @@ export class FirebaseService implements OnModuleInit {
     const hoursSinceReset = (Date.now() - this.lastStatsReset) / 3600000;
     
     return {
-      connection: {
-        method: 'Admin SDK',
-        firestoreReady: this.firestoreReady,
-        realtimeDbReady: this.realtimeDb !== null,
+      operations: this.operationCount,
+      avgResponseTime: Math.round(this.avgResponseTime),
+      cacheSize: this.queryCache.size,
+      cacheHitRate: `${cacheHitPercentage}%`,
+      connectionPoolSize: this.restConnectionPool.length,
+      writeQueueSize: this.writeQueue.length,
+      usingREST: this.useRestForRealtimeDb,
+      firestoreReady: this.firestoreReady,
+      dailyStats: {
+        reads: this.readCount,
+        writes: this.writeCount,
+        estimatedDailyReads: Math.round(this.readCount / hoursSinceReset * 24),
+        estimatedDailyWrites: Math.round(this.writeCount / hoursSinceReset * 24),
+        readsRemaining: 250000 - Math.round(this.readCount / hoursSinceReset * 24),
+        writesRemaining: 100000 - Math.round(this.writeCount / hoursSinceReset * 24),
+      },
+      health: {
         consecutiveFailures: this.connectionHealth.consecutiveFailures,
         lastSuccessMs: timeSinceLastSuccess,
         isHealthy: this.connectionHealth.consecutiveFailures < this.MAX_CONSECUTIVE_FAILURES,
       },
-      operations: {
-        total: this.operationCount,
-        avgResponseTime: Math.round(this.avgResponseTime),
-        cacheHitRate: `${cacheHitPercentage}%`,
-      },
-      cache: {
-        size: this.queryCache.size,
-        ttl: `${this.CACHE_TTL}ms`,
-        staleTtl: `${this.STALE_CACHE_TTL}ms`,
-      },
-      queue: {
-        writeQueueSize: this.writeQueue.length,
-        isProcessing: this.isProcessingQueue,
-      },
-      billing: {
-        firestoreReads: this.readCount,
-        firestoreWrites: this.writeCount,
-        realtimeReads: this.operationCount,
-        estimatedDailyReads: hoursSinceReset > 0 ? Math.round(this.readCount / hoursSinceReset * 24) : 0,
-        estimatedDailyWrites: hoursSinceReset > 0 ? Math.round(this.writeCount / hoursSinceReset * 24) : 0,
-        timeSinceReset: `${Math.floor(hoursSinceReset)}h ${Math.floor((hoursSinceReset % 1) * 60)}m`,
-      }
     };
-  }
-
-  async shutdown() {
-    this.logger.log('');
-    this.logger.log('🛑 Shutting down Firebase Manager...');
-    
-    // Process remaining writes
-    if (this.writeQueue.length > 0) {
-      this.logger.log(`📤 Processing ${this.writeQueue.length} remaining writes...`);
-      
-      while (this.writeQueue.length > 0) {
-        const batch = this.writeQueue.splice(0, 10);
-        await Promise.allSettled(batch.map(write => write()));
-      }
-    }
-    
-    this.logger.log('✅ Firebase shutdown complete');
-    this.logger.log('');
   }
 }
