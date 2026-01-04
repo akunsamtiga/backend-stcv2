@@ -1,5 +1,5 @@
 // src/health.controller.ts
-// ✅ UPDATED: Added timezone information
+// ✅ FIXED: Changed firebaseStats.operations > 0 to firebaseStats.operations.total > 0
 
 import { Controller, Get } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
@@ -110,7 +110,8 @@ export class HealthController {
           overall: 'healthy',
           checks: {
             memory: memory.heapUsed / memory.heapTotal < 0.9 ? 'ok' : 'warning',
-            firebase: firebaseStats.operations > 0 ? 'ok' : 'warning',
+            // ✅ FIXED: Compare operations.total instead of operations object
+            firebase: firebaseStats.operations.total > 0 ? 'ok' : 'warning',
             orders: orderStats.ordersCreated > 0 ? 'ok' : 'not_tested',
             timezone: orderStats.timezone ? 'synced' : 'unknown',
           },
