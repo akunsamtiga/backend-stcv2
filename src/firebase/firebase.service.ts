@@ -20,23 +20,20 @@ export class FirebaseService implements OnModuleInit {
   private readonly logger = new Logger(FirebaseService.name);
   
   private db: admin.firestore.Firestore;
-  private app: admin.app.App;
+  private realtimeDb: admin.database.Database | null = null;
   private realtimeDbRest: AxiosInstance | null = null;
   
   private initialized = false;
   private firestoreReady = false;
+  private useRestForRealtimeDb = false;
   
   private restConnectionPool: AxiosInstance[] = [];
-  private readonly POOL_SIZE = 5;
+  private readonly POOL_SIZE = 3;
   private currentPoolIndex = 0;
   
-  // ✅ Store auth token
-  private authToken: string | null = null;
-  private tokenExpiresAt: number = 0;
-  
   private queryCache: Map<string, { data: any; timestamp: number }> = new Map();
-  private readonly CACHE_TTL = 5000;
-  private readonly STALE_CACHE_TTL = 30000;
+  private readonly CACHE_TTL = 30000;
+  private readonly STALE_CACHE_TTL = 120000;
   
   private connectionHealth = {
     restConnections: new Map<number, { lastSuccess: number; failures: number }>(),
@@ -44,9 +41,9 @@ export class FirebaseService implements OnModuleInit {
     consecutiveFailures: 0,
   };
   
-  private readonly MAX_RETRIES = 3;
-  private readonly RETRY_DELAY_MS = 300;
-  private readonly MAX_CONSECUTIVE_FAILURES = 10;
+  private readonly MAX_RETRIES = 2;
+  private readonly RETRY_DELAY_MS = 200;
+  private readonly MAX_CONSECUTIVE_FAILURES = 5;
   
   private operationCount = 0;
   private avgResponseTime = 0;
@@ -75,16 +72,12 @@ export class FirebaseService implements OnModuleInit {
         throw new Error('Firebase credentials missing');
       }
 
-      this.logger.log('⚡ Initializing Firebase with Auth...');
+      this.logger.log('⚡ Initializing Firebase (OPTIMIZED MODE)...');
 
-      // ✅ Init Firebase Admin SDK
       if (!admin.apps.length) {
-        this.app = admin.initializeApp({
+        admin.initializeApp({
           credential: admin.credential.cert(serviceAccount as admin.ServiceAccount),
-          databaseURL: this.configService.get('firebase.realtimeDbUrl'),
         });
-      } else {
-        this.app = admin.apps[0]!;
       }
 
       this.db = admin.firestore();
@@ -107,14 +100,16 @@ export class FirebaseService implements OnModuleInit {
         this.firestoreReady = true;
       }
 
-      // ✅ Get auth token first
-      await this.refreshAuthToken();
-
-      // ✅ Init Realtime DB with auth
-      await this.initializeRealtimeDbWithAuth();
+      await this.initializeRealtimeDbWithPool();
       
       this.initialized = true;
-      this.logger.log('✅ Firebase ready (Authenticated REST API)');
+      this.logger.log('✅ Firebase OPTIMIZED mode ready!');
+      this.logger.log('💡 Optimizations:');
+      this.logger.log('   • Connection pool: 3');
+      this.logger.log('   • Cache TTL: 30s');
+      this.logger.log('   • Stale cache: 120s');
+      this.logger.log('   • Aggressive caching for reads');
+      this.logger.log('   • Batch writes for efficiency');
       
       this.startBackgroundTasks();
       
@@ -124,121 +119,77 @@ export class FirebaseService implements OnModuleInit {
     }
   }
 
-  // ✅ Get Firebase Auth Token
-  private async refreshAuthToken(): Promise<void> {
-    try {
-      this.logger.log('🔑 Getting Firebase Auth token...');
-      
-      // Get access token from Firebase Admin SDK
-      const accessToken = await this.app.options.credential!.getAccessToken();
-      
-      this.authToken = accessToken.access_token;
-      this.tokenExpiresAt = Date.now() + (accessToken.expires_in * 1000) - 60000; // Refresh 1 minute before expiry
-      
-      this.logger.log('✅ Auth token obtained');
-      this.logger.log(`   Expires in: ${Math.round(accessToken.expires_in / 60)} minutes`);
-      
-    } catch (error) {
-      this.logger.error(`❌ Failed to get auth token: ${error.message}`);
-      throw error;
-    }
-  }
-
-  // ✅ Check and refresh token if needed
-  private async ensureValidToken(): Promise<void> {
-    if (!this.authToken || Date.now() >= this.tokenExpiresAt) {
-      this.logger.log('🔄 Token expired, refreshing...');
-      await this.refreshAuthToken();
-    }
-  }
-
-  // ✅ Initialize with Authentication
-  private async initializeRealtimeDbWithAuth() {
+  private async initializeRealtimeDbWithPool() {
     const realtimeDbUrl = this.configService.get('firebase.realtimeDbUrl');
     
     if (!realtimeDbUrl) {
-      this.logger.error('❌ FIREBASE_REALTIME_DB_URL not configured in .env');
-      throw new Error('Realtime DB URL not configured');
+      this.logger.warn('⚠️ Realtime DB URL not configured');
+      return;
     }
 
-    this.logger.log('⚡ Creating authenticated REST connection pool...');
-    
-    const baseURL = realtimeDbUrl.replace(/\/$/, '');
-    
-    const httpAgent = new http.Agent({
-      keepAlive: true,
-      keepAliveMsecs: 30000,
-      maxSockets: 20,
-      maxFreeSockets: 10,
-      timeout: 10000,
-    });
-    
-    const httpsAgent = new https.Agent({
-      keepAlive: true,
-      keepAliveMsecs: 30000,
-      maxSockets: 20,
-      maxFreeSockets: 10,
-      timeout: 10000,
-    });
-    
-    // ✅ Create connection pool with auth interceptor
-    for (let i = 0; i < this.POOL_SIZE; i++) {
-      const instance = axios.create({
-        baseURL,
-        timeout: 5000,
-        family: 4,
-        headers: {
-          'Content-Type': 'application/json',
-          'Connection': 'keep-alive',
-        },
-        validateStatus: (status) => status >= 200 && status < 300,
-        maxRedirects: 0,
-        httpAgent: httpAgent,
-        httpsAgent: httpsAgent,
-      });
-      
-      // ✅ Add auth interceptor
-      instance.interceptors.request.use(async (config) => {
-        await this.ensureValidToken();
-        
-        // Add auth token as query parameter
-        config.params = {
-          ...config.params,
-          auth: this.authToken,
-        };
-        
-        return config;
-      });
-      
-      this.restConnectionPool.push(instance);
-      this.connectionHealth.restConnections.set(i, {
-        lastSuccess: Date.now(),
-        failures: 0
-      });
-    }
-    
-    // ✅ Test connection with auth
     try {
-      await this.restConnectionPool[0].get('/.json', {
-        params: { shallow: 'true' }
+      this.logger.log('⚡ Creating optimized REST connection pool...');
+      
+      const baseURL = realtimeDbUrl.replace(/\/$/, '');
+      
+      const httpAgent = new http.Agent({
+        keepAlive: true,
+        keepAliveMsecs: 60000,
+        maxSockets: 10,
+        maxFreeSockets: 5,
+        timeout: 30000,
       });
       
-      this.realtimeDbRest = this.restConnectionPool[0];
+      const httpsAgent = new https.Agent({
+        keepAlive: true,
+        keepAliveMsecs: 60000,
+        maxSockets: 10,
+        maxFreeSockets: 5,
+        timeout: 30000,
+      });
       
-      this.logger.log(`✅ Authenticated REST connection pool created`);
-      this.logger.log(`   Connections: ${this.POOL_SIZE}`);
-      this.logger.log(`   Base URL: ${baseURL}`);
-      this.logger.log(`   Auth: OAuth 2.0 Access Token`);
-      
-    } catch (error) {
-      this.logger.error(`❌ Authenticated connection failed: ${error.message}`);
-      
-      if (error.response?.status === 401) {
-        this.logger.error(`   Error: Unauthorized (401)`);
-        this.logger.error(`   Check: Firebase service account credentials`);
+      for (let i = 0; i < this.POOL_SIZE; i++) {
+        const instance = axios.create({
+          baseURL,
+          timeout: 3000,
+          family: 4,
+          headers: {
+            'Content-Type': 'application/json',
+            'Connection': 'keep-alive',
+          },
+          validateStatus: (status) => status >= 200 && status < 300,
+          maxRedirects: 0,
+          httpAgent: httpAgent,
+          httpsAgent: httpsAgent,
+        });
+        
+        this.restConnectionPool.push(instance);
+        this.connectionHealth.restConnections.set(i, {
+          lastSuccess: Date.now(),
+          failures: 0
+        });
       }
       
-      throw new Error('Failed to connect with authentication');
+      await this.restConnectionPool[0].get('/.json?shallow=true');
+      
+      this.useRestForRealtimeDb = true;
+      this.realtimeDbRest = this.restConnectionPool[0];
+      
+      this.logger.log(`✅ Optimized REST pool created (${this.POOL_SIZE} connections)`);
+      
+    } catch (restError) {
+      this.logger.warn(`⚠️ REST API failed: ${restError.message}`);
+      
+      try {
+        this.logger.log('⚡ Trying Admin SDK...');
+        this.realtimeDb = admin.database();
+        this.realtimeDb.goOffline();
+        this.realtimeDb.goOnline();
+        this.useRestForRealtimeDb = false;
+        this.logger.log('✅ Realtime DB via Admin SDK');
+      } catch (sdkError) {
+        this.logger.error('❌ Both methods failed');
+      }
     }
   }
 
@@ -280,6 +231,7 @@ export class FirebaseService implements OnModuleInit {
       const cached = this.getCachedQuery(path);
       if (cached !== null) {
         this.cacheHitRate++;
+        this.logger.debug(`⚡ Cache hit: ${path}`);
         return cached;
       }
     }
@@ -288,7 +240,7 @@ export class FirebaseService implements OnModuleInit {
     
     for (let attempt = 0; attempt < this.MAX_RETRIES; attempt++) {
       try {
-        const data = await this.fetchFromRestAPI(path);
+        const data = await this.fetchRealtimeDbWithTimeout(path);
         
         this.connectionHealth.consecutiveFailures = 0;
         this.connectionHealth.lastSuccessfulFetch = Date.now();
@@ -306,13 +258,6 @@ export class FirebaseService implements OnModuleInit {
       } catch (error) {
         lastError = error;
         
-        // ✅ Check if it's auth error
-        if (error.response?.status === 401) {
-          this.logger.warn('⚠️ Auth token expired, refreshing...');
-          await this.refreshAuthToken();
-          continue; // Retry with new token
-        }
-        
         const connIndex = this.currentPoolIndex;
         const health = this.connectionHealth.restConnections.get(connIndex);
         if (health) {
@@ -321,7 +266,6 @@ export class FirebaseService implements OnModuleInit {
         
         if (attempt < this.MAX_RETRIES - 1) {
           const delay = this.RETRY_DELAY_MS * Math.pow(1.5, attempt);
-          this.logger.debug(`⚠️ Retry ${attempt + 1}/${this.MAX_RETRIES} for ${path} after ${delay}ms`);
           await new Promise(resolve => setTimeout(resolve, delay));
         }
       }
@@ -339,30 +283,46 @@ export class FirebaseService implements OnModuleInit {
     
     this.logger.error(`❌ Get failed after ${this.MAX_RETRIES} retries (${duration}ms): ${lastError?.message}`);
     
+    if (this.connectionHealth.consecutiveFailures >= this.MAX_CONSECUTIVE_FAILURES) {
+      this.logger.error('❌ Too many failures, reconnecting...');
+      setImmediate(() => this.reconnectRealtimeDb());
+    }
+    
     throw lastError || new Error('Failed to fetch');
   }
 
-  private async fetchFromRestAPI(path: string): Promise<any> {
-    const conn = this.getNextConnection();
-    
-    const cleanPath = path.startsWith('/') ? path : `/${path}`;
-    const fullPath = cleanPath.endsWith('.json') ? cleanPath : `${cleanPath}.json`;
-    
-    this.logger.debug(`🔍 Fetching: ${fullPath}`);
-    
-    // Auth token will be added automatically by interceptor
-    const response = await conn.get(fullPath);
-    
-    const connIndex = this.restConnectionPool.indexOf(conn);
-    if (connIndex >= 0) {
-      const health = this.connectionHealth.restConnections.get(connIndex);
-      if (health) {
-        health.lastSuccess = Date.now();
-        health.failures = Math.max(0, health.failures - 1);
+  private async fetchRealtimeDbWithTimeout(path: string): Promise<any> {
+    return Promise.race([
+      this.fetchRealtimeDb(path),
+      new Promise<never>((_, reject) => 
+        setTimeout(() => reject(new Error('Timeout')), 5000)
+      ),
+    ]);
+  }
+
+  private async fetchRealtimeDb(path: string): Promise<any> {
+    if (this.useRestForRealtimeDb && this.restConnectionPool.length > 0) {
+      const conn = this.getNextConnection();
+      const response = await conn.get(`${path}.json`);
+      
+      const connIndex = this.restConnectionPool.indexOf(conn);
+      if (connIndex >= 0) {
+        const health = this.connectionHealth.restConnections.get(connIndex);
+        if (health) {
+          health.lastSuccess = Date.now();
+          health.failures = Math.max(0, health.failures - 1);
+        }
       }
+      
+      return response.data;
+      
+    } else if (this.realtimeDb) {
+      const snapshot = await this.realtimeDb.ref(path).once('value');
+      return snapshot.val();
+      
+    } else {
+      throw new Error('Realtime Database not available');
     }
-    
-    return response.data;
   }
 
   async setRealtimeDbValue(path: string, data: any, critical = false): Promise<void> {
@@ -373,30 +333,22 @@ export class FirebaseService implements OnModuleInit {
     const writeOperation = async () => {
       for (let attempt = 0; attempt < this.MAX_RETRIES; attempt++) {
         try {
-          const conn = this.getNextConnection();
-          const cleanPath = path.startsWith('/') ? path : `/${path}`;
-          const fullPath = cleanPath.endsWith('.json') ? cleanPath : `${cleanPath}.json`;
-          
-          // Auth token will be added automatically by interceptor
-          await conn.put(fullPath, data);
+          if (this.useRestForRealtimeDb && this.restConnectionPool.length > 0) {
+            const conn = this.getNextConnection();
+            await conn.put(`${path}.json`, data);
+          } else if (this.realtimeDb) {
+            await this.realtimeDb.ref(path).set(data);
+          } else {
+            throw new Error('Realtime Database not available');
+          }
 
           this.writeCount++;
           this.queryCache.delete(path);
           return;
 
         } catch (error) {
-          // ✅ Check if it's auth error
-          if (error.response?.status === 401) {
-            this.logger.warn('⚠️ Auth token expired during write, refreshing...');
-            await this.refreshAuthToken();
-            continue; // Retry with new token
-          }
-          
           if (attempt < this.MAX_RETRIES - 1) {
             await new Promise(resolve => setTimeout(resolve, this.RETRY_DELAY_MS));
-          } else {
-            this.logger.error(`❌ Write failed for ${path}: ${error.message}`);
-            throw error;
           }
         }
       }
@@ -452,10 +404,10 @@ export class FirebaseService implements OnModuleInit {
       timestamp: Date.now(),
     });
     
-    if (this.queryCache.size > 500) {
+    if (this.queryCache.size > 300) {
       const oldestKeys = Array.from(this.queryCache.entries())
         .sort((a, b) => a[1].timestamp - b[1].timestamp)
-        .slice(0, 100)
+        .slice(0, 50)
         .map(([key]) => key);
       
       oldestKeys.forEach(key => this.queryCache.delete(key));
@@ -464,16 +416,9 @@ export class FirebaseService implements OnModuleInit {
 
   private startBackgroundTasks() {
     setInterval(() => this.cleanupCache(), 60000);
-    setInterval(() => this.healthCheckConnections(), 30000);
+    setInterval(() => this.healthCheckConnections(), 60000);
     setInterval(() => this.processWriteQueue(), 200);
     setInterval(() => this.resetDailyStats(), 86400000);
-    
-    // ✅ Refresh token periodically (every 50 minutes)
-    setInterval(() => {
-      this.refreshAuthToken().catch(err => {
-        this.logger.error(`Token refresh failed: ${err.message}`);
-      });
-    }, 50 * 60 * 1000);
   }
 
   private cleanupCache(): void {
@@ -488,28 +433,40 @@ export class FirebaseService implements OnModuleInit {
     }
 
     if (cleaned > 0) {
-      this.logger.debug(`🗑️ Cleaned ${cleaned} cache entries`);
+      this.logger.debug(`⚡ Cleaned ${cleaned} cache entries`);
     }
   }
 
   private async healthCheckConnections(): Promise<void> {
-    if (this.restConnectionPool.length === 0) return;
+    if (!this.useRestForRealtimeDb || this.restConnectionPool.length === 0) return;
 
     try {
       const conn = this.restConnectionPool[0];
-      await conn.get('/.json', {
-        params: { shallow: 'true', timeout: '2000' }
-      });
-      
-      this.logger.debug('✅ Health check passed');
+      await conn.get('/.json?shallow=true&timeout=2000');
       
     } catch (error) {
       this.logger.warn(`⚠️ Health check failed: ${error.message}`);
       
-      if (error.response?.status === 401) {
-        this.logger.warn('⚠️ Auth issue detected, refreshing token...');
-        await this.refreshAuthToken();
+      if (this.connectionHealth.consecutiveFailures >= 3) {
+        await this.reconnectRealtimeDb();
       }
+    }
+  }
+
+  private async reconnectRealtimeDb(): Promise<void> {
+    this.logger.log('🔄 Reconnecting Realtime DB...');
+    
+    try {
+      this.restConnectionPool = [];
+      this.connectionHealth.restConnections.clear();
+      
+      await this.initializeRealtimeDbWithPool();
+      
+      this.connectionHealth.consecutiveFailures = 0;
+      this.logger.log('✅ Reconnection successful');
+      
+    } catch (error) {
+      this.logger.error(`❌ Reconnection failed: ${error.message}`);
     }
   }
 
@@ -550,6 +507,19 @@ export class FirebaseService implements OnModuleInit {
     
     this.readCount++;
     return this.db;
+  }
+
+  getRealtimeDatabase(): admin.database.Database {
+    if (!this.initialized) {
+      throw new Error('Firebase not initialized');
+    }
+    if (this.useRestForRealtimeDb) {
+      throw new Error('Use getRealtimeDbValue() instead');
+    }
+    if (!this.realtimeDb) {
+      throw new Error('Realtime Database not available');
+    }
+    return this.realtimeDb;
   }
 
   async generateId(collection: string): Promise<string> {
@@ -625,10 +595,6 @@ export class FirebaseService implements OnModuleInit {
     const cacheHitPercentage = totalOps > 0 ? Math.round((this.cacheHitRate / totalOps) * 100) : 0;
     const hoursSinceReset = (Date.now() - this.lastStatsReset) / 3600000;
     
-    const tokenExpiresIn = this.tokenExpiresAt > 0 
-      ? Math.max(0, Math.round((this.tokenExpiresAt - Date.now()) / 60000))
-      : 0;
-    
     return {
       operations: this.operationCount,
       avgResponseTime: Math.round(this.avgResponseTime),
@@ -636,17 +602,15 @@ export class FirebaseService implements OnModuleInit {
       cacheHitRate: `${cacheHitPercentage}%`,
       connectionPoolSize: this.restConnectionPool.length,
       writeQueueSize: this.writeQueue.length,
-      method: 'Authenticated REST API',
-      authStatus: {
-        hasToken: !!this.authToken,
-        expiresInMinutes: tokenExpiresIn,
-      },
+      usingREST: this.useRestForRealtimeDb,
       firestoreReady: this.firestoreReady,
       dailyStats: {
         reads: this.readCount,
         writes: this.writeCount,
         estimatedDailyReads: Math.round(this.readCount / hoursSinceReset * 24),
         estimatedDailyWrites: Math.round(this.writeCount / hoursSinceReset * 24),
+        readsRemaining: 250000 - Math.round(this.readCount / hoursSinceReset * 24),
+        writesRemaining: 100000 - Math.round(this.writeCount / hoursSinceReset * 24),
       },
       health: {
         consecutiveFailures: this.connectionHealth.consecutiveFailures,
