@@ -1,5 +1,5 @@
 // src/health.controller.ts
-// ✅ FIXED: Compatible with simplified FirebaseService
+// ✅ UPDATED: Added timezone information
 
 import { Controller, Get } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
@@ -46,7 +46,7 @@ export class HealthController {
       },
       environment: process.env.NODE_ENV || 'development',
       service: 'Binary Option Trading System',
-      version: '3.2-simplified',
+      version: '3.2-timezone-sync',
       nodeVersion: process.version,
     };
   }
@@ -96,24 +96,8 @@ export class HealthController {
           },
         },
 
-        // ✅ Firebase performance (simplified structure)
-        firebase: {
-          connection: {
-            initialized: firebaseStats.initialized,
-            firestoreReady: firebaseStats.firestoreReady,
-            realtimeDbReady: firebaseStats.realtimeDbReady,
-          },
-          cache: {
-            size: firebaseStats.cacheSize,
-            writeQueueSize: firebaseStats.writeQueueSize,
-          },
-          billing: firebaseStats.dailyStats,
-          performance: {
-            status: firebaseStats.initialized && firebaseStats.firestoreReady && firebaseStats.realtimeDbReady 
-              ? 'healthy' 
-              : 'degraded',
-          }
-        },
+        // Firebase performance
+        firebase: firebaseStats,
 
         // Binary orders performance
         binaryOrders: orderStats,
@@ -121,20 +105,18 @@ export class HealthController {
         // Assets & pricing performance
         assets: assetStats,
 
-        // ✅ Health status
+        // Health status
         health: {
           overall: 'healthy',
           checks: {
             memory: memory.heapUsed / memory.heapTotal < 0.9 ? 'ok' : 'warning',
-            firebase: firebaseStats.initialized ? 'ok' : 'warning',
-            firestore: firebaseStats.firestoreReady ? 'ok' : 'warning',
-            realtimeDb: firebaseStats.realtimeDbReady ? 'ok' : 'warning',
+            firebase: firebaseStats.operations > 0 ? 'ok' : 'warning',
             orders: orderStats.ordersCreated > 0 ? 'ok' : 'not_tested',
             timezone: orderStats.timezone ? 'synced' : 'unknown',
           },
         },
 
-        // ✅ Recommendations
+        // Recommendations
         recommendations: this.getRecommendations(memory, orderStats, firebaseStats),
       };
     } catch (error) {
@@ -279,35 +261,13 @@ export class HealthController {
       recommendations.push('⚠️ Settlement slow (>500ms). Optimize price fetching.');
     }
 
-    // ✅ Firebase recommendations (simplified)
-    if (!firebaseStats.initialized) {
-      recommendations.push('❌ Firebase not initialized. Critical issue!');
-    } else if (!firebaseStats.firestoreReady) {
-      recommendations.push('⚠️ Firestore not ready. Check connection.');
-    } else if (!firebaseStats.realtimeDbReady) {
-      recommendations.push('⚠️ Realtime DB not ready. Check connection.');
+    // Firebase recommendations
+    if (firebaseStats.avgResponseTime > 200) {
+      recommendations.push('💡 Firebase response time high. Consider caching optimization.');
     }
 
     // Cache recommendations
-    if (firebaseStats.cacheSize > 500) {
-      recommendations.push('💡 Large Firebase cache. Consider periodic cleanup.');
-    }
-
-    if (firebaseStats.writeQueueSize > 100) {
-      recommendations.push('⚠️ Large write queue. Firebase may be slow.');
-    }
-
-    // Billing recommendations
-    if (firebaseStats.dailyStats.estimatedDailyReads > 40000) {
-      recommendations.push('⚠️ High read count. Approaching free tier limit (50K/day).');
-    }
-
-    if (firebaseStats.dailyStats.estimatedDailyWrites > 16000) {
-      recommendations.push('⚠️ High write count. Approaching free tier limit (20K/day).');
-    }
-
-    // Order cache recommendations
-    if (orderStats.cacheSize && orderStats.cacheSize.orders > 1000) {
+    if (orderStats.cacheSize.orders > 1000) {
       recommendations.push('💡 Large order cache. Consider periodic cleanup.');
     }
 
@@ -319,7 +279,6 @@ export class HealthController {
     if (recommendations.length === 0) {
       recommendations.push('✅ All systems performing optimally!');
       recommendations.push('✅ Timezone synced with simulator (Asia/Jakarta)');
-      recommendations.push('✅ Firebase connection healthy');
     }
 
     return recommendations;
