@@ -64,12 +64,9 @@ export class FirebaseService implements OnModuleInit {
       
       const serviceAccount = {
         projectId: this.configService.get('firebase.projectId'),
-        privateKey: this.configService
-          .get<string>('firebase.privateKey')
-          ?.replace(/\\n/g, '\n'),
+        privateKey: this.configService.get('firebase.privateKey'),
         clientEmail: this.configService.get('firebase.clientEmail'),
       };
-
 
       if (!serviceAccount.projectId || !serviceAccount.privateKey || !serviceAccount.clientEmail) {
         throw new Error('Firebase credentials missing');
@@ -77,13 +74,10 @@ export class FirebaseService implements OnModuleInit {
 
       this.logger.log('⚡ Initializing Firebase (OPTIMIZED MODE)...');
 
-      // NEW VERSION (CORRECT)
       if (!admin.apps.length) {
         admin.initializeApp({
           credential: admin.credential.cert(serviceAccount as admin.ServiceAccount),
-          databaseURL: this.configService.get('firebase.realtimeDbUrl'), // ✅ ADD THIS!
         });
-        this.logger.log('✅ Firebase Admin SDK initialized');
       }
 
       this.db = admin.firestore();
