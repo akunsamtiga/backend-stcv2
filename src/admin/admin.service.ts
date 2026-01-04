@@ -1,16 +1,14 @@
-// src/admin/admin.service.ts
-// ✅ FIXED: Initial demo balance 10 juta untuk createUser
-
 import { Injectable, NotFoundException, ConflictException, Logger, BadRequestException } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 import { FirebaseService } from '../firebase/firebase.service';
 import { BalanceService } from '../balance/balance.service';
+import { UserStatusService } from '../user/user-status.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { ManageBalanceDto } from './dto/manage-balance.dto';
 import { GetUsersQueryDto } from './dto/get-users-query.dto';
-import { COLLECTIONS, BALANCE_TYPES, ORDER_STATUS, BALANCE_ACCOUNT_TYPE } from '../common/constants';
-import { User, Balance, BinaryOrder } from '../common/interfaces';
+import { COLLECTIONS, BALANCE_TYPES, ORDER_STATUS, BALANCE_ACCOUNT_TYPE, USER_STATUS, AFFILIATE_STATUS } from '../common/constants';
+import { User, Balance, BinaryOrder, Affiliate } from '../common/interfaces';
 
 @Injectable()
 export class AdminService {
@@ -19,15 +17,9 @@ export class AdminService {
   constructor(
     private firebaseService: FirebaseService,
     private balanceService: BalanceService,
+    private userStatusService: UserStatusService,
   ) {}
 
-  // ============================================
-  // USER MANAGEMENT
-  // ============================================
-
-  /**
-   * ✅ CREATE USER - With 10 million demo balance
-   */
   async createUser(createUserDto: CreateUserDto, createdBy: string) {
     const db = this.firebaseService.getFirestore();
 
@@ -49,6 +41,7 @@ export class AdminService {
       email: createUserDto.email,
       password: hashedPassword,
       role: createUserDto.role,
+      status: USER_STATUS.STANDARD,
       isActive: true,
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -57,12 +50,10 @@ export class AdminService {
 
     await db.collection(COLLECTIONS.USERS).doc(userId).set(userData);
 
-    // ✅ Create initial balance for BOTH accounts
     const balanceId1 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
     const balanceId2 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
 
     await Promise.all([
-      // Real account - starts with 0
       db.collection(COLLECTIONS.BALANCE).doc(balanceId1).set({
         id: balanceId1,
         user_id: userId,
@@ -72,19 +63,18 @@ export class AdminService {
         description: 'Initial real balance',
         createdAt: timestamp,
       }),
-      // ✅ FIXED: Demo account - starts with 10 MILLION
       db.collection(COLLECTIONS.BALANCE).doc(balanceId2).set({
         id: balanceId2,
         user_id: userId,
         accountType: BALANCE_ACCOUNT_TYPE.DEMO,
         type: BALANCE_TYPES.DEPOSIT,
-        amount: 10000000, // ✅ 10 juta (was 10000)
+        amount: 10000000,
         description: 'Initial demo balance - 10 million',
         createdAt: timestamp,
       }),
     ]);
 
-    this.logger.log(`✅ User created by admin: ${createUserDto.email} (Real: Rp 0, Demo: Rp 10,000,000)`);
+    this.logger.log(`✅ User created by admin: ${createUserDto.email} (Status: STANDARD, Real: Rp 0, Demo: Rp 10,000,000)`);
 
     const { password, ...userWithoutPassword } = userData;
     return {
@@ -97,9 +87,6 @@ export class AdminService {
     };
   }
 
-  /**
-   * UPDATE USER
-   */
   async updateUser(userId: string, updateUserDto: UpdateUserDto) {
     const db = this.firebaseService.getFirestore();
 
@@ -117,9 +104,6 @@ export class AdminService {
     };
   }
 
-  /**
-   * GET ALL USERS
-   */
   async getAllUsers(queryDto: GetUsersQueryDto) {
     const { page = 1, limit = 50, withBalance = false } = queryDto;
     const db = this.firebaseService.getFirestore();
@@ -134,14 +118,25 @@ export class AdminService {
         
         if (withBalance) {
           const balances = await this.balanceService.getBothBalances(user.id);
+          const statusInfo = await this.userStatusService.getUserStatusInfo(user.id);
+          
           return {
             ...user,
+            status: user.status || USER_STATUS.STANDARD,
             realBalance: balances.realBalance,
             demoBalance: balances.demoBalance,
+            statusInfo: {
+              totalDeposit: statusInfo.totalDeposit,
+              profitBonus: statusInfo.profitBonus,
+              nextStatus: statusInfo.nextStatus,
+            },
           };
         }
         
-        return user;
+        return {
+          ...user,
+          status: user.status || USER_STATUS.STANDARD,
+        };
       })
     );
 
@@ -161,9 +156,6 @@ export class AdminService {
     };
   }
 
-  /**
-   * GET USER BY ID
-   */
   async getUserById(userId: string) {
     const db = this.firebaseService.getFirestore();
 
@@ -173,12 +165,21 @@ export class AdminService {
     }
 
     const { password, ...user } = userDoc.data() as User;
-    return user;
+    
+    const statusInfo = await this.userStatusService.getUserStatusInfo(userId);
+    
+    return {
+      ...user,
+      status: user.status || USER_STATUS.STANDARD,
+      statusInfo: {
+        totalDeposit: statusInfo.totalDeposit,
+        profitBonus: statusInfo.profitBonus,
+        nextStatus: statusInfo.nextStatus,
+        progress: statusInfo.progress,
+      },
+    };
   }
 
-  /**
-   * DELETE USER
-   */
   async deleteUser(userId: string) {
     const db = this.firebaseService.getFirestore();
 
@@ -196,13 +197,6 @@ export class AdminService {
     };
   }
 
-  // ============================================
-  // BALANCE MANAGEMENT
-  // ============================================
-
-  /**
-   * ✅ MANAGE USER BALANCE
-   */
   async manageUserBalance(
     userId: string, 
     manageBalanceDto: ManageBalanceDto,
@@ -231,6 +225,16 @@ export class AdminService {
       description: `${manageBalanceDto.description} (by admin)`,
     }, true);
 
+    if (accountType === BALANCE_ACCOUNT_TYPE.REAL && manageBalanceDto.type === 'deposit') {
+      const statusUpdate = await this.userStatusService.updateUserStatus(userId);
+      
+      if (statusUpdate.changed) {
+        this.logger.log(
+          `🎉 User ${userId} upgraded by admin: ${statusUpdate.oldStatus.toUpperCase()} → ${statusUpdate.newStatus.toUpperCase()}`
+        );
+      }
+    }
+
     this.logger.log(
       `Admin ${adminId} ${manageBalanceDto.type} ${manageBalanceDto.amount} to user ${userId}'s ${accountType} account`
     );
@@ -244,12 +248,10 @@ export class AdminService {
     };
   }
 
-  /**
-   * ✅ GET USER BALANCE DETAIL
-   */
   async getUserBalance(userId: string) {
     const user = await this.getUserById(userId);
     const summary = await this.balanceService.getBothBalances(userId);
+    const statusInfo = await this.userStatusService.getUserStatusInfo(userId);
     const history = await this.balanceService.getBalanceHistory(userId, { 
       page: 1, 
       limit: 20 
@@ -267,6 +269,14 @@ export class AdminService {
         id: user.id,
         email: user.email,
         role: user.role,
+        status: user.status,
+      },
+      statusInfo: {
+        current: statusInfo.status,
+        totalDeposit: statusInfo.totalDeposit,
+        profitBonus: statusInfo.profitBonus,
+        nextStatus: statusInfo.nextStatus,
+        progress: statusInfo.progress,
       },
       balances: {
         real: {
@@ -285,9 +295,6 @@ export class AdminService {
     };
   }
 
-  /**
-   * ✅ GET ALL USERS WITH BALANCE
-   */
   async getAllUsersWithBalance() {
     const db = this.firebaseService.getFirestore();
     const usersSnapshot = await db.collection(COLLECTIONS.USERS).get();
@@ -298,18 +305,30 @@ export class AdminService {
         
         try {
           const balances = await this.balanceService.getBothBalances(user.id);
+          const statusInfo = await this.userStatusService.getUserStatusInfo(user.id);
+          
           return {
             ...user,
+            status: user.status || USER_STATUS.STANDARD,
             realBalance: balances.realBalance,
             demoBalance: balances.demoBalance,
             combinedBalance: balances.realBalance + balances.demoBalance,
+            statusInfo: {
+              totalDeposit: statusInfo.totalDeposit,
+              profitBonus: statusInfo.profitBonus,
+            },
           };
         } catch (error) {
           return {
             ...user,
+            status: user.status || USER_STATUS.STANDARD,
             realBalance: 0,
             demoBalance: 0,
             combinedBalance: 0,
+            statusInfo: {
+              totalDeposit: 0,
+              profitBonus: 0,
+            },
           };
         }
       })
@@ -318,6 +337,12 @@ export class AdminService {
     const totalRealBalance = usersWithBalance.reduce((sum, user) => sum + user.realBalance, 0);
     const totalDemoBalance = usersWithBalance.reduce((sum, user) => sum + user.demoBalance, 0);
     const activeUsers = usersWithBalance.filter(u => u.isActive).length;
+    
+    const statusCounts = {
+      standard: usersWithBalance.filter(u => u.status === USER_STATUS.STANDARD).length,
+      gold: usersWithBalance.filter(u => u.status === USER_STATUS.GOLD).length,
+      vip: usersWithBalance.filter(u => u.status === USER_STATUS.VIP).length,
+    };
 
     return {
       users: usersWithBalance,
@@ -327,17 +352,11 @@ export class AdminService {
         totalRealBalance,
         totalDemoBalance,
         combinedBalance: totalRealBalance + totalDemoBalance,
+        statusDistribution: statusCounts,
       },
     };
   }
 
-  // ============================================
-  // USER HISTORY
-  // ============================================
-
-  /**
-   * ✅ GET USER COMPLETE HISTORY
-   */
   async getUserHistory(userId: string) {
     const user = await this.getUserById(userId);
     const db = this.firebaseService.getFirestore();
@@ -368,6 +387,7 @@ export class AdminService {
         id: user.id,
         email: user.email,
         role: user.role,
+        status: user.status,
         createdAt: user.createdAt,
       },
       realAccount: {
@@ -387,9 +407,6 @@ export class AdminService {
     };
   }
 
-  /**
-   * ✅ GET USER TRADING STATISTICS
-   */
   async getUserTradingStats(userId: string) {
     const user = await this.getUserById(userId);
     const db = this.firebaseService.getFirestore();
@@ -420,6 +437,7 @@ export class AdminService {
       user: {
         id: user.id,
         email: user.email,
+        status: user.status,
       },
       realAccount: {
         overall: realStats.overall,
@@ -446,13 +464,6 @@ export class AdminService {
     };
   }
 
-  // ============================================
-  // SYSTEM STATISTICS
-  // ============================================
-
-  /**
-   * ✅ GET SYSTEM-WIDE STATISTICS
-   */
   async getSystemStatistics() {
     const db = this.firebaseService.getFirestore();
 
@@ -465,6 +476,9 @@ export class AdminService {
     const balanceSnapshot = await db.collection(COLLECTIONS.BALANCE).get();
     const transactions = balanceSnapshot.docs.map(doc => doc.data() as Balance);
 
+    const affiliatesSnapshot = await db.collection(COLLECTIONS.AFFILIATES).get();
+    const affiliates = affiliatesSnapshot.docs.map(doc => doc.data() as Affiliate);
+
     const realOrders = orders.filter(o => o.accountType === BALANCE_ACCOUNT_TYPE.REAL);
     const demoOrders = orders.filter(o => o.accountType === BALANCE_ACCOUNT_TYPE.DEMO);
 
@@ -474,6 +488,16 @@ export class AdminService {
     const totalUsers = users.length;
     const activeUsers = users.filter(u => u.isActive).length;
     const adminUsers = users.filter(u => u.role !== 'user').length;
+
+    const statusCounts = {
+      standard: users.filter(u => (u.status || USER_STATUS.STANDARD) === USER_STATUS.STANDARD).length,
+      gold: users.filter(u => u.status === USER_STATUS.GOLD).length,
+      vip: users.filter(u => u.status === USER_STATUS.VIP).length,
+    };
+
+    const completedAffiliates = affiliates.filter(a => a.status === AFFILIATE_STATUS.COMPLETED);
+    const pendingAffiliates = affiliates.filter(a => a.status === AFFILIATE_STATUS.PENDING);
+    const totalAffiliateCommissions = completedAffiliates.reduce((sum, a) => sum + a.commission_amount, 0);
 
     const realStats = {
       totalOrders: realOrders.length,
@@ -487,6 +511,9 @@ export class AdminService {
         .reduce((sum, t) => sum + t.amount, 0),
       totalWithdrawals: realTransactions
         .filter(t => t.type === BALANCE_TYPES.WITHDRAWAL)
+        .reduce((sum, t) => sum + t.amount, 0),
+      affiliateCommissions: realTransactions
+        .filter(t => t.type === BALANCE_TYPES.AFFILIATE_COMMISSION)
         .reduce((sum, t) => sum + t.amount, 0),
     };
 
@@ -518,6 +545,17 @@ export class AdminService {
         total: totalUsers,
         active: activeUsers,
         admins: adminUsers,
+        statusDistribution: statusCounts,
+      },
+      affiliate: {
+        totalReferrals: affiliates.length,
+        completedReferrals: completedAffiliates.length,
+        pendingReferrals: pendingAffiliates.length,
+        totalCommissionsPaid: totalAffiliateCommissions,
+        commissionRate: 25000,
+        conversionRate: affiliates.length > 0 
+          ? Math.round((completedAffiliates.length / affiliates.length) * 100) 
+          : 0,
       },
       realAccount: {
         trading: {
@@ -527,7 +565,8 @@ export class AdminService {
         financial: {
           totalDeposits: realStats.totalDeposits,
           totalWithdrawals: realStats.totalWithdrawals,
-          netFlow: realStats.totalDeposits - realStats.totalWithdrawals,
+          affiliateCommissions: realStats.affiliateCommissions,
+          netFlow: realStats.totalDeposits - realStats.totalWithdrawals - realStats.affiliateCommissions,
         },
       },
       demoAccount: {
@@ -549,10 +588,6 @@ export class AdminService {
       timestamp: new Date().toISOString(),
     };
   }
-
-  // ============================================
-  // HELPER METHODS
-  // ============================================
 
   private calculateAccountStats(transactions: Balance[], orders: BinaryOrder[]) {
     const totalDeposits = transactions

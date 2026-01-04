@@ -6,12 +6,14 @@ import { BinaryOrdersService } from './binary-orders.service';
 import { BalanceModule } from '../balance/balance.module';
 import { AssetsModule } from '../assets/assets.module';
 import { AuthModule } from '../auth/auth.module';
+import { UserModule } from '../user/user.module';
 
 @Module({
   imports: [
     BalanceModule,
     AssetsModule,
     AuthModule,
+    UserModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -25,6 +27,6 @@ import { AuthModule } from '../auth/auth.module';
   ],
   controllers: [BinaryOrdersController],
   providers: [BinaryOrdersService],
-  exports: [BinaryOrdersService], // ✅ EXPORT THE SERVICE
+  exports: [BinaryOrdersService],
 })
 export class BinaryOrdersModule {}

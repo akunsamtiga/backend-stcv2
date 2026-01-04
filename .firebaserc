@@ -1,5 +1,8 @@
 {
   "projects": {
-    "default": "stc-autotrade-18f67"
-  }
+    "default": "stc-autotrade-18f67",
+    "prod": "stc-web-32625"
+  },
+  "targets": {},
+  "etags": {}
 }

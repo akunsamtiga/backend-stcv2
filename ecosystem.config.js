@@ -3,48 +3,42 @@ module.exports = {
     name: 'binary-backend',
     script: './dist/main.js',
     
-    // Instance configuration
-    instances: 1,  // Single instance (bisa dinaikkan jika butuh load balancing)
+    instances: 1,
     exec_mode: 'fork',
     
-    // Environment
     env_production: {
       NODE_ENV: 'production',
-      NODE_OPTIONS: '--dns-result-order=ipv4first',
-      PORT: 3000
+      NODE_OPTIONS: '--dns-result-order=ipv4first --max-old-space-size=768',
+      PORT: 3000,
+      TZ: 'Asia/Jakarta'
     },
     
-    // Restart configuration
     autorestart: true,
-    watch: false,  // Set true jika ingin auto-restart on file change
-    max_restarts: 10,
-    min_uptime: '30s',
-    restart_delay: 5000,
+    watch: false,
+    max_restarts: 15,
+    min_uptime: '20s',
+    restart_delay: 3000,
     
-    // Memory management
-    max_memory_restart: '300M',
+    max_memory_restart: '850M',
     
-    // Logging
     error_file: './logs/error.log',
     out_file: './logs/out.log',
     log_date_format: 'YYYY-MM-DD HH:mm:ss',
     merge_logs: true,
     
-    // Graceful shutdown
-    kill_timeout: 5000,
-    wait_ready: true,
-    listen_timeout: 10000,
+    kill_timeout: 10000,
+    wait_ready: false,
+    listen_timeout: 5000,
     
-    // Error handling
     exp_backoff_restart_delay: 100,
     
-    // Cron restart (restart setiap hari jam 3 pagi)
-    cron_restart: '0 3 * * *',
-    
-    // Process management
     vizion: false,
     
-    // Post-deploy hooks
-    post_update: ['npm install', 'npm run build']
+    ignore_watch: [
+      'node_modules',
+      'logs',
+      '*.log',
+      '.git'
+    ],
   }]
 };

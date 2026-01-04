@@ -1,13 +1,10 @@
-// src/balance/balance.service.ts
-// ✅ FIXED: Strict balance validation & cache management
-
-import { Injectable, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, BadRequestException, Logger, forwardRef, Inject } from '@nestjs/common';
 import { FirebaseService, BatchOperation } from '../firebase/firebase.service';
 import { CreateBalanceDto } from './dto/create-balance.dto';
 import { QueryBalanceDto } from './dto/query-balance.dto';
-import { COLLECTIONS, BALANCE_TYPES, BALANCE_ACCOUNT_TYPE } from '../common/constants';
+import { COLLECTIONS, BALANCE_TYPES, BALANCE_ACCOUNT_TYPE, AFFILIATE_STATUS, AFFILIATE_CONFIG } from '../common/constants';
 import { CalculationUtil } from '../common/utils';
-import { Balance, BalanceSummary } from '../common/interfaces';
+import { Balance, BalanceSummary, Affiliate } from '../common/interfaces';
 
 @Injectable()
 export class BalanceService {
@@ -17,17 +14,71 @@ export class BalanceService {
   private demoBalanceCache: Map<string, { balance: number; timestamp: number }> = new Map();
   private balanceHistoryCache: Map<string, { history: Balance[]; timestamp: number }> = new Map();
   
-  // ✅ REDUCED cache TTL for real-time accuracy
-  private readonly BALANCE_CACHE_TTL = 500; // 500ms only (was 1000ms)
-  private readonly HISTORY_CACHE_TTL = 2000; // 2s (was 3000ms)
+  private readonly BALANCE_CACHE_TTL = 500;
+  private readonly HISTORY_CACHE_TTL = 2000;
+  
+  private userStatusService: any;
 
-  constructor(private firebaseService: FirebaseService) {
+  constructor(
+    private firebaseService: FirebaseService,
+  ) {
     setInterval(() => this.cleanupCache(), 30000);
   }
 
-  /**
-   * ✅ HELPER: Auto-migrate old records without accountType
-   */
+  setUserStatusService(service: any) {
+    this.userStatusService = service;
+  }
+
+  private async checkAndProcessAffiliate(userId: string, isFirstDeposit: boolean) {
+    if (!isFirstDeposit) return;
+
+    const db = this.firebaseService.getFirestore();
+
+    try {
+      const affiliateSnapshot = await db.collection(COLLECTIONS.AFFILIATES)
+        .where('referee_id', '==', userId)
+        .where('status', '==', AFFILIATE_STATUS.PENDING)
+        .limit(1)
+        .get();
+
+      if (affiliateSnapshot.empty) {
+        this.logger.debug(`No pending affiliate for user ${userId}`);
+        return;
+      }
+
+      const affiliateDoc = affiliateSnapshot.docs[0];
+      const affiliate = affiliateDoc.data() as Affiliate;
+      const timestamp = new Date().toISOString();
+
+      await db.collection(COLLECTIONS.AFFILIATES)
+        .doc(affiliate.id)
+        .update({
+          status: AFFILIATE_STATUS.COMPLETED,
+          completed_at: timestamp,
+        });
+
+      const commissionBalanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
+      
+      await db.collection(COLLECTIONS.BALANCE).doc(commissionBalanceId).set({
+        id: commissionBalanceId,
+        user_id: affiliate.referrer_id,
+        accountType: BALANCE_ACCOUNT_TYPE.REAL,
+        type: BALANCE_TYPES.AFFILIATE_COMMISSION,
+        amount: AFFILIATE_CONFIG.COMMISSION_AMOUNT,
+        description: `Affiliate commission - Friend deposit activated`,
+        createdAt: timestamp,
+      });
+
+      this.realBalanceCache.delete(affiliate.referrer_id);
+
+      this.logger.log(`🎁 Affiliate commission paid: ${AFFILIATE_CONFIG.COMMISSION_AMOUNT} to ${affiliate.referrer_id}`);
+      this.logger.log(`   Referee: ${userId} made first deposit`);
+
+    } catch (error) {
+      this.logger.error(`❌ Affiliate processing error: ${error.message}`);
+    }
+  }
+
   private async autoMigrateIfNeeded(userId: string): Promise<void> {
     const db = this.firebaseService.getFirestore();
 
@@ -77,7 +128,7 @@ export class BalanceService {
           user_id: userId,
           accountType: 'demo',
           type: BALANCE_TYPES.DEPOSIT,
-          amount: 10000000, // ✅ FIXED: 10 juta (was 10000)
+          amount: 10000000,
           description: 'Initial demo balance (auto-created)',
           createdAt: timestamp,
         });
@@ -90,13 +141,10 @@ export class BalanceService {
     }
   }
 
-  /**
-   * ✅ GET CURRENT BALANCE - ALWAYS FRESH, NO STALE CACHE
-   */
   async getCurrentBalance(
     userId: string, 
     accountType: 'real' | 'demo',
-    forceRefresh = false // ✅ NEW: Force refresh option
+    forceRefresh = false
   ): Promise<number> {
     await this.autoMigrateIfNeeded(userId);
 
@@ -104,7 +152,6 @@ export class BalanceService {
       ? this.realBalanceCache 
       : this.demoBalanceCache;
 
-    // ✅ STRICTER cache check
     if (!forceRefresh) {
       const cached = cache.get(userId);
       if (cached) {
@@ -116,7 +163,6 @@ export class BalanceService {
       }
     }
 
-    // ✅ Always fetch fresh from DB
     const db = this.firebaseService.getFirestore();
     const snapshot = await db.collection(COLLECTIONS.BALANCE)
       .where('user_id', '==', userId)
@@ -126,7 +172,6 @@ export class BalanceService {
     const transactions = snapshot.docs.map(doc => doc.data() as Balance);
     const balance = CalculationUtil.calculateBalance(transactions);
     
-    // ✅ Update cache with fresh data
     cache.set(userId, {
       balance,
       timestamp: Date.now(),
@@ -139,20 +184,13 @@ export class BalanceService {
     return balance;
   }
 
-  /**
-   * ✅ GET CURRENT BALANCE WITH LOCK - For critical operations
-   */
   async getCurrentBalanceStrict(
     userId: string,
     accountType: 'real' | 'demo'
   ): Promise<number> {
-    // ✅ Always force refresh for strict validation
     return this.getCurrentBalance(userId, accountType, true);
   }
 
-  /**
-   * ✅ GET BOTH BALANCES
-   */
   async getBothBalances(userId: string): Promise<BalanceSummary> {
     await this.autoMigrateIfNeeded(userId);
 
@@ -178,9 +216,6 @@ export class BalanceService {
     };
   }
 
-  /**
-   * ✅ CREATE BALANCE ENTRY - With strict validation
-   */
   async createBalanceEntry(
     userId: string, 
     createBalanceDto: CreateBalanceDto, 
@@ -195,7 +230,6 @@ export class BalanceService {
 
     await this.autoMigrateIfNeeded(userId);
 
-    // ✅ STRICT VALIDATION: Always get fresh balance for withdrawals
     if (createBalanceDto.type === BALANCE_TYPES.WITHDRAWAL) {
       const currentBalance = await this.getCurrentBalanceStrict(userId, accountType);
       
@@ -204,6 +238,22 @@ export class BalanceService {
           `Insufficient ${accountType} balance for withdrawal. Available: ${currentBalance}, Required: ${createBalanceDto.amount}`
         );
       }
+    }
+
+    const isFirstRealDeposit = accountType === BALANCE_ACCOUNT_TYPE.REAL && 
+                                createBalanceDto.type === BALANCE_TYPES.DEPOSIT;
+
+    let wasFirstDeposit = false;
+
+    if (isFirstRealDeposit) {
+      const existingDeposits = await db.collection(COLLECTIONS.BALANCE)
+        .where('user_id', '==', userId)
+        .where('accountType', '==', BALANCE_ACCOUNT_TYPE.REAL)
+        .where('type', '==', BALANCE_TYPES.DEPOSIT)
+        .limit(1)
+        .get();
+
+      wasFirstDeposit = existingDeposits.empty;
     }
 
     const balanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
@@ -220,7 +270,7 @@ export class BalanceService {
     const isCriticalOperation = 
       createBalanceDto.type === BALANCE_TYPES.DEPOSIT || 
       createBalanceDto.type === BALANCE_TYPES.WITHDRAWAL ||
-      createBalanceDto.type === BALANCE_TYPES.ORDER_DEBIT; // ✅ NEW: Order debit is also critical
+      createBalanceDto.type === BALANCE_TYPES.ORDER_DEBIT;
 
     if (isCriticalOperation || critical) {
       await db.collection(COLLECTIONS.BALANCE).doc(balanceId).set(balanceData);
@@ -239,16 +289,36 @@ export class BalanceService {
         });
     }
 
-    // ✅ CRITICAL: Clear cache IMMEDIATELY
     this.invalidateCache(userId, accountType);
 
-    // ✅ Wait a bit for DB to sync (critical operations only)
     if (isCriticalOperation) {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
 
-    // ✅ Get fresh balance after operation
     const currentBalance = await this.getCurrentBalance(userId, accountType, true);
+
+    if (accountType === BALANCE_ACCOUNT_TYPE.REAL && 
+        createBalanceDto.type === BALANCE_TYPES.DEPOSIT) {
+      
+      if (wasFirstDeposit) {
+        this.logger.log(`🎁 First deposit detected for user ${userId}, checking affiliate...`);
+        await this.checkAndProcessAffiliate(userId, true);
+      }
+
+      if (this.userStatusService) {
+        try {
+          const statusUpdate = await this.userStatusService.updateUserStatus(userId);
+          
+          if (statusUpdate.changed) {
+            this.logger.log(
+              `🎉 User ${userId} upgraded: ${statusUpdate.oldStatus.toUpperCase()} → ${statusUpdate.newStatus.toUpperCase()}`
+            );
+          }
+        } catch (error) {
+          this.logger.warn(`⚠️ Status update failed for ${userId}: ${error.message}`);
+        }
+      }
+    }
 
     this.logger.log(
       `${accountType.toUpperCase()} balance updated: ${userId} - ${createBalanceDto.type} ${createBalanceDto.amount} -> NEW: ${currentBalance}`
@@ -259,12 +329,10 @@ export class BalanceService {
       transaction: balanceData,
       currentBalance,
       accountType,
+      affiliateProcessed: wasFirstDeposit,
     };
   }
 
-  /**
-   * ✅ GET BALANCE HISTORY
-   */
   async getBalanceHistory(
     userId: string, 
     queryDto: QueryBalanceDto,
@@ -318,9 +386,6 @@ export class BalanceService {
     };
   }
 
-  /**
-   * ✅ GET BALANCE SUMMARY
-   */
   async getBalanceSummary(userId: string) {
     await this.autoMigrateIfNeeded(userId);
 
@@ -347,6 +412,9 @@ export class BalanceService {
         .reduce((sum, t) => sum + t.amount, 0),
       totalOrderProfits: realTransactions
         .filter(t => t.type === BALANCE_TYPES.ORDER_PROFIT)
+        .reduce((sum, t) => sum + t.amount, 0),
+      totalAffiliateCommissions: realTransactions
+        .filter(t => t.type === BALANCE_TYPES.AFFILIATE_COMMISSION)
         .reduce((sum, t) => sum + t.amount, 0),
       transactionCount: realTransactions.length,
     };
@@ -378,9 +446,6 @@ export class BalanceService {
     };
   }
 
-  /**
-   * BULK CREATE
-   */
   async bulkCreateBalanceEntries(
     entries: Array<{
       userId: string;
@@ -426,9 +491,6 @@ export class BalanceService {
     this.logger.log(`Bulk created ${entries.length} balance entries`);
   }
 
-  /**
-   * ✅ CACHE MANAGEMENT - Aggressive invalidation
-   */
   private invalidateCache(userId: string, accountType: 'real' | 'demo'): void {
     if (accountType === BALANCE_ACCOUNT_TYPE.REAL) {
       this.realBalanceCache.delete(userId);
@@ -439,9 +501,6 @@ export class BalanceService {
     this.logger.debug(`🗑️ ${accountType} cache CLEARED for ${userId}`);
   }
 
-  /**
-   * ✅ CLEAR ALL CACHE FOR USER
-   */
   clearUserCache(userId: string): void {
     this.realBalanceCache.delete(userId);
     this.demoBalanceCache.delete(userId);
@@ -451,7 +510,7 @@ export class BalanceService {
 
   private cleanupCache(): void {
     const now = Date.now();
-    const maxAge = this.BALANCE_CACHE_TTL * 10; // 5 seconds max
+    const maxAge = this.BALANCE_CACHE_TTL * 10;
     
     for (const [userId, cached] of this.realBalanceCache.entries()) {
       if (now - cached.timestamp > maxAge) {

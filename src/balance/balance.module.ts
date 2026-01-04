@@ -1,10 +1,10 @@
-// src/balance/balance.module.ts
-import { Module } from '@nestjs/common';
+import { Module, forwardRef, OnModuleInit } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { BalanceController } from './balance.controller';
 import { BalanceService } from './balance.service';
 import { AuthModule } from '../auth/auth.module';
+import { ModuleRef } from '@nestjs/core';
 
 @Module({
   imports: [
@@ -22,6 +22,24 @@ import { AuthModule } from '../auth/auth.module';
   ],
   controllers: [BalanceController],
   providers: [BalanceService],
-  exports: [BalanceService], 
+  exports: [BalanceService],
 })
-export class BalanceModule {}
+export class BalanceModule implements OnModuleInit {
+  constructor(
+    private moduleRef: ModuleRef,
+    private balanceService: BalanceService,
+  ) {}
+
+  async onModuleInit() {
+    setTimeout(async () => {
+      try {
+        const { UserStatusService } = await import('../user/user-status.service');
+        const userStatusService = this.moduleRef.get(UserStatusService, { strict: false });
+        if (userStatusService) {
+          this.balanceService.setUserStatusService(userStatusService);
+        }
+      } catch (error) {
+      }
+    }, 1000);
+  }
+}

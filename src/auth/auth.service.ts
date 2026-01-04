@@ -1,6 +1,3 @@
-// src/auth/auth.service.ts
-// ✅ UPDATED: Create default IDX_STC asset saat super admin dibuat
-
 import { Injectable, UnauthorizedException, ConflictException, Logger, OnModuleInit } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -8,7 +5,7 @@ import * as bcrypt from 'bcrypt';
 import { FirebaseService } from '../firebase/firebase.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
-import { COLLECTIONS, BALANCE_TYPES, BALANCE_ACCOUNT_TYPE, USER_ROLES } from '../common/constants';
+import { COLLECTIONS, BALANCE_TYPES, BALANCE_ACCOUNT_TYPE, USER_ROLES, USER_STATUS } from '../common/constants';
 import { User } from '../common/interfaces';
 
 @Injectable()
@@ -42,14 +39,10 @@ export class AuthService implements OnModuleInit {
     }, 2000);
   }
 
-  /**
-   * ✅ CREATE DEFAULT IDX_STC ASSET
-   */
   private async createDefaultAssetIfNotExists() {
     try {
       const db = this.firebaseService.getFirestore();
       
-      // Check if IDX_STC already exists
       const assetSnapshot = await db.collection(COLLECTIONS.ASSETS)
         .where('symbol', '==', 'IDX_STC')
         .limit(1)
@@ -60,7 +53,6 @@ export class AuthService implements OnModuleInit {
         return;
       }
 
-      // Create default IDX_STC asset
       const assetId = await this.firebaseService.generateId(COLLECTIONS.ASSETS);
       const timestamp = new Date().toISOString();
 
@@ -74,18 +66,16 @@ export class AuthService implements OnModuleInit {
         realtimeDbPath: '/idx_stc',
         description: 'Indonesian Stock Index - Default Asset',
         
-        // ✅ Default simulator settings
         simulatorSettings: {
           initialPrice: 40.022,
           dailyVolatilityMin: 0.001,
           dailyVolatilityMax: 0.005,
           secondVolatilityMin: 0.00001,
           secondVolatilityMax: 0.00008,
-          minPrice: 20.011,  // 50% of initial
-          maxPrice: 80.044,  // 200% of initial
+          minPrice: 20.011,
+          maxPrice: 80.044,
         },
         
-        // ✅ Default trading settings
         tradingSettings: {
           minOrderAmount: 1000,
           maxOrderAmount: 1000000,
@@ -109,9 +99,6 @@ export class AuthService implements OnModuleInit {
     }
   }
 
-  /**
-   * CREATE SUPER ADMIN
-   */
   private async createSuperAdminIfNotExists() {
     try {
       if (!this.firebaseService.isFirestoreReady()) {
@@ -144,12 +131,12 @@ export class AuthService implements OnModuleInit {
           email,
           password: hashedPassword,
           role: USER_ROLES.SUPER_ADMIN,
+          status: USER_STATUS.VIP,
           isActive: true,
           createdAt: timestamp,
           updatedAt: timestamp,
         });
 
-        // Create initial balance for BOTH accounts
         const balanceId1 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
         const balanceId2 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
 
@@ -174,15 +161,12 @@ export class AuthService implements OnModuleInit {
           }),
         ]);
 
-        this.logger.log(`✅ Super admin created: ${email} (Real: Rp 0, Demo: Rp 10,000,000)`);
+        this.logger.log(`✅ Super admin created: ${email} (Status: VIP, Real: Rp 0, Demo: Rp 10,000,000)`);
         
-        // ✅ Create default asset after super admin
         await this.createDefaultAssetIfNotExists();
         
       } else {
         this.logger.log(`ℹ️ Super admin already exists: ${email}`);
-        
-        // ✅ Still check for default asset
         await this.createDefaultAssetIfNotExists();
       }
     } catch (error) {
@@ -195,9 +179,6 @@ export class AuthService implements OnModuleInit {
     }
   }
 
-  /**
-   * REGISTER
-   */
   async register(registerDto: RegisterDto) {
     const startTime = Date.now();
     const db = this.firebaseService.getFirestore();
@@ -221,6 +202,7 @@ export class AuthService implements OnModuleInit {
       email,
       password: hashedPassword,
       role: USER_ROLES.USER,
+      status: USER_STATUS.STANDARD,
       isActive: true,
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -228,7 +210,6 @@ export class AuthService implements OnModuleInit {
 
     await db.collection(COLLECTIONS.USERS).doc(userId).set(userData);
 
-    // Create initial balance for BOTH accounts
     const balanceId1 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
     const balanceId2 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
 
@@ -253,7 +234,7 @@ export class AuthService implements OnModuleInit {
       }),
     ]);
 
-    this.logger.log(`✅ User registered: ${email} (Real: Rp 0, Demo: Rp 10,000,000)`);
+    this.logger.log(`✅ User registered: ${email} (Status: STANDARD, Real: Rp 0, Demo: Rp 10,000,000)`);
 
     const token = this.generateToken(userId, email, USER_ROLES.USER);
     this.cacheUser(userId, userData as User);
@@ -267,6 +248,7 @@ export class AuthService implements OnModuleInit {
         id: userId,
         email,
         role: USER_ROLES.USER,
+        status: USER_STATUS.STANDARD,
       },
       initialBalances: {
         real: 0,
@@ -276,9 +258,6 @@ export class AuthService implements OnModuleInit {
     };
   }
 
-  /**
-   * LOGIN
-   */
   async login(loginDto: LoginDto) {
     const startTime = Date.now();
     const db = this.firebaseService.getFirestore();
@@ -309,7 +288,7 @@ export class AuthService implements OnModuleInit {
     this.cacheUser(user.id, user);
 
     const duration = Date.now() - startTime;
-    this.logger.log(`✅ User logged in in ${duration}ms: ${email} (${user.role})`);
+    this.logger.log(`✅ User logged in in ${duration}ms: ${email} (${user.role}, ${user.status?.toUpperCase() || 'STANDARD'})`);
 
     return {
       message: 'Login successful',
@@ -317,14 +296,12 @@ export class AuthService implements OnModuleInit {
         id: user.id,
         email: user.email,
         role: user.role,
+        status: user.status || USER_STATUS.STANDARD,
       },
       token,
     };
   }
 
-  /**
-   * GENERATE TOKEN
-   */
   private generateToken(userId: string, email: string, role: string): string {
     const payload = { sub: userId, email, role };
     
@@ -336,9 +313,6 @@ export class AuthService implements OnModuleInit {
     return token;
   }
 
-  /**
-   * USER CACHING
-   */
   private cacheUser(userId: string, user: User): void {
     this.userCache.set(userId, {
       user,
@@ -359,9 +333,6 @@ export class AuthService implements OnModuleInit {
     return cached.user;
   }
 
-  /**
-   * CACHE CLEANUP
-   */
   private cleanupCache(): void {
     const now = Date.now();
     

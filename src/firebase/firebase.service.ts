@@ -1,10 +1,3 @@
-// src/firebase/firebase.service.ts
-// 🎯 CONNECTION-OPTIMIZED VERSION - Reduced pool for simulator compatibility
-// ✅ Reduced connection pool: 5 (was 15)
-// ✅ Better connection sharing
-// ✅ Prioritize critical operations
-// ✅ Don't block simulator writes
-
 import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as admin from 'firebase-admin';
@@ -34,15 +27,13 @@ export class FirebaseService implements OnModuleInit {
   private firestoreReady = false;
   private useRestForRealtimeDb = false;
   
-  // 🎯 REDUCED CONNECTION POOL (15 → 5) to not block simulator
   private restConnectionPool: AxiosInstance[] = [];
-  private readonly POOL_SIZE = 5; // ✅ Reduced from 15
+  private readonly POOL_SIZE = 3;
   private currentPoolIndex = 0;
   
-  // 🎯 EXTENDED CACHE TTL to reduce reads
   private queryCache: Map<string, { data: any; timestamp: number }> = new Map();
-  private readonly CACHE_TTL = 5000; // ✅ Increased from 3000ms
-  private readonly STALE_CACHE_TTL = 30000; // ✅ Increased from 20000ms
+  private readonly CACHE_TTL = 30000;
+  private readonly STALE_CACHE_TTL = 120000;
   
   private connectionHealth = {
     restConnections: new Map<number, { lastSuccess: number; failures: number }>(),
@@ -51,8 +42,8 @@ export class FirebaseService implements OnModuleInit {
   };
   
   private readonly MAX_RETRIES = 2;
-  private readonly RETRY_DELAY_MS = 100;
-  private readonly MAX_CONSECUTIVE_FAILURES = 3;
+  private readonly RETRY_DELAY_MS = 200;
+  private readonly MAX_CONSECUTIVE_FAILURES = 5;
   
   private operationCount = 0;
   private avgResponseTime = 0;
@@ -60,6 +51,10 @@ export class FirebaseService implements OnModuleInit {
   
   private writeQueue: Array<() => Promise<void>> = [];
   private isProcessingQueue = false;
+  
+  private readCount = 0;
+  private writeCount = 0;
+  private lastStatsReset = Date.now();
 
   constructor(private configService: ConfigService) {}
 
@@ -77,7 +72,7 @@ export class FirebaseService implements OnModuleInit {
         throw new Error('Firebase credentials missing');
       }
 
-      this.logger.log('⚡ Initializing Firebase (CONNECTION-OPTIMIZED)...');
+      this.logger.log('⚡ Initializing Firebase (OPTIMIZED MODE)...');
 
       if (!admin.apps.length) {
         admin.initializeApp({
@@ -90,13 +85,13 @@ export class FirebaseService implements OnModuleInit {
       this.db.settings({
         ignoreUndefinedProperties: true,
         timestampsInSnapshots: true,
-        maxIdleChannels: 10, // ✅ Reduced from 20
+        maxIdleChannels: 5,
       });
 
       try {
         await Promise.race([
           this.db.collection('_health_check').limit(1).get(),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 2000))
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 3000))
         ]);
         this.firestoreReady = true;
         this.logger.log('✅ Firestore ready');
@@ -108,13 +103,13 @@ export class FirebaseService implements OnModuleInit {
       await this.initializeRealtimeDbWithPool();
       
       this.initialized = true;
-      this.logger.log('✅ Firebase CONNECTION-OPTIMIZED mode ready!');
+      this.logger.log('✅ Firebase OPTIMIZED mode ready!');
       this.logger.log('💡 Optimizations:');
-      this.logger.log('   • Connection pool: 5 (reduced from 15)');
-      this.logger.log('   • Max sockets: 20 (reduced from 50)');
-      this.logger.log('   • Cache TTL: 5s (increased from 3s)');
-      this.logger.log('   • Stale cache: 30s (increased from 20s)');
-      this.logger.log('   • Priority: Simulator writes > Backend reads');
+      this.logger.log('   • Connection pool: 3');
+      this.logger.log('   • Cache TTL: 30s');
+      this.logger.log('   • Stale cache: 120s');
+      this.logger.log('   • Aggressive caching for reads');
+      this.logger.log('   • Batch writes for efficiency');
       
       this.startBackgroundTasks();
       
@@ -137,33 +132,30 @@ export class FirebaseService implements OnModuleInit {
       
       const baseURL = realtimeDbUrl.replace(/\/$/, '');
       
-      // ✅ REDUCED socket limits to free up connections for simulator
       const httpAgent = new http.Agent({
         keepAlive: true,
-        keepAliveMsecs: 30000,
-        maxSockets: 20, // ✅ Reduced from 50
-        maxFreeSockets: 10, // ✅ Reduced from 25
+        keepAliveMsecs: 60000,
+        maxSockets: 10,
+        maxFreeSockets: 5,
         timeout: 30000,
       });
       
       const httpsAgent = new https.Agent({
         keepAlive: true,
-        keepAliveMsecs: 30000,
-        maxSockets: 20, // ✅ Reduced from 50
-        maxFreeSockets: 10, // ✅ Reduced from 25
+        keepAliveMsecs: 60000,
+        maxSockets: 10,
+        maxFreeSockets: 5,
         timeout: 30000,
       });
       
-      // ✅ Create SMALLER pool (5 instead of 15)
       for (let i = 0; i < this.POOL_SIZE; i++) {
         const instance = axios.create({
           baseURL,
-          timeout: 2000,
+          timeout: 3000,
           family: 4,
           headers: {
             'Content-Type': 'application/json',
             'Connection': 'keep-alive',
-            'Keep-Alive': 'timeout=30, max=100',
           },
           validateStatus: (status) => status >= 200 && status < 300,
           maxRedirects: 0,
@@ -184,7 +176,6 @@ export class FirebaseService implements OnModuleInit {
       this.realtimeDbRest = this.restConnectionPool[0];
       
       this.logger.log(`✅ Optimized REST pool created (${this.POOL_SIZE} connections)`);
-      this.logger.log('   🎯 Prioritizing simulator writes over backend reads');
       
     } catch (restError) {
       this.logger.warn(`⚠️ REST API failed: ${restError.message}`);
@@ -229,7 +220,6 @@ export class FirebaseService implements OnModuleInit {
     return this.restConnectionPool[bestIndex];
   }
 
-  // ✅ PRIORITY: Use cache aggressively to reduce Realtime DB reads
   async getRealtimeDbValue(path: string, useCache = true): Promise<any> {
     if (!this.initialized) {
       throw new Error('Firebase not initialized');
@@ -237,7 +227,6 @@ export class FirebaseService implements OnModuleInit {
 
     const startTime = Date.now();
 
-    // 🎯 AGGRESSIVE CACHING to free up connections for simulator
     if (useCache) {
       const cached = this.getCachedQuery(path);
       if (cached !== null) {
@@ -264,10 +253,6 @@ export class FirebaseService implements OnModuleInit {
         this.operationCount++;
         this.avgResponseTime = (this.avgResponseTime * 0.9) + (duration * 0.1);
 
-        if (attempt > 0) {
-          this.logger.log(`✅ Retry ${attempt} succeeded: ${path} (${duration}ms)`);
-        }
-
         return data;
 
       } catch (error) {
@@ -286,7 +271,6 @@ export class FirebaseService implements OnModuleInit {
       }
     }
 
-    // ✅ Return stale cache rather than failing (frees up connections)
     const staleCache = this.getStaleCache(path);
     if (staleCache !== null) {
       this.logger.warn(`⚠️ Using stale cache: ${path}`);
@@ -311,7 +295,7 @@ export class FirebaseService implements OnModuleInit {
     return Promise.race([
       this.fetchRealtimeDb(path),
       new Promise<never>((_, reject) => 
-        setTimeout(() => reject(new Error('Timeout')), 3000)
+        setTimeout(() => reject(new Error('Timeout')), 5000)
       ),
     ]);
   }
@@ -341,7 +325,6 @@ export class FirebaseService implements OnModuleInit {
     }
   }
 
-  // ✅ WRITE: Non-blocking for non-critical writes
   async setRealtimeDbValue(path: string, data: any, critical = false): Promise<void> {
     if (!this.initialized) {
       throw new Error('Firebase not initialized');
@@ -359,6 +342,7 @@ export class FirebaseService implements OnModuleInit {
             throw new Error('Realtime Database not available');
           }
 
+          this.writeCount++;
           this.queryCache.delete(path);
           return;
 
@@ -384,14 +368,11 @@ export class FirebaseService implements OnModuleInit {
     this.isProcessingQueue = true;
     
     while (this.writeQueue.length > 0) {
-      const write = this.writeQueue.shift();
-      if (write) {
-        try {
-          await write();
-        } catch (error) {
-          this.logger.error(`Write queue error: ${error.message}`);
-        }
-      }
+      const batch = this.writeQueue.splice(0, 5);
+      
+      await Promise.allSettled(
+        batch.map(write => write())
+      );
     }
     
     this.isProcessingQueue = false;
@@ -423,8 +404,7 @@ export class FirebaseService implements OnModuleInit {
       timestamp: Date.now(),
     });
     
-    // ✅ Smaller cache size to reduce memory
-    if (this.queryCache.size > 500) { // ✅ Reduced from 1000
+    if (this.queryCache.size > 300) {
       const oldestKeys = Array.from(this.queryCache.entries())
         .sort((a, b) => a[1].timestamp - b[1].timestamp)
         .slice(0, 50)
@@ -435,9 +415,10 @@ export class FirebaseService implements OnModuleInit {
   }
 
   private startBackgroundTasks() {
-    setInterval(() => this.cleanupCache(), 30000);
-    setInterval(() => this.healthCheckConnections(), 30000); // ✅ Increased from 10s
-    setInterval(() => this.processWriteQueue(), 100);
+    setInterval(() => this.cleanupCache(), 60000);
+    setInterval(() => this.healthCheckConnections(), 60000);
+    setInterval(() => this.processWriteQueue(), 200);
+    setInterval(() => this.resetDailyStats(), 86400000);
   }
 
   private cleanupCache(): void {
@@ -461,13 +442,7 @@ export class FirebaseService implements OnModuleInit {
 
     try {
       const conn = this.restConnectionPool[0];
-      await conn.get('/.json?shallow=true&timeout=1000');
-      
-      const timeSinceLastSuccess = Date.now() - this.connectionHealth.lastSuccessfulFetch;
-      
-      if (timeSinceLastSuccess > 30000) {
-        this.logger.log('✅ Health check passed');
-      }
+      await conn.get('/.json?shallow=true&timeout=2000');
       
     } catch (error) {
       this.logger.warn(`⚠️ Health check failed: ${error.message}`);
@@ -495,7 +470,18 @@ export class FirebaseService implements OnModuleInit {
     }
   }
 
-  // FIRESTORE METHODS (unchanged)
+  private resetDailyStats(): void {
+    const hoursSinceReset = (Date.now() - this.lastStatsReset) / 3600000;
+    
+    this.logger.log('📊 Daily Stats:');
+    this.logger.log(`   • Reads: ${this.readCount} (${Math.round(this.readCount / hoursSinceReset)}/hour)`);
+    this.logger.log(`   • Writes: ${this.writeCount} (${Math.round(this.writeCount / hoursSinceReset)}/hour)`);
+    
+    this.readCount = 0;
+    this.writeCount = 0;
+    this.lastStatsReset = Date.now();
+  }
+
   isFirestoreReady(): boolean {
     return this.firestoreReady;
   }
@@ -518,6 +504,8 @@ export class FirebaseService implements OnModuleInit {
     if (!this.firestoreReady) {
       throw new Error('Firestore not ready yet');
     }
+    
+    this.readCount++;
     return this.db;
   }
 
@@ -549,6 +537,7 @@ export class FirebaseService implements OnModuleInit {
       updatedAt: timestamp,
     });
     
+    this.writeCount++;
     return id;
   }
 
@@ -557,6 +546,8 @@ export class FirebaseService implements OnModuleInit {
       ...data,
       updatedAt: new Date().toISOString(),
     });
+    
+    this.writeCount++;
   }
 
   async batchWrite(operations: BatchOperation[]): Promise<void> {
@@ -588,6 +579,7 @@ export class FirebaseService implements OnModuleInit {
       }
 
       await batch.commit();
+      this.writeCount += chunk.length;
     }
   }
 
@@ -601,6 +593,7 @@ export class FirebaseService implements OnModuleInit {
     const timeSinceLastSuccess = Date.now() - this.connectionHealth.lastSuccessfulFetch;
     const totalOps = this.operationCount + this.cacheHitRate;
     const cacheHitPercentage = totalOps > 0 ? Math.round((this.cacheHitRate / totalOps) * 100) : 0;
+    const hoursSinceReset = (Date.now() - this.lastStatsReset) / 3600000;
     
     return {
       operations: this.operationCount,
@@ -611,17 +604,19 @@ export class FirebaseService implements OnModuleInit {
       writeQueueSize: this.writeQueue.length,
       usingREST: this.useRestForRealtimeDb,
       firestoreReady: this.firestoreReady,
+      dailyStats: {
+        reads: this.readCount,
+        writes: this.writeCount,
+        estimatedDailyReads: Math.round(this.readCount / hoursSinceReset * 24),
+        estimatedDailyWrites: Math.round(this.writeCount / hoursSinceReset * 24),
+        readsRemaining: 250000 - Math.round(this.readCount / hoursSinceReset * 24),
+        writesRemaining: 100000 - Math.round(this.writeCount / hoursSinceReset * 24),
+      },
       health: {
         consecutiveFailures: this.connectionHealth.consecutiveFailures,
         lastSuccessMs: timeSinceLastSuccess,
         isHealthy: this.connectionHealth.consecutiveFailures < this.MAX_CONSECUTIVE_FAILURES,
       },
-      optimization: {
-        poolSize: this.POOL_SIZE,
-        cacheTTL: `${this.CACHE_TTL}ms`,
-        staleCacheTTL: `${this.STALE_CACHE_TTL}ms`,
-        priority: 'Simulator writes > Backend reads',
-      }
     };
   }
 }
