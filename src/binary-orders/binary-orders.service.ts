@@ -1,3 +1,4 @@
+// src/binary-orders/binary-orders.service.ts - FIXED WITH BETTER ERROR HANDLING
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { FirebaseService } from '../firebase/firebase.service';
@@ -469,49 +470,135 @@ export class BinaryOrdersService {
     return snapshot.docs.map(doc => doc.data() as BinaryOrder);
   }
 
+  // ✅ FIXED: Better error handling & fallback query
   async getOrders(
     userId: string, 
     queryDto: QueryBinaryOrderDto
   ) {
-    const { status, page = 1, limit = 20, accountType } = queryDto;
+    const startTime = Date.now();
+    
+    try {
+      const { status, page = 1, limit = 20, accountType } = queryDto;
 
-    const db = this.firebaseService.getFirestore();
-    let query = db.collection(COLLECTIONS.ORDERS)
-      .where('user_id', '==', userId);
+      const db = this.firebaseService.getFirestore();
+      
+      // ✅ STRATEGY 1: Try optimized query with all filters
+      try {
+        let query = db.collection(COLLECTIONS.ORDERS)
+          .where('user_id', '==', userId);
 
-    if (accountType && (accountType === 'real' || accountType === 'demo')) {
-      query = query.where('accountType', '==', accountType) as any;
+        if (accountType && (accountType === 'real' || accountType === 'demo')) {
+          query = query.where('accountType', '==', accountType) as any;
+        }
+
+        if (status) {
+          query = query.where('status', '==', status) as any;
+        }
+
+        // Try with orderBy
+        const snapshot = await query
+          .orderBy('createdAt', 'desc')
+          .limit(limit * page)
+          .get();
+
+        const allOrders = snapshot.docs.map(doc => doc.data() as BinaryOrder);
+        const total = allOrders.length;
+        const startIndex = (page - 1) * limit;
+        const orders = allOrders.slice(startIndex, startIndex + limit);
+
+        const duration = Date.now() - startTime;
+        this.logger.debug(`✅ Got ${orders.length} orders in ${duration}ms (optimized query)`);
+
+        return {
+          orders,
+          pagination: {
+            page,
+            limit,
+            total,
+            totalPages: Math.ceil(total / limit),
+          },
+          filter: {
+            accountType: accountType || 'all',
+            status: status || 'all',
+          },
+          currentTime: TimezoneUtil.formatDateTime(),
+          timezone: 'Asia/Jakarta (WIB)',
+        };
+
+      } catch (indexError) {
+        // ✅ STRATEGY 2: Fallback - get all user orders then filter in memory
+        this.logger.warn(`⚠️ Index error, using fallback query: ${indexError.message}`);
+        
+        const snapshot = await db.collection(COLLECTIONS.ORDERS)
+          .where('user_id', '==', userId)
+          .get();
+
+        let allOrders = snapshot.docs.map(doc => doc.data() as BinaryOrder);
+
+        // Filter in memory
+        if (accountType && (accountType === 'real' || accountType === 'demo')) {
+          allOrders = allOrders.filter(o => o.accountType === accountType);
+        }
+
+        if (status) {
+          allOrders = allOrders.filter(o => o.status === status);
+        }
+
+        // Sort in memory
+        allOrders.sort((a, b) => {
+          const dateA = new Date(a.createdAt).getTime();
+          const dateB = new Date(b.createdAt).getTime();
+          return dateB - dateA;
+        });
+
+        const total = allOrders.length;
+        const startIndex = (page - 1) * limit;
+        const orders = allOrders.slice(startIndex, startIndex + limit);
+
+        const duration = Date.now() - startTime;
+        this.logger.log(`✅ Got ${orders.length} orders in ${duration}ms (fallback query)`);
+
+        return {
+          orders,
+          pagination: {
+            page,
+            limit,
+            total,
+            totalPages: Math.ceil(total / limit),
+          },
+          filter: {
+            accountType: accountType || 'all',
+            status: status || 'all',
+          },
+          currentTime: TimezoneUtil.formatDateTime(),
+          timezone: 'Asia/Jakarta (WIB)',
+          usingFallback: true,
+        };
+      }
+
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      this.logger.error(`❌ Get orders failed after ${duration}ms: ${error.message}`);
+      this.logger.error(error.stack);
+      
+      // Return empty result instead of throwing
+      return {
+        orders: [],
+        pagination: {
+          page: 1,
+          limit: 20,
+          total: 0,
+          totalPages: 0,
+        },
+        filter: {
+          accountType: 'all',
+          status: 'all',
+        },
+        currentTime: TimezoneUtil.formatDateTime(),
+        timezone: 'Asia/Jakarta (WIB)',
+        error: error.message,
+      };
     }
-
-    if (status) {
-      query = query.where('status', '==', status) as any;
-    }
-
-    const snapshot = await query
-      .orderBy('createdAt', 'desc')
-      .limit(limit * page)
-      .get();
-
-    const allOrders = snapshot.docs.map(doc => doc.data() as BinaryOrder);
-    const total = allOrders.length;
-    const startIndex = (page - 1) * limit;
-    const orders = allOrders.slice(startIndex, startIndex + limit);
-
-    return {
-      orders,
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
-      filter: {
-        accountType: accountType || 'all',
-        status: status || 'all',
-      },
-      currentTime: TimezoneUtil.formatDateTime(),
-      timezone: 'Asia/Jakarta (WIB)',
-    };
   }
 
   async getOrderById(userId: string, orderId: string) {

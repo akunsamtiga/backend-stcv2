@@ -1,10 +1,9 @@
 // src/common/utils/timezone.util.ts
-// ✅ FIXED VERSION - No typos
+// ✅ COMPLETE VERSION - All methods needed
 
 export class TimezoneUtil {
   /**
    * Get current timestamp in seconds (Unix timestamp)
-   * Sama dengan simulator: Math.floor(Date.now() / 1000)
    */
   static getCurrentTimestamp(): number {
     return Math.floor(Date.now() / 1000);
@@ -18,7 +17,7 @@ export class TimezoneUtil {
   }
 
   /**
-   * Format date to ISO string (sama dengan simulator)
+   * Format date to ISO string
    * Format: YYYY-MM-DDTHH:mm:ss.sssZ
    */
   static toISOString(date: Date = new Date()): string {
@@ -26,12 +25,10 @@ export class TimezoneUtil {
   }
 
   /**
-   * Format date to readable string (sama dengan simulator)
+   * Format date to readable string (WIB)
    * Format: YYYY-MM-DD HH:mm:ss
-   * Timezone: Asia/Jakarta (WIB = UTC+7)
    */
   static formatDateTime(date: Date = new Date()): string {
-    // Convert to Indonesia timezone (WIB = UTC+7)
     const jakartaDate = new Date(date.toLocaleString('en-US', { 
       timeZone: 'Asia/Jakarta' 
     }));
@@ -47,7 +44,7 @@ export class TimezoneUtil {
   }
 
   /**
-   * Parse timestamp to Date object
+   * ✅ FIX: Convert timestamp to Date object
    */
   static fromTimestamp(timestamp: number): Date {
     return new Date(timestamp * 1000);
@@ -97,7 +94,7 @@ export class TimezoneUtil {
   }
 
   /**
-   * Get formatted datetime info (sama dengan simulator)
+   * Get formatted datetime info
    */
   static getDateTimeInfo(date: Date = new Date()): {
     datetime: string;
@@ -167,7 +164,6 @@ export class TimezoneUtil {
 
   /**
    * Check if it's within trading hours (example: 09:00 - 16:00 WIB)
-   * Customize this based on your trading schedule
    */
   static isWithinTradingHours(date: Date = new Date()): boolean {
     const jakartaDate = new Date(date.toLocaleString('en-US', { 
@@ -187,5 +183,4 @@ export class TimezoneUtil {
   }
 }
 
-// Export default for convenience
 export default TimezoneUtil;
