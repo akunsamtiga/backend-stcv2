@@ -1,5 +1,5 @@
 // src/auth/dto/register.dto.ts
-// ✅ ENHANCED: Registration with optional profile fields
+// ✅ FIXED: Make referralCode truly optional and relax some validations
 
 import { 
   IsEmail, IsString, MinLength, Matches, IsOptional, 
@@ -31,21 +31,23 @@ export class RegisterDto {
   })
   password: string;
 
+  // ============================================
+  // TRULY OPTIONAL FIELDS
+  // ============================================
+
   @ApiPropertyOptional({ 
     example: 'REF123ABC',
-    description: 'Referral code from friend (optional)'
+    description: 'Referral code from friend (optional)',
+    required: false // ✅ Mark as not required in Swagger
   })
   @IsOptional()
   @IsString()
   referralCode?: string;
 
-  // ============================================
-  // OPTIONAL PROFILE FIELDS
-  // ============================================
-
   @ApiPropertyOptional({ 
     example: 'John Doe',
-    description: 'Full name (optional, can be set later)'
+    description: 'Full name (optional, can be set later)',
+    required: false
   })
   @IsOptional()
   @IsString()
@@ -54,7 +56,8 @@ export class RegisterDto {
 
   @ApiPropertyOptional({ 
     example: '+6281234567890',
-    description: 'Phone number in E.164 format (optional)'
+    description: 'Phone number in E.164 format (optional)',
+    required: false
   })
   @IsOptional()
   @IsString()
@@ -65,7 +68,8 @@ export class RegisterDto {
 
   @ApiPropertyOptional({ 
     example: '1990-01-01',
-    description: 'Date of birth in YYYY-MM-DD format (optional)'
+    description: 'Date of birth in YYYY-MM-DD format (optional)',
+    required: false
   })
   @IsOptional()
   @IsDateString()
@@ -74,7 +78,8 @@ export class RegisterDto {
   @ApiPropertyOptional({ 
     enum: ['male', 'female', 'other'],
     example: 'male',
-    description: 'Gender (optional)'
+    description: 'Gender (optional)',
+    required: false
   })
   @IsOptional()
   @IsEnum(['male', 'female', 'other'])
@@ -82,7 +87,8 @@ export class RegisterDto {
 
   @ApiPropertyOptional({ 
     example: 'Indonesian',
-    description: 'Nationality (optional)'
+    description: 'Nationality (optional)',
+    required: false
   })
   @IsOptional()
   @IsString()

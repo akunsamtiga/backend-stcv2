@@ -1,14 +1,14 @@
 // src/auth/auth.service.ts
 // ✅ ENHANCED: Registration with optional profile fields
 
-import { Injectable, UnauthorizedException, ConflictException, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, UnauthorizedException, ConflictException, Logger, OnModuleInit, BadRequestException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
 import { FirebaseService } from '../firebase/firebase.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
-import { COLLECTIONS, BALANCE_TYPES, BALANCE_ACCOUNT_TYPE, USER_ROLES, USER_STATUS } from '../common/constants';
+import { COLLECTIONS, BALANCE_TYPES, BALANCE_ACCOUNT_TYPE, USER_ROLES, USER_STATUS, AFFILIATE_STATUS, AFFILIATE_CONFIG } from '../common/constants';
 import { User, UserProfile } from '../common/interfaces';
 
 @Injectable()
@@ -114,7 +114,7 @@ export class AuthService implements OnModuleInit {
       const email = this.configService.get('superAdmin.email');
       const password = this.configService.get('superAdmin.password');
 
-      if (!email || password) {
+      if (!email || !password) {
         this.logger.warn('⚠️ Super admin credentials not configured');
         return;
       }
@@ -129,7 +129,6 @@ export class AuthService implements OnModuleInit {
         const userId = await this.firebaseService.generateId(COLLECTIONS.USERS);
         const timestamp = new Date().toISOString();
 
-        // ✅ Create super admin with default profile
         const defaultProfile: UserProfile = {
           settings: {
             emailNotifications: true,
@@ -203,125 +202,192 @@ export class AuthService implements OnModuleInit {
     }
   }
 
-  // ✅ ENHANCED: Register with optional profile fields
   async register(registerDto: RegisterDto) {
     const startTime = Date.now();
     const db = this.firebaseService.getFirestore();
-    const { email, password, fullName, phoneNumber, dateOfBirth, gender, nationality } = registerDto;
+    const { email, password, referralCode, fullName, phoneNumber, dateOfBirth, gender, nationality } = registerDto;
 
-    const usersSnapshot = await db.collection(COLLECTIONS.USERS)
-      .where('email', '==', email)
-      .limit(1)
-      .get();
+    try {
+      const usersSnapshot = await db.collection(COLLECTIONS.USERS)
+        .where('email', '==', email)
+        .limit(1)
+        .get();
 
-    if (!usersSnapshot.empty) {
-      throw new ConflictException('Email already registered');
-    }
+      if (!usersSnapshot.empty) {
+        throw new ConflictException('Email already registered');
+      }
 
-    const hashedPassword = await bcrypt.hash(password, this.BCRYPT_ROUNDS);
-    const userId = await this.firebaseService.generateId(COLLECTIONS.USERS);
-    const timestamp = new Date().toISOString();
+      let referrerUser = null;
+      if (referralCode && referralCode.trim() !== '') {
+        const referrerSnapshot = await db.collection(COLLECTIONS.USERS)
+          .where('referralCode', '==', referralCode.trim())
+          .limit(1)
+          .get();
 
-    // ✅ Build initial profile from registration data
-    const initialProfile: UserProfile = {
-      fullName: fullName || undefined,
-      phoneNumber: phoneNumber || undefined,
-      dateOfBirth: dateOfBirth || undefined,
-      gender: gender as any || undefined,
-      nationality: nationality || undefined,
-      
-      settings: {
-        emailNotifications: true,
-        smsNotifications: true,
-        tradingAlerts: true,
-        twoFactorEnabled: false,
-        language: 'id',
-        timezone: 'Asia/Jakarta',
-      },
-      
-      verification: {
-        emailVerified: true, // Assumed verified on registration
-        phoneVerified: false,
-        identityVerified: false,
-        bankVerified: false,
-        verificationLevel: 'unverified',
-      },
-    };
+        if (referrerSnapshot.empty) {
+          this.logger.warn(`Invalid referral code provided: ${referralCode}`);
+        } else {
+          referrerUser = referrerSnapshot.docs[0].data();
+          this.logger.log(`✅ Valid referral code: ${referralCode} from user ${referrerUser.id}`);
+        }
+      }
 
-    const userData = {
-      id: userId,
-      email,
-      password: hashedPassword,
-      role: USER_ROLES.USER,
-      status: USER_STATUS.STANDARD,
-      isActive: true,
-      profile: initialProfile,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      loginCount: 0,
-    };
+      const hashedPassword = await bcrypt.hash(password, this.BCRYPT_ROUNDS);
+      const userId = await this.firebaseService.generateId(COLLECTIONS.USERS);
+      const timestamp = new Date().toISOString();
+      const newUserReferralCode = this.generateReferralCode();
 
-    await db.collection(COLLECTIONS.USERS).doc(userId).set(userData);
+      const initialProfile: UserProfile = {
+        fullName: fullName || undefined,
+        phoneNumber: phoneNumber || undefined,
+        dateOfBirth: dateOfBirth || undefined,
+        gender: gender as any || undefined,
+        nationality: nationality || undefined,
+        
+        settings: {
+          emailNotifications: true,
+          smsNotifications: true,
+          tradingAlerts: true,
+          twoFactorEnabled: false,
+          language: 'id',
+          timezone: 'Asia/Jakarta',
+        },
+        
+        verification: {
+          emailVerified: true,
+          phoneVerified: false,
+          identityVerified: false,
+          bankVerified: false,
+          verificationLevel: 'unverified',
+        },
+      };
 
-    const balanceId1 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
-    const balanceId2 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
-
-    await Promise.all([
-      db.collection(COLLECTIONS.BALANCE).doc(balanceId1).set({
-        id: balanceId1,
-        user_id: userId,
-        accountType: BALANCE_ACCOUNT_TYPE.REAL,
-        type: BALANCE_TYPES.DEPOSIT,
-        amount: 0,
-        description: 'Initial real balance',
-        createdAt: timestamp,
-      }),
-      db.collection(COLLECTIONS.BALANCE).doc(balanceId2).set({
-        id: balanceId2,
-        user_id: userId,
-        accountType: BALANCE_ACCOUNT_TYPE.DEMO,
-        type: BALANCE_TYPES.DEPOSIT,
-        amount: 10000000,
-        description: 'Initial demo balance - 10 million',
-        createdAt: timestamp,
-      }),
-    ]);
-
-    // ✅ Calculate initial profile completion
-    let profileCompletion = 10; // Base
-    if (fullName) profileCompletion += 10;
-    if (phoneNumber) profileCompletion += 10;
-    if (dateOfBirth) profileCompletion += 5;
-    if (gender) profileCompletion += 5;
-
-    this.logger.log(
-      `✅ User registered: ${email} (Status: STANDARD, Profile: ${profileCompletion}%, Real: Rp 0, Demo: Rp 10,000,000)`
-    );
-
-    const token = this.generateToken(userId, email, USER_ROLES.USER);
-    this.cacheUser(userId, userData as User);
-
-    const duration = Date.now() - startTime;
-    this.logger.log(`✅ Registration completed in ${duration}ms`);
-
-    return {
-      message: 'Registration successful with real and demo accounts',
-      user: {
+      const userData = {
         id: userId,
         email,
+        password: hashedPassword,
         role: USER_ROLES.USER,
         status: USER_STATUS.STANDARD,
-        profileCompletion,
-      },
-      initialBalances: {
-        real: 0,
-        demo: 10000000,
-      },
-      token,
-    };
+        isActive: true,
+        profile: initialProfile,
+        referralCode: newUserReferralCode,
+        referredBy: referrerUser ? referrerUser.id : undefined,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        loginCount: 0,
+      };
+
+      await db.collection(COLLECTIONS.USERS).doc(userId).set(userData);
+
+      const balanceId1 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
+      const balanceId2 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
+
+      await Promise.all([
+        db.collection(COLLECTIONS.BALANCE).doc(balanceId1).set({
+          id: balanceId1,
+          user_id: userId,
+          accountType: BALANCE_ACCOUNT_TYPE.REAL,
+          type: BALANCE_TYPES.DEPOSIT,
+          amount: 0,
+          description: 'Initial real balance',
+          createdAt: timestamp,
+        }),
+        db.collection(COLLECTIONS.BALANCE).doc(balanceId2).set({
+          id: balanceId2,
+          user_id: userId,
+          accountType: BALANCE_ACCOUNT_TYPE.DEMO,
+          type: BALANCE_TYPES.DEPOSIT,
+          amount: 10000000,
+          description: 'Initial demo balance - 10 million',
+          createdAt: timestamp,
+        }),
+      ]);
+
+      if (referrerUser) {
+        try {
+          const affiliateId = await this.firebaseService.generateId(COLLECTIONS.AFFILIATES);
+          
+          await db.collection(COLLECTIONS.AFFILIATES).doc(affiliateId).set({
+            id: affiliateId,
+            referrer_id: referrerUser.id,
+            referee_id: userId,
+            status: AFFILIATE_STATUS.PENDING,
+            commission_amount: AFFILIATE_CONFIG.COMMISSION_AMOUNT,
+            createdAt: timestamp,
+          });
+
+          this.logger.log(
+            `🎁 Affiliate record created: ${referrerUser.email} referred ${email} (Pending Rp 25,000 commission)`
+          );
+        } catch (affiliateError) {
+          this.logger.error(`⚠️ Failed to create affiliate record: ${affiliateError.message}`);
+        }
+      }
+
+      let profileCompletion = 10;
+      if (fullName) profileCompletion += 10;
+      if (phoneNumber) profileCompletion += 10;
+      if (dateOfBirth) profileCompletion += 5;
+      if (gender) profileCompletion += 5;
+
+      this.logger.log(
+        `✅ User registered: ${email} (Status: STANDARD, Profile: ${profileCompletion}%, Real: Rp 0, Demo: Rp 10,000,000)`
+      );
+
+      if (referrerUser) {
+        this.logger.log(`   Referred by: ${referrerUser.email}`);
+      }
+
+      const token = this.generateToken(userId, email, USER_ROLES.USER);
+      this.cacheUser(userId, userData as User);
+
+      const duration = Date.now() - startTime;
+      this.logger.log(`✅ Registration completed in ${duration}ms`);
+
+      return {
+        message: 'Registration successful with real and demo accounts',
+        user: {
+          id: userId,
+          email,
+          role: USER_ROLES.USER,
+          status: USER_STATUS.STANDARD,
+          referralCode: newUserReferralCode,
+          profileCompletion,
+        },
+        initialBalances: {
+          real: 0,
+          demo: 10000000,
+        },
+        affiliate: referrerUser ? {
+          referredBy: referrerUser.email,
+          commissionPending: AFFILIATE_CONFIG.COMMISSION_AMOUNT,
+        } : null,
+        token,
+      };
+
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      this.logger.error(`❌ Registration failed after ${duration}ms: ${error.message}`);
+      
+      if (error instanceof ConflictException) {
+        throw error;
+      }
+      
+      throw new BadRequestException(
+        error.message || 'Registration failed. Please check your input and try again.'
+      );
+    }
   }
 
-  // ✅ ENHANCED: Login with last login tracking
+  private generateReferralCode(): string {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let code = '';
+    for (let i = 0; i < 8; i++) {
+      code += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return code;
+  }
+
   async login(loginDto: LoginDto) {
     const startTime = Date.now();
     const db = this.firebaseService.getFirestore();
@@ -348,7 +414,6 @@ export class AuthService implements OnModuleInit {
       throw new UnauthorizedException('Invalid email or password');
     }
 
-    // ✅ Update last login
     const loginCount = (user.loginCount || 0) + 1;
     const lastLoginAt = new Date().toISOString();
 
@@ -378,10 +443,6 @@ export class AuthService implements OnModuleInit {
       token,
     };
   }
-
-  // ============================================
-  // HELPER METHODS (unchanged)
-  // ============================================
 
   private generateToken(userId: string, email: string, role: string): string {
     const payload = { sub: userId, email, role };
