@@ -1,3 +1,6 @@
+// src/common/interfaces/index.ts
+// ✅ ENHANCED: Complete user profile information
+
 export interface ApiResponse<T = any> {
   success: boolean;
   message?: string;
@@ -22,6 +25,70 @@ export interface PaginatedResponse<T> {
   totalPages: number;
 }
 
+// ✅ ENHANCED: User Profile Information
+export interface UserProfile {
+  // Personal Information
+  fullName?: string;
+  phoneNumber?: string;
+  dateOfBirth?: string;
+  gender?: 'male' | 'female' | 'other';
+  nationality?: string;
+  
+  // Address Information
+  address?: {
+    street?: string;
+    city?: string;
+    province?: string;
+    postalCode?: string;
+    country?: string;
+  };
+  
+  // Identity Information (KYC)
+  identityDocument?: {
+    type?: 'ktp' | 'passport' | 'sim';
+    number?: string;
+    issuedDate?: string;
+    expiryDate?: string;
+    isVerified?: boolean;
+    verifiedAt?: string;
+  };
+  
+  // Bank Information
+  bankAccount?: {
+    bankName?: string;
+    accountNumber?: string;
+    accountHolderName?: string;
+    isVerified?: boolean;
+    verifiedAt?: string;
+  };
+  
+  // Profile Picture
+  avatar?: {
+    url?: string;
+    uploadedAt?: string;
+  };
+  
+  // Account Settings
+  settings?: {
+    emailNotifications?: boolean;
+    smsNotifications?: boolean;
+    tradingAlerts?: boolean;
+    twoFactorEnabled?: boolean;
+    language?: string;
+    timezone?: string;
+  };
+  
+  // Account Verification
+  verification?: {
+    emailVerified?: boolean;
+    phoneVerified?: boolean;
+    identityVerified?: boolean;
+    bankVerified?: boolean;
+    verificationLevel?: 'unverified' | 'basic' | 'intermediate' | 'advanced';
+  };
+}
+
+// ✅ ENHANCED: Complete User Interface
 export interface User {
   id: string;
   email: string;
@@ -29,11 +96,20 @@ export interface User {
   role: 'super_admin' | 'admin' | 'user';
   status: 'standard' | 'gold' | 'vip';
   isActive: boolean;
+  
+  // ✅ NEW: Profile Information
+  profile?: UserProfile;
+  
+  // Referral
   referralCode: string;
   referredBy?: string;
+  
+  // Metadata
   createdAt: string;
   updatedAt?: string;
   createdBy?: string;
+  lastLoginAt?: string;
+  loginCount?: number;
 }
 
 export interface Balance {
@@ -138,4 +214,16 @@ export interface AffiliateStats {
   pendingReferrals: number;
   totalCommission: number;
   referrals: Affiliate[];
+}
+
+// ✅ NEW: Profile Update History
+export interface ProfileUpdateHistory {
+  id: string;
+  user_id: string;
+  field: string;
+  oldValue: any;
+  newValue: any;
+  updatedBy: string;
+  updatedAt: string;
+  reason?: string;
 }

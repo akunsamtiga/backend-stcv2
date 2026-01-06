@@ -26,6 +26,14 @@
       ]
     },
     {
+      "collectionGroup": "users",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "isActive", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "balance",
       "queryScope": "COLLECTION",
       "fields": [
@@ -103,6 +111,14 @@
         { "fieldPath": "accountType", "order": "ASCENDING" },
         { "fieldPath": "status", "order": "ASCENDING" },
         { "fieldPath": "exit_time", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "binary_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "accountType", "order": "ASCENDING" }
       ]
     },
     {

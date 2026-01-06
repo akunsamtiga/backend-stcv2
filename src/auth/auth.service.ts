@@ -1,3 +1,6 @@
+// src/auth/auth.service.ts
+// ✅ ENHANCED: Registration with optional profile fields
+
 import { Injectable, UnauthorizedException, ConflictException, Logger, OnModuleInit } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -6,7 +9,7 @@ import { FirebaseService } from '../firebase/firebase.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { COLLECTIONS, BALANCE_TYPES, BALANCE_ACCOUNT_TYPE, USER_ROLES, USER_STATUS } from '../common/constants';
-import { User } from '../common/interfaces';
+import { User, UserProfile } from '../common/interfaces';
 
 @Injectable()
 export class AuthService implements OnModuleInit {
@@ -111,7 +114,7 @@ export class AuthService implements OnModuleInit {
       const email = this.configService.get('superAdmin.email');
       const password = this.configService.get('superAdmin.password');
 
-      if (!email || !password) {
+      if (!email || password) {
         this.logger.warn('⚠️ Super admin credentials not configured');
         return;
       }
@@ -126,6 +129,25 @@ export class AuthService implements OnModuleInit {
         const userId = await this.firebaseService.generateId(COLLECTIONS.USERS);
         const timestamp = new Date().toISOString();
 
+        // ✅ Create super admin with default profile
+        const defaultProfile: UserProfile = {
+          settings: {
+            emailNotifications: true,
+            smsNotifications: true,
+            tradingAlerts: true,
+            twoFactorEnabled: false,
+            language: 'id',
+            timezone: 'Asia/Jakarta',
+          },
+          verification: {
+            emailVerified: true,
+            phoneVerified: false,
+            identityVerified: false,
+            bankVerified: false,
+            verificationLevel: 'unverified',
+          },
+        };
+
         await db.collection(COLLECTIONS.USERS).doc(userId).set({
           id: userId,
           email,
@@ -133,8 +155,10 @@ export class AuthService implements OnModuleInit {
           role: USER_ROLES.SUPER_ADMIN,
           status: USER_STATUS.VIP,
           isActive: true,
+          profile: defaultProfile,
           createdAt: timestamp,
           updatedAt: timestamp,
+          loginCount: 0,
         });
 
         const balanceId1 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
@@ -179,10 +203,11 @@ export class AuthService implements OnModuleInit {
     }
   }
 
+  // ✅ ENHANCED: Register with optional profile fields
   async register(registerDto: RegisterDto) {
     const startTime = Date.now();
     const db = this.firebaseService.getFirestore();
-    const { email, password } = registerDto;
+    const { email, password, fullName, phoneNumber, dateOfBirth, gender, nationality } = registerDto;
 
     const usersSnapshot = await db.collection(COLLECTIONS.USERS)
       .where('email', '==', email)
@@ -197,6 +222,32 @@ export class AuthService implements OnModuleInit {
     const userId = await this.firebaseService.generateId(COLLECTIONS.USERS);
     const timestamp = new Date().toISOString();
 
+    // ✅ Build initial profile from registration data
+    const initialProfile: UserProfile = {
+      fullName: fullName || undefined,
+      phoneNumber: phoneNumber || undefined,
+      dateOfBirth: dateOfBirth || undefined,
+      gender: gender as any || undefined,
+      nationality: nationality || undefined,
+      
+      settings: {
+        emailNotifications: true,
+        smsNotifications: true,
+        tradingAlerts: true,
+        twoFactorEnabled: false,
+        language: 'id',
+        timezone: 'Asia/Jakarta',
+      },
+      
+      verification: {
+        emailVerified: true, // Assumed verified on registration
+        phoneVerified: false,
+        identityVerified: false,
+        bankVerified: false,
+        verificationLevel: 'unverified',
+      },
+    };
+
     const userData = {
       id: userId,
       email,
@@ -204,8 +255,10 @@ export class AuthService implements OnModuleInit {
       role: USER_ROLES.USER,
       status: USER_STATUS.STANDARD,
       isActive: true,
+      profile: initialProfile,
       createdAt: timestamp,
       updatedAt: timestamp,
+      loginCount: 0,
     };
 
     await db.collection(COLLECTIONS.USERS).doc(userId).set(userData);
@@ -234,7 +287,16 @@ export class AuthService implements OnModuleInit {
       }),
     ]);
 
-    this.logger.log(`✅ User registered: ${email} (Status: STANDARD, Real: Rp 0, Demo: Rp 10,000,000)`);
+    // ✅ Calculate initial profile completion
+    let profileCompletion = 10; // Base
+    if (fullName) profileCompletion += 10;
+    if (phoneNumber) profileCompletion += 10;
+    if (dateOfBirth) profileCompletion += 5;
+    if (gender) profileCompletion += 5;
+
+    this.logger.log(
+      `✅ User registered: ${email} (Status: STANDARD, Profile: ${profileCompletion}%, Real: Rp 0, Demo: Rp 10,000,000)`
+    );
 
     const token = this.generateToken(userId, email, USER_ROLES.USER);
     this.cacheUser(userId, userData as User);
@@ -249,6 +311,7 @@ export class AuthService implements OnModuleInit {
         email,
         role: USER_ROLES.USER,
         status: USER_STATUS.STANDARD,
+        profileCompletion,
       },
       initialBalances: {
         real: 0,
@@ -258,6 +321,7 @@ export class AuthService implements OnModuleInit {
     };
   }
 
+  // ✅ ENHANCED: Login with last login tracking
   async login(loginDto: LoginDto) {
     const startTime = Date.now();
     const db = this.firebaseService.getFirestore();
@@ -284,11 +348,22 @@ export class AuthService implements OnModuleInit {
       throw new UnauthorizedException('Invalid email or password');
     }
 
+    // ✅ Update last login
+    const loginCount = (user.loginCount || 0) + 1;
+    const lastLoginAt = new Date().toISOString();
+
+    await db.collection(COLLECTIONS.USERS).doc(user.id).update({
+      lastLoginAt,
+      loginCount,
+    });
+
     const token = this.generateToken(user.id, user.email, user.role);
     this.cacheUser(user.id, user);
 
     const duration = Date.now() - startTime;
-    this.logger.log(`✅ User logged in in ${duration}ms: ${email} (${user.role}, ${user.status?.toUpperCase() || 'STANDARD'})`);
+    this.logger.log(
+      `✅ User logged in in ${duration}ms: ${email} (${user.role}, ${user.status?.toUpperCase() || 'STANDARD'}, Login #${loginCount})`
+    );
 
     return {
       message: 'Login successful',
@@ -297,10 +372,16 @@ export class AuthService implements OnModuleInit {
         email: user.email,
         role: user.role,
         status: user.status || USER_STATUS.STANDARD,
+        loginCount,
+        lastLoginAt,
       },
       token,
     };
   }
+
+  // ============================================
+  // HELPER METHODS (unchanged)
+  // ============================================
 
   private generateToken(userId: string, email: string, role: string): string {
     const payload = { sub: userId, email, role };
