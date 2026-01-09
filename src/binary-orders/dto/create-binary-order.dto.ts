@@ -1,7 +1,7 @@
 // src/binary-orders/dto/create-binary-order.dto.ts
-// ✅ UPDATED: Added accountType field
+// ✅ UPDATED: Support for 1 second (0.0167 minutes)
 
-import { IsString, IsEnum, IsNumber, IsPositive, IsInt, Min } from 'class-validator';
+import { IsString, IsEnum, IsNumber, IsPositive, Min } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 import { ORDER_DIRECTION, ALL_DURATIONS, BALANCE_ACCOUNT_TYPE } from '../../common/constants';
 
@@ -29,9 +29,9 @@ export class CreateBinaryOrderDto {
 
   @ApiProperty({ 
     example: 1, 
-    description: 'Duration in minutes (1,2,3,4,5,15,30,45,60)' 
+    description: 'Duration in minutes. Use 0.0167 for 1 second, or standard values: 1,2,3,4,5,15,30,45,60 minutes. Frontend will display 0.0167 as "1s"' 
   })
-  @IsInt()
-  @Min(1)
+  @IsNumber()
+  @Min(0.0167) // ✅ Allow 1 second = 0.0167 minutes
   duration: number;
 }

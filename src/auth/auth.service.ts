@@ -307,23 +307,25 @@ export class AuthService implements OnModuleInit {
         try {
           const affiliateId = await this.firebaseService.generateId(COLLECTIONS.AFFILIATES);
           
+          // ✅ Komisi akan ditentukan saat first deposit berdasarkan status user
           await db.collection(COLLECTIONS.AFFILIATES).doc(affiliateId).set({
             id: affiliateId,
             referrer_id: referrerUser.id,
             referee_id: userId,
             status: AFFILIATE_STATUS.PENDING,
-            commission_amount: AFFILIATE_CONFIG.COMMISSION_AMOUNT,
+            commission_amount: 0, // ✅ Will be set when first deposit based on status
             createdAt: timestamp,
           });
 
           this.logger.log(
-            `🎁 Affiliate record created: ${referrerUser.email} referred ${email} (Pending Rp 25,000 commission)`
+            `🎁 Affiliate record created: ${referrerUser.email} referred ${email} ` +
+            `(Commission will be based on first deposit status)`
           );
         } catch (affiliateError) {
           this.logger.error(`⚠️ Failed to create affiliate record: ${affiliateError.message}`);
         }
       }
-
+      
       let profileCompletion = 10;
       if (fullName) profileCompletion += 10;
       if (phoneNumber) profileCompletion += 10;

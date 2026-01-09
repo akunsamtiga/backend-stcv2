@@ -1,4 +1,6 @@
-// src/binary-orders/binary-orders.service.ts - FIXED WITH BETTER ERROR HANDLING
+// src/binary-orders/binary-orders.service.ts
+// ✅ UPDATED: Support for 1 second duration with precise timestamp handling
+
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { FirebaseService } from '../firebase/firebase.service';
@@ -8,7 +10,7 @@ import { PriceFetcherService } from '../assets/services/price-fetcher.service';
 import { UserStatusService } from '../user/user-status.service';
 import { CreateBinaryOrderDto } from './dto/create-binary-order.dto';
 import { QueryBinaryOrderDto } from './dto/query-binary-order.dto';
-import { COLLECTIONS, ORDER_STATUS, BALANCE_TYPES, ALL_DURATIONS, ValidDuration, BALANCE_ACCOUNT_TYPE } from '../common/constants';
+import { COLLECTIONS, ORDER_STATUS, BALANCE_TYPES, ALL_DURATIONS, ValidDuration, BALANCE_ACCOUNT_TYPE, DURATION_CONFIG } from '../common/constants';
 import { CalculationUtil, TimezoneUtil } from '../common/utils';
 import { BinaryOrder, Asset } from '../common/interfaces';
 
@@ -49,10 +51,25 @@ export class BinaryOrdersService {
     this.logger.log(`   • Standard: +0%`);
     this.logger.log(`   • Gold: +5%`);
     this.logger.log(`   • VIP: +10%`);
+    this.logger.log(`⚡ NEW: 1 Second Trading Support Enabled`);
   }
 
+  /**
+   * ✅ UPDATED: Validate duration with support for 1 second (0.0167 minutes)
+   */
   private isValidDuration(duration: number): duration is ValidDuration {
-    return (ALL_DURATIONS as readonly number[]).includes(duration);
+    // Check with small tolerance for floating point comparison
+    const tolerance = 0.0001;
+    return (ALL_DURATIONS as readonly number[]).some(allowed => 
+      Math.abs(allowed - duration) < tolerance
+    );
+  }
+
+  /**
+   * ✅ NEW: Get duration display format
+   */
+  private getDurationDisplay(durationMinutes: number): string {
+    return CalculationUtil.formatDurationDisplay(durationMinutes);
   }
 
   private async getCachedActiveOrders(accountType: 'real' | 'demo'): Promise<BinaryOrder[]> {
@@ -119,18 +136,22 @@ export class BinaryOrdersService {
     return null;
   }
 
+  /**
+   * ✅ UPDATED: Create order with 1 second support
+   */
   async createOrder(userId: string, createOrderDto: CreateBinaryOrderDto) {
     const startTime = Date.now();
-    const { accountType, amount } = createOrderDto;
+    const { accountType, amount, duration } = createOrderDto;
     
     try {
       if (accountType !== BALANCE_ACCOUNT_TYPE.REAL && accountType !== BALANCE_ACCOUNT_TYPE.DEMO) {
         throw new BadRequestException('Invalid account type. Must be "real" or "demo"');
       }
 
-      if (!this.isValidDuration(createOrderDto.duration)) {
+      // ✅ Validate duration (including 1 second = 0.0167 minutes)
+      if (!this.isValidDuration(duration)) {
         throw new BadRequestException(
-          `Invalid duration. Allowed: ${ALL_DURATIONS.join(', ')} minutes`
+          `Invalid duration. Allowed: 1s (0.0167), ${ALL_DURATIONS.filter(d => d >= 1).join(', ')} minutes`
         );
       }
 
@@ -143,6 +164,18 @@ export class BinaryOrdersService {
 
       if (!asset.isActive) {
         throw new BadRequestException('Asset not active');
+      }
+
+      // ✅ Validate duration against asset's allowed durations
+      if (asset.tradingSettings?.allowedDurations) {
+        if (!CalculationUtil.isValidDuration(duration, asset.tradingSettings.allowedDurations)) {
+          const allowedDisplay = asset.tradingSettings.allowedDurations
+            .map(d => CalculationUtil.formatDurationDisplay(d))
+            .join(', ');
+          throw new BadRequestException(
+            `Duration not allowed for ${asset.symbol}. Allowed: ${allowedDisplay}`
+          );
+        }
       }
 
       this.logger.log(`📡 Fetching price for ${asset.symbol}...`);
@@ -171,8 +204,10 @@ export class BinaryOrdersService {
       const baseProfitRate = asset.profitRate;
       const finalProfitRate = baseProfitRate + statusBonus;
 
+      const durationDisplay = this.getDurationDisplay(duration);
       this.logger.log(`👤 User ${userId} status: ${userStatus.toUpperCase()}`);
       this.logger.log(`💰 Base profit: ${baseProfitRate}% + Status bonus: ${statusBonus}% = ${finalProfitRate}%`);
+      this.logger.log(`⏱️ Duration: ${durationDisplay}`);
 
       this.logger.log(`💰 Checking ${accountType} balance for user ${userId}...`);
       
@@ -199,10 +234,12 @@ export class BinaryOrdersService {
 
       const orderId = await this.firebaseService.generateId(COLLECTIONS.ORDERS);
       
+      // ✅ UPDATED: Calculate expiry with precise second support
       const entryTimestamp = TimezoneUtil.getCurrentTimestamp();
+      const expiryTimestamp = CalculationUtil.calculateExpiryTimestamp(entryTimestamp, duration);
+      
       const entryDate = TimezoneUtil.fromTimestamp(entryTimestamp);
-      const expiryDate = TimezoneUtil.addMinutes(entryDate, createOrderDto.duration);
-      const expiryTimestamp = TimezoneUtil.toTimestamp(expiryDate);
+      const expiryDate = TimezoneUtil.fromTimestamp(expiryTimestamp);
       
       const entryDateTimeInfo = TimezoneUtil.getDateTimeInfo(entryDate);
       const expiryDateTimeInfo = TimezoneUtil.getDateTimeInfo(expiryDate);
@@ -234,16 +271,16 @@ export class BinaryOrdersService {
       await db.collection(COLLECTIONS.ORDERS).doc(orderId).set(orderData);
 
       this.logger.log(`✅ Order ${orderId} created, now debiting balance...`);
-      this.logger.log(`📅 Entry: ${entryDateTimeInfo.datetime} WIB`);
-      this.logger.log(`📅 Expiry: ${expiryDateTimeInfo.datetime} WIB`);
-      this.logger.log(`⏱️ Duration: ${createOrderDto.duration} minutes`);
+      this.logger.log(`📅 Entry: ${entryDateTimeInfo.datetime} WIB (${entryTimestamp})`);
+      this.logger.log(`📅 Expiry: ${expiryDateTimeInfo.datetime} WIB (${expiryTimestamp})`);
+      this.logger.log(`⏱️ Duration: ${durationDisplay}`);
 
       try {
         await this.balanceService.createBalanceEntry(userId, {
           accountType,
           type: BALANCE_TYPES.ORDER_DEBIT,
           amount: createOrderDto.amount,
-          description: `[${accountType.toUpperCase()}] Order #${orderId.slice(-8)} - ${asset.symbol} ${createOrderDto.direction}`,
+          description: `[${accountType.toUpperCase()}] Order #${orderId.slice(-8)} - ${asset.symbol} ${createOrderDto.direction} (${durationDisplay})`,
         }, true);
 
         this.logger.log(`✅ Balance debited successfully`);
@@ -269,12 +306,12 @@ export class BinaryOrdersService {
         `✅ Order complete - New ${accountType} balance: ${newBalance} (deducted ${amount})`
       );
 
-      const duration = Date.now() - startTime;
+      const executionTime = Date.now() - startTime;
       this.orderCreateCount++;
-      this.avgCreateTime = (this.avgCreateTime * 0.9) + (duration * 0.1);
+      this.avgCreateTime = (this.avgCreateTime * 0.9) + (executionTime * 0.1);
 
       this.logger.log(
-        `⚡ [${accountType.toUpperCase()}] Order created in ${duration}ms - ${asset.symbol} ${createOrderDto.direction} ${createOrderDto.duration}min (Profit: ${finalProfitRate}%)`
+        `⚡ [${accountType.toUpperCase()}] Order created in ${executionTime}ms - ${asset.symbol} ${createOrderDto.direction} ${durationDisplay} (Profit: ${finalProfitRate}%)`
       );
 
       return {
@@ -282,7 +319,8 @@ export class BinaryOrdersService {
         order: orderData,
         accountType,
         balanceAfter: newBalance,
-        executionTime: duration,
+        executionTime,
+        durationDisplay,
         statusInfo: {
           userStatus,
           baseProfitRate,
@@ -292,6 +330,9 @@ export class BinaryOrdersService {
         timing: {
           entry: entryDateTimeInfo.datetime,
           expiry: expiryDateTimeInfo.datetime,
+          entryTimestamp,
+          expiryTimestamp,
+          durationSeconds: Math.round(duration * 60),
           timezone: 'Asia/Jakarta (WIB)',
         },
       };
@@ -303,7 +344,10 @@ export class BinaryOrdersService {
     }
   }
 
-  @Cron('*/5 * * * * *')
+  /**
+   * ✅ UPDATED: Process expired orders every 1 second to handle 1s orders
+   */
+  @Cron('*/1 * * * * *') // ✅ Changed from 5s to 1s for precise 1-second order settlement
   async processExpiredOrders() {
     if (this.processingLock) return;
 
@@ -320,6 +364,7 @@ export class BinaryOrdersService {
         this.getCachedActiveOrders(BALANCE_ACCOUNT_TYPE.DEMO),
       ]);
 
+      // ✅ More precise expiry check for 1 second orders
       const expiredRealOrders = realOrders.filter(order => {
         const exitTimestamp = TimezoneUtil.toTimestamp(new Date(order.exit_time!));
         return currentTimestamp >= exitTimestamp;
@@ -333,7 +378,8 @@ export class BinaryOrdersService {
       const totalExpired = expiredRealOrders.length + expiredDemoOrders.length;
 
       if (totalExpired === 0) {
-        if (this.settlementRunCount % 12 === 0) {
+        // Only log every 60 checks (once per minute) to avoid spam
+        if (this.settlementRunCount % 60 === 0) {
           this.logger.debug(
             `⏰ Settlement check #${this.settlementRunCount}: No expired orders (${realOrders.length + demoOrders.length} active)`
           );
@@ -421,6 +467,7 @@ export class BinaryOrdersService {
       const db = this.firebaseService.getFirestore();
       
       const settlementDateTime = TimezoneUtil.formatDateTime();
+      const durationDisplay = this.getDurationDisplay(order.duration);
       
       await db.collection(COLLECTIONS.ORDERS)
         .doc(order.id)
@@ -438,7 +485,7 @@ export class BinaryOrdersService {
           accountType: order.accountType,
           type: BALANCE_TYPES.ORDER_PROFIT,
           amount: totalReturn,
-          description: `[${order.accountType.toUpperCase()}] Won #${order.id.slice(-8)} - ${asset.symbol} +${profit.toFixed(0)} (${order.userStatus?.toUpperCase() || 'STANDARD'} bonus)`,
+          description: `[${order.accountType.toUpperCase()}] Won #${order.id.slice(-8)} - ${asset.symbol} +${profit.toFixed(0)} (${order.userStatus?.toUpperCase() || 'STANDARD'} bonus, ${durationDisplay})`,
         }, true);
       }
 
@@ -449,7 +496,7 @@ export class BinaryOrdersService {
       this.avgSettleTime = (this.avgSettleTime * 0.9) + (duration * 0.1);
 
       this.logger.log(
-        `⚡ [${settlementDateTime} WIB] [${order.accountType.toUpperCase()}] Settled ${order.id.slice(-8)} in ${duration}ms - ${result} ${profit > 0 ? '+' : ''}${profit.toFixed(2)} (${order.profitRate}%)`
+        `⚡ [${settlementDateTime} WIB] [${order.accountType.toUpperCase()}] Settled ${order.id.slice(-8)} in ${duration}ms - ${durationDisplay} ${result} ${profit > 0 ? '+' : ''}${profit.toFixed(2)} (${order.profitRate}%)`
       );
 
     } catch (error) {
@@ -470,7 +517,6 @@ export class BinaryOrdersService {
     return snapshot.docs.map(doc => doc.data() as BinaryOrder);
   }
 
-  // ✅ FIXED: Better error handling & fallback query
   async getOrders(
     userId: string, 
     queryDto: QueryBinaryOrderDto
@@ -482,7 +528,6 @@ export class BinaryOrdersService {
 
       const db = this.firebaseService.getFirestore();
       
-      // ✅ STRATEGY 1: Try optimized query with all filters
       try {
         let query = db.collection(COLLECTIONS.ORDERS)
           .where('user_id', '==', userId);
@@ -495,13 +540,20 @@ export class BinaryOrdersService {
           query = query.where('status', '==', status) as any;
         }
 
-        // Try with orderBy
         const snapshot = await query
           .orderBy('createdAt', 'desc')
           .limit(limit * page)
           .get();
 
-        const allOrders = snapshot.docs.map(doc => doc.data() as BinaryOrder);
+        const allOrders = snapshot.docs.map(doc => {
+          const order = doc.data() as BinaryOrder;
+          // ✅ Add duration display to each order
+          return {
+            ...order,
+            durationDisplay: this.getDurationDisplay(order.duration),
+          };
+        });
+        
         const total = allOrders.length;
         const startIndex = (page - 1) * limit;
         const orders = allOrders.slice(startIndex, startIndex + limit);
@@ -526,16 +578,20 @@ export class BinaryOrdersService {
         };
 
       } catch (indexError) {
-        // ✅ STRATEGY 2: Fallback - get all user orders then filter in memory
         this.logger.warn(`⚠️ Index error, using fallback query: ${indexError.message}`);
         
         const snapshot = await db.collection(COLLECTIONS.ORDERS)
           .where('user_id', '==', userId)
           .get();
 
-        let allOrders = snapshot.docs.map(doc => doc.data() as BinaryOrder);
+        let allOrders = snapshot.docs.map(doc => {
+          const order = doc.data() as BinaryOrder;
+          return {
+            ...order,
+            durationDisplay: this.getDurationDisplay(order.duration),
+          };
+        });
 
-        // Filter in memory
         if (accountType && (accountType === 'real' || accountType === 'demo')) {
           allOrders = allOrders.filter(o => o.accountType === accountType);
         }
@@ -544,7 +600,6 @@ export class BinaryOrdersService {
           allOrders = allOrders.filter(o => o.status === status);
         }
 
-        // Sort in memory
         allOrders.sort((a, b) => {
           const dateA = new Date(a.createdAt).getTime();
           const dateB = new Date(b.createdAt).getTime();
@@ -581,7 +636,6 @@ export class BinaryOrdersService {
       this.logger.error(`❌ Get orders failed after ${duration}ms: ${error.message}`);
       this.logger.error(error.stack);
       
-      // Return empty result instead of throwing
       return {
         orders: [],
         pagination: {
@@ -620,6 +674,7 @@ export class BinaryOrdersService {
 
     return {
       ...order,
+      durationDisplay: this.getDurationDisplay(order.duration),
       expiryInfo,
       currentTime: TimezoneUtil.formatDateTime(),
       timezone: 'Asia/Jakarta (WIB)',
@@ -689,10 +744,11 @@ export class BinaryOrdersService {
         settleTimeStatus: this.avgSettleTime < 200 ? 'EXCELLENT' : 'NEEDS_IMPROVEMENT',
       },
       optimization: {
-        settlementInterval: '5 seconds',
-        estimatedDailyChecks: 17280,
+        settlementInterval: '1 second', // ✅ Updated
+        estimatedDailyChecks: 86400, // ✅ 24h * 3600s
         cacheTTL: `${this.ACTIVE_ORDERS_CACHE_TTL}ms`,
         savingsVsOld: '60% fewer Firestore reads',
+        oneSecondSupport: true, // ✅ NEW
       },
       timezone: {
         name: 'Asia/Jakarta',

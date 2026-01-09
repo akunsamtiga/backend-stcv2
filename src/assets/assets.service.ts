@@ -1,5 +1,5 @@
 // src/assets/assets.service.ts
-// ✅ MULTI-ASSET SUPPORT - Setiap asset punya path & settings tersendiri
+// ✅ UPDATED: Default settings include 1 second duration
 
 import { Injectable, NotFoundException, ConflictException, Logger, RequestTimeoutException, BadRequestException } from '@nestjs/common';
 import { FirebaseService } from '../firebase/firebase.service';
@@ -19,22 +19,25 @@ export class AssetsService {
   private readonly ASSET_CACHE_TTL = 60000;
   private readonly ALL_ASSETS_CACHE_TTL = 30000;
 
-  // ✅ DEFAULT SETTINGS - Akan digunakan jika tidak ada custom settings
+  // ✅ UPDATED: Default settings WITH 1 second support
   private readonly DEFAULT_SIMULATOR_SETTINGS = {
-  initialPrice: 40.022,
-  dailyVolatilityMin: 0.001,
-  dailyVolatilityMax: 0.005,
-  secondVolatilityMin: 0.00001,
-  secondVolatilityMax: 0.00008,
-  minPrice: 20.011,  // ✅ Tambahkan ini (50% of initial)
-  maxPrice: 80.044,  // ✅ Tambahkan ini (200% of initial)
-};
+    initialPrice: 40.022,
+    dailyVolatilityMin: 0.001,
+    dailyVolatilityMax: 0.005,
+    secondVolatilityMin: 0.00001,
+    secondVolatilityMax: 0.00008,
+    minPrice: 20.011,
+    maxPrice: 80.044,
+  };
 
-
+  // ✅ UPDATED: Default trading settings include 1 second (0.0167 minutes)
   private readonly DEFAULT_TRADING_SETTINGS = {
     minOrderAmount: 1000,
     maxOrderAmount: 1000000,
-    allowedDurations: [...ALL_DURATIONS] as number[],
+    allowedDurations: [
+      0.0167,  // ✅ 1 second (will be displayed as "1s" in frontend)
+      ...ALL_DURATIONS.filter(d => d >= 1) // All other durations
+    ] as number[],
   };
 
   constructor(
@@ -54,7 +57,7 @@ export class AssetsService {
   }
 
   /**
-   * ✅ CREATE ASSET - Multi-asset dengan path validation
+   * ✅ CREATE ASSET - Multi-asset with 1 second support
    */
   async createAsset(createAssetDto: CreateAssetDto, createdBy: string) {
     const db = this.firebaseService.getFirestore();
@@ -75,14 +78,12 @@ export class AssetsService {
         throw new BadRequestException('realtimeDbPath is required for realtime_db data source');
       }
 
-      // ✅ Path HARUS dimulai dengan /
       if (!createAssetDto.realtimeDbPath.startsWith('/')) {
         throw new BadRequestException(
           'realtimeDbPath must start with /. Example: "/idx_stc" or "/assets/eurusd"'
         );
       }
 
-      // ✅ Path TIDAK boleh mengandung /current_price (akan ditambahkan otomatis)
       if (createAssetDto.realtimeDbPath.includes('/current_price')) {
         throw new BadRequestException(
           'realtimeDbPath should NOT include /current_price. ' +
@@ -91,7 +92,6 @@ export class AssetsService {
         );
       }
 
-      // ✅ Check jika path sudah digunakan asset lain
       const pathSnapshot = await db.collection(COLLECTIONS.ASSETS)
         .where('realtimeDbPath', '==', createAssetDto.realtimeDbPath)
         .limit(1)
@@ -107,7 +107,6 @@ export class AssetsService {
       this.logger.log(`   Price will be fetched from: ${createAssetDto.realtimeDbPath}/current_price`);
     }
 
-    // ✅ VALIDATION: apiEndpoint untuk api
     if (createAssetDto.dataSource === 'api' && !createAssetDto.apiEndpoint) {
       throw new BadRequestException('apiEndpoint is required for api data source');
     }
@@ -124,7 +123,6 @@ export class AssetsService {
         }
       : this.DEFAULT_SIMULATOR_SETTINGS;
 
-    // Validate volatility
     if (simulatorSettings.dailyVolatilityMin > simulatorSettings.dailyVolatilityMax) {
       throw new BadRequestException('dailyVolatilityMin must be <= dailyVolatilityMax');
     }
@@ -133,7 +131,7 @@ export class AssetsService {
       throw new BadRequestException('secondVolatilityMin must be <= secondVolatilityMax');
     }
 
-    // ✅ TRADING SETTINGS - Merge dengan default
+    // ✅ TRADING SETTINGS - With 1 second support
     const tradingSettings = createAssetDto.tradingSettings 
       ? {
           ...this.DEFAULT_TRADING_SETTINGS,
@@ -149,7 +147,11 @@ export class AssetsService {
       throw new BadRequestException('allowedDurations must contain at least one duration');
     }
 
-    // ✅ CREATE ASSET DATA
+    // ✅ Validate 1 second duration (0.0167 minutes)
+    const has1SecondDuration = tradingSettings.allowedDurations.some(d => 
+      Math.abs(d - 0.0167) < 0.0001
+    );
+
     const assetId = await this.firebaseService.generateId(COLLECTIONS.ASSETS);
     const timestamp = new Date().toISOString();
 
@@ -172,7 +174,6 @@ export class AssetsService {
 
     await db.collection(COLLECTIONS.ASSETS).doc(assetId).set(assetData);
 
-    // Clear cache
     this.invalidateCache();
 
     // ✅ LOG CREATION
@@ -192,26 +193,43 @@ export class AssetsService {
     this.logger.log(`   Profit Rate: ${createAssetDto.profitRate}%`);
     this.logger.log(`   Initial Price: ${simulatorSettings.initialPrice}`);
     this.logger.log(`   Volatility Range: ${simulatorSettings.secondVolatilityMin} - ${simulatorSettings.secondVolatilityMax}`);
-    this.logger.log(`   Price Range: ${simulatorSettings.minPrice || 'auto'} - ${simulatorSettings.maxPrice || 'auto'}`);
+    this.logger.log(`   Price Range: ${simulatorSettings.minPrice} - ${simulatorSettings.maxPrice}`);
     this.logger.log(`   Min Order: ${tradingSettings.minOrderAmount}`);
     this.logger.log(`   Max Order: ${tradingSettings.maxOrderAmount}`);
-    this.logger.log(`   Durations: ${tradingSettings.allowedDurations.join(', ')} minutes`);
+    
+    // ✅ Display durations with readable format
+    const durationsDisplay = tradingSettings.allowedDurations
+      .map(d => d < 1 ? `${Math.round(d * 60)}s` : `${d}m`)
+      .join(', ');
+    this.logger.log(`   Durations: ${durationsDisplay}`);
+    
+    if (has1SecondDuration) {
+      this.logger.log(`   ⚡ 1 SECOND TRADING ENABLED!`);
+    }
+    
     this.logger.log('🎉 ================================================');
     this.logger.log('');
     this.logger.log('💡 NEXT STEPS:');
     this.logger.log('   1. Simulator will auto-detect this asset');
     this.logger.log('   2. Price generation will start automatically');
-    this.logger.log('   3. No restart needed!');
+    if (has1SecondDuration) {
+      this.logger.log('   3. Settlement runs every 1 second for 1s orders');
+    }
+    this.logger.log('   4. No restart needed!');
     this.logger.log('');
 
     return {
       message: 'Asset created successfully',
       asset: assetData,
+      features: {
+        oneSecondTrading: has1SecondDuration,
+        availableDurations: durationsDisplay,
+      },
     };
   }
 
   /**
-   * ✅ UPDATE ASSET - With path validation
+   * UPDATE ASSET - Preserve other methods unchanged
    */
   async updateAsset(assetId: string, updateAssetDto: UpdateAssetDto) {
     const db = this.firebaseService.getFirestore();
@@ -223,7 +241,6 @@ export class AssetsService {
 
     const currentAsset = assetDoc.data() as Asset;
 
-    // Check duplicate symbol
     if (updateAssetDto.symbol && updateAssetDto.symbol !== currentAsset.symbol) {
       const existingSnapshot = await db.collection(COLLECTIONS.ASSETS)
         .where('symbol', '==', updateAssetDto.symbol)
@@ -235,7 +252,6 @@ export class AssetsService {
       }
     }
 
-    // ✅ VALIDATION: realtimeDbPath
     if (updateAssetDto.dataSource === 'realtime_db') {
       const realtimeDbPath = updateAssetDto.realtimeDbPath || currentAsset.realtimeDbPath;
       
@@ -256,7 +272,6 @@ export class AssetsService {
         );
       }
 
-      // Check duplicate path (jika path berubah)
       if (updateAssetDto.realtimeDbPath && updateAssetDto.realtimeDbPath !== currentAsset.realtimeDbPath) {
         const pathSnapshot = await db.collection(COLLECTIONS.ASSETS)
           .where('realtimeDbPath', '==', updateAssetDto.realtimeDbPath)
@@ -271,7 +286,6 @@ export class AssetsService {
       }
     }
 
-    // ✅ VALIDATION: apiEndpoint
     if (updateAssetDto.dataSource === 'api') {
       const apiEndpoint = updateAssetDto.apiEndpoint || currentAsset.apiEndpoint;
       if (!apiEndpoint) {
@@ -279,7 +293,6 @@ export class AssetsService {
       }
     }
 
-    // ✅ MERGE SIMULATOR SETTINGS
     let simulatorSettings = currentAsset.simulatorSettings || this.DEFAULT_SIMULATOR_SETTINGS;
     
     if (updateAssetDto.simulatorSettings) {
@@ -297,7 +310,6 @@ export class AssetsService {
       }
     }
 
-    // ✅ MERGE TRADING SETTINGS
     let tradingSettings = currentAsset.tradingSettings || this.DEFAULT_TRADING_SETTINGS;
     
     if (updateAssetDto.tradingSettings) {
@@ -326,22 +338,32 @@ export class AssetsService {
 
     this.invalidateCache();
 
+    const has1SecondDuration = tradingSettings.allowedDurations.some(d => 
+      Math.abs(d - 0.0167) < 0.0001
+    );
+
     this.logger.log(`✅ Asset updated: ${currentAsset.symbol}`);
     if (updateAssetDto.simulatorSettings) {
       this.logger.log(`   Simulator settings changed`);
     }
     if (updateAssetDto.tradingSettings) {
-      this.logger.log(`   Trading settings changed`);
+      const durationsDisplay = tradingSettings.allowedDurations
+        .map(d => d < 1 ? `${Math.round(d * 60)}s` : `${d}m`)
+        .join(', ');
+      this.logger.log(`   Trading settings changed: ${durationsDisplay}`);
+      if (has1SecondDuration) {
+        this.logger.log(`   ⚡ 1 SECOND TRADING ENABLED!`);
+      }
     }
 
     return {
       message: 'Asset updated successfully',
+      features: {
+        oneSecondTrading: has1SecondDuration,
+      },
     };
   }
 
-  /**
-   * DELETE ASSET
-   */
   async deleteAsset(assetId: string) {
     const db = this.firebaseService.getFirestore();
 
@@ -363,9 +385,6 @@ export class AssetsService {
     };
   }
 
-  /**
-   * GET ALL ASSETS
-   */
   async getAllAssets(activeOnly: boolean = false) {
     const startTime = Date.now();
     
@@ -427,9 +446,6 @@ export class AssetsService {
     };
   }
 
-  /**
-   * GET ASSET BY ID
-   */
   async getAssetById(assetId: string): Promise<Asset> {
     const startTime = Date.now();
     
@@ -471,9 +487,6 @@ export class AssetsService {
     return asset;
   }
 
-  /**
-   * GET CURRENT PRICE
-   */
   async getCurrentPrice(assetId: string) {
     const startTime = Date.now();
     
@@ -518,16 +531,10 @@ export class AssetsService {
     }
   }
 
-  /**
-   * GET ASSET SETTINGS
-   */
   async getAssetSettings(assetId: string): Promise<Asset> {
     return this.getAssetById(assetId);
   }
 
-  /**
-   * CACHE WARMUP
-   */
   private async warmupCache(): Promise<void> {
     try {
       if (!this.firebaseService.isFirestoreReady()) {
@@ -546,14 +553,20 @@ export class AssetsService {
         await this.priceFetcherService.prefetchPrices(activeAssets);
       }
       
+      // ✅ Log 1 second support status
+      const with1SecondSupport = activeAssets.filter(a => 
+        a.tradingSettings?.allowedDurations?.some(d => Math.abs(d - 0.0167) < 0.0001)
+      );
+      
+      if (with1SecondSupport.length > 0) {
+        this.logger.log(`⚡ ${with1SecondSupport.length} assets with 1 second trading enabled`);
+      }
+      
     } catch (error) {
       this.logger.error(`Cache warmup failed: ${error.message}`);
     }
   }
 
-  /**
-   * CACHE REFRESH
-   */
   private async refreshCache(): Promise<void> {
     try {
       await this.getAllAssets(false);
@@ -569,18 +582,12 @@ export class AssetsService {
     }
   }
 
-  /**
-   * INVALIDATE CACHE
-   */
   private invalidateCache(): void {
     this.assetCache.clear();
     this.allAssetsCache = null;
     this.logger.debug('Asset cache invalidated');
   }
 
-  /**
-   * BATCH GET ASSETS
-   */
   async batchGetAssets(assetIds: string[]): Promise<Map<string, Asset>> {
     const results = new Map<string, Asset>();
     
@@ -615,22 +622,19 @@ export class AssetsService {
     return results;
   }
 
-  /**
-   * GET ACTIVE ASSETS
-   */
   async getActiveAssets(): Promise<Asset[]> {
     const { assets } = await this.getAllAssets(true);
     return assets;
   }
 
-  /**
-   * PERFORMANCE STATS
-   */
   getPerformanceStats() {
     return {
       cachedAssets: this.assetCache.size,
       allAssetsCached: !!this.allAssetsCache,
       priceStats: this.priceFetcherService.getPerformanceStats(),
+      features: {
+        oneSecondTradingSupport: true, // ✅ NEW
+      },
     };
   }
 }

@@ -5,7 +5,7 @@ import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import { FirebaseService } from '../firebase/firebase.service';
 import { CreateBalanceDto } from './dto/create-balance.dto';
 import { QueryBalanceDto } from './dto/query-balance.dto';
-import { COLLECTIONS, BALANCE_TYPES, BALANCE_ACCOUNT_TYPE, AFFILIATE_STATUS, AFFILIATE_CONFIG } from '../common/constants';
+import { COLLECTIONS, BALANCE_TYPES, BALANCE_ACCOUNT_TYPE, AFFILIATE_STATUS, AFFILIATE_CONFIG, USER_STATUS } from '../common/constants';
 import { CalculationUtil } from '../common/utils';
 import { Balance, BalanceSummary, Affiliate } from '../common/interfaces';
 
@@ -36,6 +36,7 @@ export class BalanceService {
     const db = this.firebaseService.getFirestore();
 
     try {
+      // Get affiliate record
       const affiliateSnapshot = await db.collection(COLLECTIONS.AFFILIATES)
         .where('referee_id', '==', userId)
         .where('status', '==', AFFILIATE_STATUS.PENDING)
@@ -48,15 +49,46 @@ export class BalanceService {
 
       const affiliateDoc = affiliateSnapshot.docs[0];
       const affiliate = affiliateDoc.data() as Affiliate;
+
+      // ✅ GET USER STATUS untuk tentukan komisi
+      const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
+      if (!userDoc.exists) {
+        this.logger.warn(`⚠️ User ${userId} not found for affiliate processing`);
+        return;
+      }
+
+      const userData = userDoc.data();
+      const userStatus = userData?.status || USER_STATUS.STANDARD;
+
+      // ✅ TENTUKAN KOMISI BERDASARKAN STATUS
+      let commissionAmount: number;
+      
+      switch (userStatus.toUpperCase()) {
+        case USER_STATUS.VIP.toUpperCase():
+          commissionAmount = AFFILIATE_CONFIG.COMMISSION_BY_STATUS.VIP;
+          break;
+        case USER_STATUS.GOLD.toUpperCase():
+          commissionAmount = AFFILIATE_CONFIG.COMMISSION_BY_STATUS.GOLD;
+          break;
+        case USER_STATUS.STANDARD.toUpperCase():
+        default:
+          commissionAmount = AFFILIATE_CONFIG.COMMISSION_BY_STATUS.STANDARD;
+          break;
+      }
+
       const timestamp = new Date().toISOString();
 
+      // Update affiliate record with actual commission
       await db.collection(COLLECTIONS.AFFILIATES)
         .doc(affiliate.id)
         .update({
           status: AFFILIATE_STATUS.COMPLETED,
+          commission_amount: commissionAmount, // ✅ Update dengan komisi sesuai status
+          referee_status: userStatus, // ✅ Simpan status referee untuk tracking
           completed_at: timestamp,
         });
 
+      // Create commission balance entry
       const commissionBalanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
       
       await db.collection(COLLECTIONS.BALANCE).doc(commissionBalanceId).set({
@@ -64,14 +96,17 @@ export class BalanceService {
         user_id: affiliate.referrer_id,
         accountType: BALANCE_ACCOUNT_TYPE.REAL,
         type: BALANCE_TYPES.AFFILIATE_COMMISSION,
-        amount: AFFILIATE_CONFIG.COMMISSION_AMOUNT,
-        description: `Affiliate commission - Friend deposit activated`,
+        amount: commissionAmount,
+        description: `Affiliate commission - Friend deposit (${userStatus.toUpperCase()} level)`,
         createdAt: timestamp,
       });
 
       this.realBalanceCache.delete(affiliate.referrer_id);
 
-      this.logger.log(`🎁 Affiliate commission paid: ${AFFILIATE_CONFIG.COMMISSION_AMOUNT} to ${affiliate.referrer_id}`);
+      this.logger.log(
+        `🎉 Affiliate commission paid: Rp ${commissionAmount.toLocaleString()} to ${affiliate.referrer_id} ` +
+        `(Referee status: ${userStatus.toUpperCase()})`
+      );
 
     } catch (error) {
       this.logger.error(`❌ Affiliate processing error: ${error.message}`);

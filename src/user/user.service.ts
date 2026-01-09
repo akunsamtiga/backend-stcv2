@@ -612,13 +612,15 @@ export class UserService {
             return {
               ...referral,
               refereeEmail: refereeData?.email || 'Unknown',
-              refereeStatus: refereeData?.status || 'standard',
+              refereeStatus: referral.referee_status || refereeData?.status || 'standard',
+              commissionEarned: referral.commission_amount || 0,
             };
           } catch (error) {
             return {
               ...referral,
               refereeEmail: 'Unknown',
               refereeStatus: 'standard',
+              commissionEarned: 0,
             };
           }
         })
@@ -626,7 +628,7 @@ export class UserService {
 
       const completedReferrals = referralsWithDetails.filter(r => r.status === AFFILIATE_STATUS.COMPLETED);
       const pendingReferrals = referralsWithDetails.filter(r => r.status === AFFILIATE_STATUS.PENDING);
-      const totalCommission = completedReferrals.reduce((sum, r) => sum + r.commission_amount, 0);
+      const totalCommission = completedReferrals.reduce((sum, r) => sum + r.commissionEarned, 0);
 
       return {
         summary: {
@@ -634,17 +636,33 @@ export class UserService {
           completedReferrals: completedReferrals.length,
           pendingReferrals: pendingReferrals.length,
           totalCommission,
+          // ✅ Breakdown by status
+          commissionBreakdown: {
+            fromStandard: completedReferrals
+              .filter(r => r.refereeStatus === 'standard')
+              .reduce((sum, r) => sum + r.commissionEarned, 0),
+            fromGold: completedReferrals
+              .filter(r => r.refereeStatus === 'gold')
+              .reduce((sum, r) => sum + r.commissionEarned, 0),
+            fromVIP: completedReferrals
+              .filter(r => r.refereeStatus === 'vip')
+              .reduce((sum, r) => sum + r.commissionEarned, 0),
+          },
         },
         referrals: referralsWithDetails,
         instructions: {
           howToEarn: [
             'Share your referral code with friends',
             'Friend registers using your code',
-            'Friend makes their first deposit (any amount)',
-            'You receive Rp 25,000 commission instantly!',
+            'Friend makes their first deposit',
+            'You receive commission based on their status:',
+            '  • Standard: Rp 25,000',
+            '  • Gold: Rp 100,000',
+            '  • VIP: Rp 400,000',
           ],
           tips: [
             'No limit on referrals',
+            'Higher commission for higher status friends',
             'Commission paid immediately after first deposit',
             'Track all referrals in real-time',
           ],
@@ -660,17 +678,26 @@ export class UserService {
           completedReferrals: 0,
           pendingReferrals: 0,
           totalCommission: 0,
+          commissionBreakdown: {
+            fromStandard: 0,
+            fromGold: 0,
+            fromVIP: 0,
+          },
         },
         referrals: [],
         instructions: {
           howToEarn: [
             'Share your referral code with friends',
             'Friend registers using your code',
-            'Friend makes their first deposit (any amount)',
-            'You receive Rp 25,000 commission instantly!',
+            'Friend makes their first deposit',
+            'You receive commission based on their status:',
+            '  • Standard: Rp 25,000',
+            '  • Gold: Rp 100,000',
+            '  • VIP: Rp 400,000',
           ],
           tips: [
             'No limit on referrals',
+            'Higher commission for higher status friends',
             'Commission paid immediately after first deposit',
             'Track all referrals in real-time',
           ],

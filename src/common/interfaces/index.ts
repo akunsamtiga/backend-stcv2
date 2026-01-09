@@ -128,6 +128,7 @@ export interface Affiliate {
   referee_id: string;
   status: 'pending' | 'completed';
   commission_amount: number;
+  referee_status?: string; 
   completed_at?: string;
   createdAt: string;
 }

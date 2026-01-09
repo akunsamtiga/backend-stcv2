@@ -265,12 +265,13 @@ export class GoogleAuthService {
           referrer_id: referrerUser.id,
           referee_id: userId,
           status: AFFILIATE_STATUS.PENDING,
-          commission_amount: AFFILIATE_CONFIG.COMMISSION_AMOUNT,
+          commission_amount: 0, // ✅ Will be set based on first deposit status
           createdAt: timestamp,
         });
 
         this.logger.log(
-          `🎁 Affiliate record created: ${referrerUser.email} referred ${email} (Pending Rp 25,000 commission)`
+          `🎁 Affiliate record created: ${referrerUser.email} referred ${email} ` +
+          `(Commission based on deposit status)`
         );
       } catch (affiliateError) {
         this.logger.error(`⚠️ Failed to create affiliate record: ${affiliateError.message}`);

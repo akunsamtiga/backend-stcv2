@@ -1,5 +1,5 @@
 // src/assets/dto/create-asset.dto.ts
-// ✅ UPDATED: Full control untuk Super Admin
+// ✅ UPDATED: Support for 1 second duration
 
 import { 
   IsString, IsNumber, IsBoolean, IsEnum, IsOptional, 
@@ -8,7 +8,7 @@ import {
 import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
-// ✅ NEW: Simulator Settings DTO
+// ✅ Simulator Settings DTO
 export class SimulatorSettingsDto {
   @ApiProperty({ 
     example: 40.022, 
@@ -73,7 +73,7 @@ export class SimulatorSettingsDto {
   maxPrice?: number;
 }
 
-// ✅ NEW: Trading Settings DTO
+// ✅ UPDATED: Trading Settings with 1 second support
 export class TradingSettingsDto {
   @ApiProperty({ 
     example: 1000, 
@@ -92,13 +92,13 @@ export class TradingSettingsDto {
   maxOrderAmount: number;
 
   @ApiProperty({ 
-    example: [1, 2, 3, 4, 5, 15, 30, 45, 60], 
-    description: 'Allowed durations in minutes',
+    example: [0.0167, 1, 2, 3, 4, 5, 15, 30, 45, 60], 
+    description: 'Allowed durations in minutes. Use 0.0167 for 1 second (will be displayed as "1s" in frontend)',
     type: [Number]
   })
   @IsArray()
-  @IsInt({ each: true })
-  @Min(1, { each: true })
+  @IsNumber({}, { each: true })
+  @Min(0.0167, { each: true })
   allowedDurations: number[];
 }
 
@@ -143,8 +143,8 @@ export class CreateAssetDto {
   dataSource: string;
 
   @ApiPropertyOptional({ 
-    example: '/idx_stc/current_price',
-    description: 'Firebase Realtime DB path (required if dataSource is realtime_db)'
+    example: '/idx_stc',
+    description: 'Firebase Realtime DB path (required if dataSource is realtime_db). Do NOT include /current_price suffix.'
   })
   @IsOptional()
   @IsString()
@@ -159,14 +159,13 @@ export class CreateAssetDto {
   apiEndpoint?: string;
 
   @ApiPropertyOptional({ 
-    example: 'Indonesian stock index',
+    example: 'Indonesian stock index with 1 second trading support',
     description: 'Asset description'
   })
   @IsOptional()
   @IsString()
   description?: string;
 
-  // ✅ NEW: Simulator Settings (optional - defaults will be applied)
   @ApiPropertyOptional({ 
     type: SimulatorSettingsDto,
     description: 'Simulator settings - controls price generation behavior'
@@ -176,14 +175,12 @@ export class CreateAssetDto {
   @Type(() => SimulatorSettingsDto)
   simulatorSettings?: SimulatorSettingsDto;
 
-  // ✅ NEW: Trading Settings (optional - defaults will be applied)
   @ApiPropertyOptional({ 
     type: TradingSettingsDto,
-    description: 'Trading constraints and allowed durations'
+    description: 'Trading constraints and allowed durations (including 1 second support with 0.0167 value)'
   })
   @IsOptional()
   @ValidateNested()
   @Type(() => TradingSettingsDto)
   tradingSettings?: TradingSettingsDto;
 }
-
