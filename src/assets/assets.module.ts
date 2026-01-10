@@ -1,15 +1,18 @@
+// src/assets/assets.module.ts
+// ✅ UPDATED: Added CryptoCompareService
+
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AssetsController } from './assets.controller';
 import { AssetsService } from './assets.service';
 import { PriceFetcherService } from './services/price-fetcher.service';
+import { CryptoCompareService } from './services/cryptocompare.service';
 import { AuthModule } from '../auth/auth.module';
 
 @Module({
   imports: [
     AuthModule,
-    // Import JwtModule untuk JwtAuthGuard
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -22,7 +25,15 @@ import { AuthModule } from '../auth/auth.module';
     }),
   ],
   controllers: [AssetsController],
-  providers: [AssetsService, PriceFetcherService],
-  exports: [AssetsService, PriceFetcherService],
+  providers: [
+    AssetsService, 
+    PriceFetcherService,
+    CryptoCompareService, // ✅ NEW
+  ],
+  exports: [
+    AssetsService, 
+    PriceFetcherService,
+    CryptoCompareService, // ✅ NEW
+  ],
 })
 export class AssetsModule {}

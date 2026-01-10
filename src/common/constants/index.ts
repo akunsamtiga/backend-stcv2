@@ -1,5 +1,5 @@
 // src/common/constants/index.ts
-// ✅ UPDATED: Added 1 second duration support
+// ✅ UPDATED: Added Crypto Asset Category
 
 export const BALANCE_TYPES = {
   DEPOSIT: 'deposit',
@@ -88,36 +88,61 @@ export const COLLECTIONS = {
   AFFILIATES: 'affiliates',
 } as const;
 
-// ✅ UPDATED: Added 1 second (converted to 0.0167 minutes internally)
+// ✅ NEW: Asset Categories
+export const ASSET_CATEGORY = {
+  NORMAL: 'normal',      // Standard assets (stocks, indices, etc)
+  CRYPTO: 'crypto',      // Cryptocurrency assets
+} as const;
+
+// ✅ NEW: Asset Data Sources
+export const ASSET_DATA_SOURCE = {
+  REALTIME_DB: 'realtime_db',     // Firebase Realtime Database
+  API: 'api',                      // Generic API
+  MOCK: 'mock',                    // Mock/Simulated data
+  CRYPTOCOMPARE: 'cryptocompare',  // CryptoCompare API (for crypto assets)
+} as const;
+
+// ✅ NEW: CryptoCompare Configuration
+export const CRYPTOCOMPARE_CONFIG = {
+  API_KEY: 'ffb687da5df95e3406d379e05a57507512343439f68e01476dd6a97894818d3b',
+  BASE_URL: 'https://min-api.cryptocompare.com/data',
+  CACHE_TTL: 5000, // 5 seconds cache for crypto prices
+  TIMEOUT: 3000,   // 3 seconds timeout
+} as const;
+
+// ✅ NEW: Popular Crypto Symbols
+export const CRYPTO_SYMBOLS = {
+  BITCOIN: 'BTC',
+  ETHEREUM: 'ETH',
+  BINANCE_COIN: 'BNB',
+  RIPPLE: 'XRP',
+  CARDANO: 'ADA',
+  SOLANA: 'SOL',
+  POLKADOT: 'DOT',
+  DOGECOIN: 'DOGE',
+  POLYGON: 'MATIC',
+  LITECOIN: 'LTC',
+} as const;
+
 export const DURATIONS = {
-  // Ultra short (seconds converted to minutes for internal use)
-  ULTRA_SHORT: [0.0167], // 1 second = 0.0167 minutes
-  
-  // Short term (minutes)
+  ULTRA_SHORT: [0.0167], // 1 second
   SHORT: [1, 2, 3, 4, 5],
-  
-  // Medium term (minutes)
   MEDIUM: [15, 30, 45, 60],
 } as const;
 
-// ✅ NEW: Duration in seconds for display and validation
 export const DURATION_SECONDS = {
-  ULTRA_SHORT: [1],           // 1 second
-  SHORT: [60, 120, 180, 240, 300],  // 1-5 minutes in seconds
-  MEDIUM: [900, 1800, 2700, 3600],  // 15-60 minutes in seconds
+  ULTRA_SHORT: [1],
+  SHORT: [60, 120, 180, 240, 300],
+  MEDIUM: [900, 1800, 2700, 3600],
 } as const;
 
-// ✅ UPDATED: All durations including 1 second (in minutes for backend)
-// Frontend will convert seconds to minutes automatically
 export const ALL_DURATIONS = [
-  0.0167,  // 1 second (displayed as "1s" in frontend)
-  1, 2, 3, 4, 5,           // 1-5 minutes
-  15, 30, 45, 60           // 15-60 minutes
+  0.0167,  // 1 second
+  1, 2, 3, 4, 5,
+  15, 30, 45, 60
 ] as const;
 
-// ✅ NEW: Duration display configuration
 export const DURATION_CONFIG = {
-  // Map internal minutes to display format
   0.0167: { display: '1s', seconds: 1, minutes: 0.0167, type: 'ultra_short' },
   1: { display: '1m', seconds: 60, minutes: 1, type: 'short' },
   2: { display: '2m', seconds: 120, minutes: 2, type: 'short' },
@@ -134,3 +159,5 @@ export type ValidDuration = typeof ALL_DURATIONS[number];
 export type BalanceAccountType = typeof BALANCE_ACCOUNT_TYPE[keyof typeof BALANCE_ACCOUNT_TYPE];
 export type UserStatus = typeof USER_STATUS[keyof typeof USER_STATUS];
 export type AffiliateStatus = typeof AFFILIATE_STATUS[keyof typeof AFFILIATE_STATUS];
+export type AssetCategory = typeof ASSET_CATEGORY[keyof typeof ASSET_CATEGORY];
+export type AssetDataSource = typeof ASSET_DATA_SOURCE[keyof typeof ASSET_DATA_SOURCE];

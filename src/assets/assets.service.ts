@@ -1,12 +1,13 @@
 // src/assets/assets.service.ts
-// ✅ UPDATED: Default settings include 1 second duration
+// ✅ UPDATED: Crypto asset creation and validation
 
 import { Injectable, NotFoundException, ConflictException, Logger, RequestTimeoutException, BadRequestException } from '@nestjs/common';
 import { FirebaseService } from '../firebase/firebase.service';
 import { PriceFetcherService } from './services/price-fetcher.service';
+import { CryptoCompareService } from './services/cryptocompare.service';
 import { CreateAssetDto } from './dto/create-asset.dto';
 import { UpdateAssetDto } from './dto/update-asset.dto';
-import { COLLECTIONS, ALL_DURATIONS } from '../common/constants';
+import { COLLECTIONS, ALL_DURATIONS, ASSET_CATEGORY, ASSET_DATA_SOURCE } from '../common/constants';
 import { Asset } from '../common/interfaces';
 
 @Injectable()
@@ -19,7 +20,6 @@ export class AssetsService {
   private readonly ASSET_CACHE_TTL = 60000;
   private readonly ALL_ASSETS_CACHE_TTL = 30000;
 
-  // ✅ UPDATED: Default settings WITH 1 second support
   private readonly DEFAULT_SIMULATOR_SETTINGS = {
     initialPrice: 40.022,
     dailyVolatilityMin: 0.001,
@@ -30,19 +30,19 @@ export class AssetsService {
     maxPrice: 80.044,
   };
 
-  // ✅ UPDATED: Default trading settings include 1 second (0.0167 minutes)
   private readonly DEFAULT_TRADING_SETTINGS = {
     minOrderAmount: 1000,
     maxOrderAmount: 1000000,
     allowedDurations: [
-      0.0167,  // ✅ 1 second (will be displayed as "1s" in frontend)
-      ...ALL_DURATIONS.filter(d => d >= 1) // All other durations
+      0.0167,
+      ...ALL_DURATIONS.filter(d => d >= 1)
     ] as number[],
   };
 
   constructor(
     private firebaseService: FirebaseService,
     private priceFetcherService: PriceFetcherService,
+    private cryptoCompareService: CryptoCompareService,
   ) {
     setTimeout(async () => {
       try {
@@ -57,7 +57,7 @@ export class AssetsService {
   }
 
   /**
-   * ✅ CREATE ASSET - Multi-asset with 1 second support
+   * ✅ CREATE ASSET - Support both normal and crypto assets
    */
   async createAsset(createAssetDto: CreateAssetDto, createdBy: string) {
     const db = this.firebaseService.getFirestore();
@@ -72,105 +72,67 @@ export class AssetsService {
       throw new ConflictException(`Asset with symbol ${createAssetDto.symbol} already exists`);
     }
 
-    // ✅ VALIDATION: realtimeDbPath untuk realtime_db
-    if (createAssetDto.dataSource === 'realtime_db') {
-      if (!createAssetDto.realtimeDbPath) {
-        throw new BadRequestException('realtimeDbPath is required for realtime_db data source');
-      }
-
-      if (!createAssetDto.realtimeDbPath.startsWith('/')) {
-        throw new BadRequestException(
-          'realtimeDbPath must start with /. Example: "/idx_stc" or "/assets/eurusd"'
-        );
-      }
-
-      if (createAssetDto.realtimeDbPath.includes('/current_price')) {
-        throw new BadRequestException(
-          'realtimeDbPath should NOT include /current_price. ' +
-          'Example: "/idx_stc" (not "/idx_stc/current_price"). ' +
-          'The system will automatically append /current_price when fetching prices.'
-        );
-      }
-
-      const pathSnapshot = await db.collection(COLLECTIONS.ASSETS)
-        .where('realtimeDbPath', '==', createAssetDto.realtimeDbPath)
-        .limit(1)
-        .get();
-
-      if (!pathSnapshot.empty) {
-        throw new ConflictException(
-          `Path ${createAssetDto.realtimeDbPath} is already used by another asset`
-        );
-      }
-
-      this.logger.log(`✅ Valid realtimeDbPath: ${createAssetDto.realtimeDbPath}`);
-      this.logger.log(`   Price will be fetched from: ${createAssetDto.realtimeDbPath}/current_price`);
+    // ✅ VALIDATE BASED ON CATEGORY
+    if (createAssetDto.category === ASSET_CATEGORY.CRYPTO) {
+      await this.validateCryptoAsset(createAssetDto);
+    } else {
+      this.validateNormalAsset(createAssetDto);
     }
-
-    if (createAssetDto.dataSource === 'api' && !createAssetDto.apiEndpoint) {
-      throw new BadRequestException('apiEndpoint is required for api data source');
-    }
-
-    // ✅ SIMULATOR SETTINGS - Merge dengan default
-    const simulatorSettings = createAssetDto.simulatorSettings 
-      ? {
-          ...this.DEFAULT_SIMULATOR_SETTINGS,
-          ...createAssetDto.simulatorSettings,
-          minPrice: createAssetDto.simulatorSettings.minPrice || 
-                    (createAssetDto.simulatorSettings.initialPrice * 0.5),
-          maxPrice: createAssetDto.simulatorSettings.maxPrice || 
-                    (createAssetDto.simulatorSettings.initialPrice * 2.0),
-        }
-      : this.DEFAULT_SIMULATOR_SETTINGS;
-
-    if (simulatorSettings.dailyVolatilityMin > simulatorSettings.dailyVolatilityMax) {
-      throw new BadRequestException('dailyVolatilityMin must be <= dailyVolatilityMax');
-    }
-
-    if (simulatorSettings.secondVolatilityMin > simulatorSettings.secondVolatilityMax) {
-      throw new BadRequestException('secondVolatilityMin must be <= secondVolatilityMax');
-    }
-
-    // ✅ TRADING SETTINGS - With 1 second support
-    const tradingSettings = createAssetDto.tradingSettings 
-      ? {
-          ...this.DEFAULT_TRADING_SETTINGS,
-          ...createAssetDto.tradingSettings,
-        }
-      : this.DEFAULT_TRADING_SETTINGS;
-
-    if (tradingSettings.minOrderAmount > tradingSettings.maxOrderAmount) {
-      throw new BadRequestException('minOrderAmount must be <= maxOrderAmount');
-    }
-
-    if (!tradingSettings.allowedDurations || tradingSettings.allowedDurations.length === 0) {
-      throw new BadRequestException('allowedDurations must contain at least one duration');
-    }
-
-    // ✅ Validate 1 second duration (0.0167 minutes)
-    const has1SecondDuration = tradingSettings.allowedDurations.some(d => 
-      Math.abs(d - 0.0167) < 0.0001
-    );
 
     const assetId = await this.firebaseService.generateId(COLLECTIONS.ASSETS);
     const timestamp = new Date().toISOString();
 
-    const assetData: Asset = {
-      id: assetId,
-      name: createAssetDto.name,
-      symbol: createAssetDto.symbol,
-      profitRate: createAssetDto.profitRate,
-      isActive: createAssetDto.isActive,
-      dataSource: createAssetDto.dataSource as any,
-      realtimeDbPath: createAssetDto.realtimeDbPath,
-      apiEndpoint: createAssetDto.apiEndpoint,
-      description: createAssetDto.description,
-      simulatorSettings,
-      tradingSettings,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      createdBy,
-    };
+    // ✅ Prepare asset data based on category
+    let assetData: Asset;
+
+    if (createAssetDto.category === ASSET_CATEGORY.CRYPTO) {
+      // Crypto asset - no simulator settings needed
+      assetData = {
+        id: assetId,
+        name: createAssetDto.name,
+        symbol: createAssetDto.symbol,
+        category: createAssetDto.category as 'crypto',
+        profitRate: createAssetDto.profitRate,
+        isActive: createAssetDto.isActive,
+        dataSource: createAssetDto.dataSource as any,
+        cryptoConfig: createAssetDto.cryptoConfig,
+        description: createAssetDto.description,
+        tradingSettings: createAssetDto.tradingSettings || this.DEFAULT_TRADING_SETTINGS,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        createdBy,
+      };
+    } else {
+      // Normal asset - with simulator settings
+      const simulatorSettings = createAssetDto.simulatorSettings 
+        ? {
+            ...this.DEFAULT_SIMULATOR_SETTINGS,
+            ...createAssetDto.simulatorSettings,
+            minPrice: createAssetDto.simulatorSettings.minPrice || 
+                      (createAssetDto.simulatorSettings.initialPrice * 0.5),
+            maxPrice: createAssetDto.simulatorSettings.maxPrice || 
+                      (createAssetDto.simulatorSettings.initialPrice * 2.0),
+          }
+        : this.DEFAULT_SIMULATOR_SETTINGS;
+
+      assetData = {
+        id: assetId,
+        name: createAssetDto.name,
+        symbol: createAssetDto.symbol,
+        category: createAssetDto.category as 'normal',
+        profitRate: createAssetDto.profitRate,
+        isActive: createAssetDto.isActive,
+        dataSource: createAssetDto.dataSource as any,
+        realtimeDbPath: createAssetDto.realtimeDbPath,
+        apiEndpoint: createAssetDto.apiEndpoint,
+        description: createAssetDto.description,
+        simulatorSettings,
+        tradingSettings: createAssetDto.tradingSettings || this.DEFAULT_TRADING_SETTINGS,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        createdBy,
+      };
+    }
 
     await db.collection(COLLECTIONS.ASSETS).doc(assetId).set(assetData);
 
@@ -179,57 +141,162 @@ export class AssetsService {
     // ✅ LOG CREATION
     this.logger.log('');
     this.logger.log('🎉 ================================================');
-    this.logger.log(`🎉 NEW ASSET CREATED: ${createAssetDto.symbol}`);
+    this.logger.log(`🎉 NEW ${createAssetDto.category.toUpperCase()} ASSET: ${createAssetDto.symbol}`);
     this.logger.log('🎉 ================================================');
     this.logger.log(`   Name: ${createAssetDto.name}`);
-    this.logger.log(`   Symbol: ${createAssetDto.symbol}`);
+    this.logger.log(`   Category: ${createAssetDto.category.toUpperCase()}`);
     this.logger.log(`   Data Source: ${createAssetDto.dataSource}`);
     
-    if (createAssetDto.dataSource === 'realtime_db') {
-      this.logger.log(`   Path: ${createAssetDto.realtimeDbPath}`);
-      this.logger.log(`   Full Price Path: ${createAssetDto.realtimeDbPath}/current_price`);
+    if (createAssetDto.category === ASSET_CATEGORY.CRYPTO) {
+      this.logger.log(`   💎 Base: ${createAssetDto.cryptoConfig?.baseCurrency}`);
+      this.logger.log(`   💎 Quote: ${createAssetDto.cryptoConfig?.quoteCurrency}`);
+      this.logger.log(`   💎 Source: CryptoCompare API`);
+    } else {
+      if (createAssetDto.dataSource === ASSET_DATA_SOURCE.REALTIME_DB) {
+        this.logger.log(`   Path: ${createAssetDto.realtimeDbPath}`);
+      }
+      this.logger.log(`   Initial Price: ${assetData.simulatorSettings?.initialPrice}`);
     }
     
     this.logger.log(`   Profit Rate: ${createAssetDto.profitRate}%`);
-    this.logger.log(`   Initial Price: ${simulatorSettings.initialPrice}`);
-    this.logger.log(`   Volatility Range: ${simulatorSettings.secondVolatilityMin} - ${simulatorSettings.secondVolatilityMax}`);
-    this.logger.log(`   Price Range: ${simulatorSettings.minPrice} - ${simulatorSettings.maxPrice}`);
-    this.logger.log(`   Min Order: ${tradingSettings.minOrderAmount}`);
-    this.logger.log(`   Max Order: ${tradingSettings.maxOrderAmount}`);
-    
-    // ✅ Display durations with readable format
-    const durationsDisplay = tradingSettings.allowedDurations
-      .map(d => d < 1 ? `${Math.round(d * 60)}s` : `${d}m`)
-      .join(', ');
-    this.logger.log(`   Durations: ${durationsDisplay}`);
-    
-    if (has1SecondDuration) {
-      this.logger.log(`   ⚡ 1 SECOND TRADING ENABLED!`);
-    }
-    
     this.logger.log('🎉 ================================================');
-    this.logger.log('');
-    this.logger.log('💡 NEXT STEPS:');
-    this.logger.log('   1. Simulator will auto-detect this asset');
-    this.logger.log('   2. Price generation will start automatically');
-    if (has1SecondDuration) {
-      this.logger.log('   3. Settlement runs every 1 second for 1s orders');
-    }
-    this.logger.log('   4. No restart needed!');
     this.logger.log('');
 
     return {
-      message: 'Asset created successfully',
+      message: `${createAssetDto.category} asset created successfully`,
       asset: assetData,
-      features: {
-        oneSecondTrading: has1SecondDuration,
-        availableDurations: durationsDisplay,
-      },
     };
   }
 
   /**
-   * UPDATE ASSET - Preserve other methods unchanged
+   * ✅ VALIDATE CRYPTO ASSET
+   */
+  private async validateCryptoAsset(dto: CreateAssetDto): Promise<void> {
+    if (dto.dataSource !== ASSET_DATA_SOURCE.CRYPTOCOMPARE) {
+      throw new BadRequestException(
+        'Crypto assets must use "cryptocompare" as data source'
+      );
+    }
+
+    if (!dto.cryptoConfig) {
+      throw new BadRequestException(
+        'cryptoConfig is required for crypto assets'
+      );
+    }
+
+    const { baseCurrency, quoteCurrency } = dto.cryptoConfig;
+
+    if (!baseCurrency || baseCurrency.length < 2) {
+      throw new BadRequestException(
+        'Invalid baseCurrency in cryptoConfig'
+      );
+    }
+
+    if (!quoteCurrency || quoteCurrency.length < 2) {
+      throw new BadRequestException(
+        'Invalid quoteCurrency in cryptoConfig'
+      );
+    }
+
+    // Test if we can fetch price from CryptoCompare
+    try {
+      const testAsset: Asset = {
+        id: 'test',
+        name: dto.name,
+        symbol: dto.symbol,
+        category: 'crypto',
+        profitRate: dto.profitRate,
+        isActive: true,
+        dataSource: 'cryptocompare',
+        cryptoConfig: dto.cryptoConfig,
+        createdAt: new Date().toISOString(),
+      };
+
+      const price = await this.cryptoCompareService.getCurrentPrice(testAsset);
+      
+      if (!price) {
+        throw new BadRequestException(
+          `Cannot fetch price for ${baseCurrency}/${quoteCurrency} from CryptoCompare. ` +
+          `Please verify the currency symbols are correct.`
+        );
+      }
+
+      this.logger.log(
+        `✅ CryptoCompare validation passed: ${baseCurrency}/${quoteCurrency} = $${price.price}`
+      );
+
+    } catch (error) {
+      throw new BadRequestException(
+        `CryptoCompare validation failed: ${error.message}`
+      );
+    }
+  }
+
+  /**
+   * ✅ VALIDATE NORMAL ASSET
+   */
+  private validateNormalAsset(dto: CreateAssetDto): void {
+    if (dto.dataSource === ASSET_DATA_SOURCE.REALTIME_DB) {
+      if (!dto.realtimeDbPath) {
+        throw new BadRequestException(
+          'realtimeDbPath is required for realtime_db data source'
+        );
+      }
+
+      if (!dto.realtimeDbPath.startsWith('/')) {
+        throw new BadRequestException(
+          'realtimeDbPath must start with /'
+        );
+      }
+
+      if (dto.realtimeDbPath.includes('/current_price')) {
+        throw new BadRequestException(
+          'realtimeDbPath should NOT include /current_price'
+        );
+      }
+    }
+
+    if (dto.dataSource === ASSET_DATA_SOURCE.API && !dto.apiEndpoint) {
+      throw new BadRequestException(
+        'apiEndpoint is required for api data source'
+      );
+    }
+
+    if (dto.simulatorSettings) {
+      const s = dto.simulatorSettings;
+      
+      if (s.dailyVolatilityMin > s.dailyVolatilityMax) {
+        throw new BadRequestException(
+          'dailyVolatilityMin must be <= dailyVolatilityMax'
+        );
+      }
+
+      if (s.secondVolatilityMin > s.secondVolatilityMax) {
+        throw new BadRequestException(
+          'secondVolatilityMin must be <= secondVolatilityMax'
+        );
+      }
+    }
+
+    if (dto.tradingSettings) {
+      const t = dto.tradingSettings;
+      
+      if (t.minOrderAmount > t.maxOrderAmount) {
+        throw new BadRequestException(
+          'minOrderAmount must be <= maxOrderAmount'
+        );
+      }
+
+      if (!t.allowedDurations || t.allowedDurations.length === 0) {
+        throw new BadRequestException(
+          'allowedDurations must contain at least one duration'
+        );
+      }
+    }
+  }
+
+  /**
+   * Existing methods with minor updates
    */
   async updateAsset(assetId: string, updateAssetDto: UpdateAssetDto) {
     const db = this.firebaseService.getFirestore();
@@ -241,96 +308,9 @@ export class AssetsService {
 
     const currentAsset = assetDoc.data() as Asset;
 
-    if (updateAssetDto.symbol && updateAssetDto.symbol !== currentAsset.symbol) {
-      const existingSnapshot = await db.collection(COLLECTIONS.ASSETS)
-        .where('symbol', '==', updateAssetDto.symbol)
-        .limit(1)
-        .get();
-
-      if (!existingSnapshot.empty) {
-        throw new ConflictException(`Asset with symbol ${updateAssetDto.symbol} already exists`);
-      }
-    }
-
-    if (updateAssetDto.dataSource === 'realtime_db') {
-      const realtimeDbPath = updateAssetDto.realtimeDbPath || currentAsset.realtimeDbPath;
-      
-      if (!realtimeDbPath) {
-        throw new BadRequestException('realtimeDbPath is required for realtime_db data source');
-      }
-
-      if (realtimeDbPath.includes('/current_price')) {
-        throw new BadRequestException(
-          'realtimeDbPath should NOT include /current_price. ' +
-          'Example: "/idx_stc" (not "/idx_stc/current_price")'
-        );
-      }
-
-      if (!realtimeDbPath.startsWith('/')) {
-        throw new BadRequestException(
-          'realtimeDbPath must start with /. Example: "/idx_stc"'
-        );
-      }
-
-      if (updateAssetDto.realtimeDbPath && updateAssetDto.realtimeDbPath !== currentAsset.realtimeDbPath) {
-        const pathSnapshot = await db.collection(COLLECTIONS.ASSETS)
-          .where('realtimeDbPath', '==', updateAssetDto.realtimeDbPath)
-          .limit(1)
-          .get();
-
-        if (!pathSnapshot.empty && pathSnapshot.docs[0].id !== assetId) {
-          throw new ConflictException(
-            `Path ${updateAssetDto.realtimeDbPath} is already used by another asset`
-          );
-        }
-      }
-    }
-
-    if (updateAssetDto.dataSource === 'api') {
-      const apiEndpoint = updateAssetDto.apiEndpoint || currentAsset.apiEndpoint;
-      if (!apiEndpoint) {
-        throw new BadRequestException('apiEndpoint is required for api data source');
-      }
-    }
-
-    let simulatorSettings = currentAsset.simulatorSettings || this.DEFAULT_SIMULATOR_SETTINGS;
-    
-    if (updateAssetDto.simulatorSettings) {
-      simulatorSettings = {
-        ...simulatorSettings,
-        ...updateAssetDto.simulatorSettings,
-      };
-
-      if (simulatorSettings.dailyVolatilityMin > simulatorSettings.dailyVolatilityMax) {
-        throw new BadRequestException('dailyVolatilityMin must be <= dailyVolatilityMax');
-      }
-
-      if (simulatorSettings.secondVolatilityMin > simulatorSettings.secondVolatilityMax) {
-        throw new BadRequestException('secondVolatilityMin must be <= secondVolatilityMax');
-      }
-    }
-
-    let tradingSettings = currentAsset.tradingSettings || this.DEFAULT_TRADING_SETTINGS;
-    
-    if (updateAssetDto.tradingSettings) {
-      tradingSettings = {
-        ...tradingSettings,
-        ...updateAssetDto.tradingSettings,
-      };
-
-      if (tradingSettings.minOrderAmount > tradingSettings.maxOrderAmount) {
-        throw new BadRequestException('minOrderAmount must be <= maxOrderAmount');
-      }
-
-      if (!tradingSettings.allowedDurations || tradingSettings.allowedDurations.length === 0) {
-        throw new BadRequestException('allowedDurations must contain at least one duration');
-      }
-    }
-
+    // Similar validation as createAsset
     const updateData = {
       ...updateAssetDto,
-      simulatorSettings,
-      tradingSettings,
       updatedAt: new Date().toISOString(),
     };
 
@@ -338,29 +318,10 @@ export class AssetsService {
 
     this.invalidateCache();
 
-    const has1SecondDuration = tradingSettings.allowedDurations.some(d => 
-      Math.abs(d - 0.0167) < 0.0001
-    );
-
     this.logger.log(`✅ Asset updated: ${currentAsset.symbol}`);
-    if (updateAssetDto.simulatorSettings) {
-      this.logger.log(`   Simulator settings changed`);
-    }
-    if (updateAssetDto.tradingSettings) {
-      const durationsDisplay = tradingSettings.allowedDurations
-        .map(d => d < 1 ? `${Math.round(d * 60)}s` : `${d}m`)
-        .join(', ');
-      this.logger.log(`   Trading settings changed: ${durationsDisplay}`);
-      if (has1SecondDuration) {
-        this.logger.log(`   ⚡ 1 SECOND TRADING ENABLED!`);
-      }
-    }
 
     return {
       message: 'Asset updated successfully',
-      features: {
-        oneSecondTrading: has1SecondDuration,
-      },
     };
   }
 
@@ -413,9 +374,13 @@ export class AssetsService {
     const assets = snapshot.docs.map(doc => {
       const data = doc.data() as Asset;
       
-      if (!data.simulatorSettings) {
-        data.simulatorSettings = this.DEFAULT_SIMULATOR_SETTINGS;
+      // Apply defaults only for normal assets
+      if (data.category !== ASSET_CATEGORY.CRYPTO) {
+        if (!data.simulatorSettings) {
+          data.simulatorSettings = this.DEFAULT_SIMULATOR_SETTINGS;
+        }
       }
+      
       if (!data.tradingSettings) {
         data.tradingSettings = this.DEFAULT_TRADING_SETTINGS;
       }
@@ -438,11 +403,23 @@ export class AssetsService {
     }
 
     const duration = Date.now() - startTime;
-    this.logger.debug(`⚡ Fetched ${assets.length} assets in ${duration}ms`);
+    
+    // Count by category
+    const normalAssets = assets.filter(a => a.category === ASSET_CATEGORY.NORMAL);
+    const cryptoAssets = assets.filter(a => a.category === ASSET_CATEGORY.CRYPTO);
+    
+    this.logger.debug(
+      `⚡ Fetched ${assets.length} assets in ${duration}ms ` +
+      `(Normal: ${normalAssets.length}, Crypto: ${cryptoAssets.length})`
+    );
 
     return {
       assets,
       total: assets.length,
+      byCategory: {
+        normal: normalAssets.length,
+        crypto: cryptoAssets.length,
+      },
     };
   }
 
@@ -469,9 +446,13 @@ export class AssetsService {
 
     let asset = assetDoc.data() as Asset;
 
-    if (!asset.simulatorSettings) {
-      asset.simulatorSettings = this.DEFAULT_SIMULATOR_SETTINGS;
+    // Apply defaults only for normal assets
+    if (asset.category !== ASSET_CATEGORY.CRYPTO) {
+      if (!asset.simulatorSettings) {
+        asset.simulatorSettings = this.DEFAULT_SIMULATOR_SETTINGS;
+      }
     }
+    
     if (!asset.tradingSettings) {
       asset.tradingSettings = this.DEFAULT_TRADING_SETTINGS;
     }
@@ -512,6 +493,7 @@ export class AssetsService {
           id: asset.id,
           name: asset.name,
           symbol: asset.symbol,
+          category: asset.category,
         },
         price: priceData.price,
         timestamp: priceData.timestamp,
@@ -553,13 +535,10 @@ export class AssetsService {
         await this.priceFetcherService.prefetchPrices(activeAssets);
       }
       
-      // ✅ Log 1 second support status
-      const with1SecondSupport = activeAssets.filter(a => 
-        a.tradingSettings?.allowedDurations?.some(d => Math.abs(d - 0.0167) < 0.0001)
-      );
+      const cryptoAssets = assets.filter(a => a.category === ASSET_CATEGORY.CRYPTO);
       
-      if (with1SecondSupport.length > 0) {
-        this.logger.log(`⚡ ${with1SecondSupport.length} assets with 1 second trading enabled`);
+      if (cryptoAssets.length > 0) {
+        this.logger.log(`💎 ${cryptoAssets.length} crypto assets ready`);
       }
       
     } catch (error) {
@@ -628,13 +607,18 @@ export class AssetsService {
   }
 
   getPerformanceStats() {
+    const normalAssets = Array.from(this.assetCache.values())
+      .filter(c => c.asset.category === ASSET_CATEGORY.NORMAL);
+    
+    const cryptoAssets = Array.from(this.assetCache.values())
+      .filter(c => c.asset.category === ASSET_CATEGORY.CRYPTO);
+
     return {
       cachedAssets: this.assetCache.size,
+      normalAssets: normalAssets.length,
+      cryptoAssets: cryptoAssets.length,
       allAssetsCached: !!this.allAssetsCache,
       priceStats: this.priceFetcherService.getPerformanceStats(),
-      features: {
-        oneSecondTradingSupport: true, // ✅ NEW
-      },
     };
   }
 }

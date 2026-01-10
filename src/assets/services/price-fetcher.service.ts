@@ -1,10 +1,11 @@
 // src/assets/services/price-fetcher.service.ts
-// ✅ FIXED: Type errors in generateMockPrice
+// ✅ UPDATED: Added CryptoCompare support for crypto assets
 
 import { Injectable, Logger } from '@nestjs/common';
 import { FirebaseService } from '../../firebase/firebase.service';
+import { CryptoCompareService } from './cryptocompare.service';
 import { Asset, RealtimePrice } from '../../common/interfaces';
-import { TimezoneUtil } from '../../common/utils';
+import { ASSET_CATEGORY, ASSET_DATA_SOURCE } from '../../common/constants';
 
 @Injectable()
 export class PriceFetcherService {
@@ -27,7 +28,10 @@ export class PriceFetcherService {
   private consecutiveFailures = 0;
   private readonly MAX_CONSECUTIVE_FAILURES = 5;
 
-  constructor(private firebaseService: FirebaseService) {
+  constructor(
+    private firebaseService: FirebaseService,
+    private cryptoCompareService: CryptoCompareService,
+  ) {
     setInterval(() => this.cleanupStaleCache(), 5000);
   }
 
@@ -164,14 +168,20 @@ export class PriceFetcherService {
   }
 
   private async fetchPrice(asset: Asset): Promise<RealtimePrice | null> {
+    // ✅ UPDATED: Route based on category
+    if (asset.category === ASSET_CATEGORY.CRYPTO) {
+      return await this.fetchCryptoPrice(asset);
+    }
+
+    // Normal assets (existing logic)
     switch (asset.dataSource) {
-      case 'realtime_db':
+      case ASSET_DATA_SOURCE.REALTIME_DB:
         return await this.fetchFromRealtimeDb(asset);
       
-      case 'api':
+      case ASSET_DATA_SOURCE.API:
         return await this.fetchFromApi(asset);
       
-      case 'mock':
+      case ASSET_DATA_SOURCE.MOCK:
         return this.generateMockPrice(asset);
       
       default:
@@ -180,6 +190,35 @@ export class PriceFetcherService {
     }
   }
 
+  /**
+   * ✅ NEW: Fetch price for crypto assets from CryptoCompare
+   */
+  private async fetchCryptoPrice(asset: Asset): Promise<RealtimePrice | null> {
+    try {
+      const cryptoPrice = await this.cryptoCompareService.getCurrentPrice(asset);
+      
+      if (!cryptoPrice) {
+        return null;
+      }
+
+      // Convert CryptoComparePrice to RealtimePrice format
+      const realtimePrice: RealtimePrice = {
+        price: cryptoPrice.price,
+        timestamp: cryptoPrice.timestamp,
+        datetime: cryptoPrice.datetime,
+      };
+
+      return realtimePrice;
+
+    } catch (error) {
+      this.logger.error(`❌ Crypto price fetch error for ${asset.symbol}: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Existing methods (unchanged)
+   */
   private async fetchFromRealtimeDb(asset: Asset): Promise<RealtimePrice | null> {
     if (!asset.realtimeDbPath) {
       this.logger.error(`Realtime DB path not configured for ${asset.symbol}`);
@@ -251,19 +290,19 @@ export class PriceFetcherService {
   }
 
   private generateMockPrice(asset: Asset): RealtimePrice {
-  const settings = asset.simulatorSettings;
-  const basePrice = settings?.initialPrice ?? 1000;
-  const volatility = settings?.secondVolatilityMax ?? 0.0001;
-  
-  const variation = (Math.random() - 0.5) * 2 * basePrice * volatility;
-  const price = basePrice + variation;
+    const settings = asset.simulatorSettings;
+    const basePrice = settings?.initialPrice ?? 1000;
+    const volatility = settings?.secondVolatilityMax ?? 0.0001;
+    
+    const variation = (Math.random() - 0.5) * 2 * basePrice * volatility;
+    const price = basePrice + variation;
 
-  return {
-    price: Math.round(price * 1000000) / 1000000,
-    timestamp: TimezoneUtil.getCurrentTimestamp(),  // ✅ CONSISTENT
-    datetime: TimezoneUtil.formatDateTime(),        // ✅ CONSISTENT
-  };
-}
+    return {
+      price: Math.round(price * 1000000) / 1000000,
+      timestamp: Math.floor(Date.now() / 1000),
+      datetime: new Date().toISOString(),
+    };
+  }
 
   private cleanupStaleCache(): void {
     const now = Date.now();
@@ -303,7 +342,31 @@ export class PriceFetcherService {
   async batchFetchPrices(assets: Asset[]): Promise<Map<string, RealtimePrice | null>> {
     const results = new Map<string, RealtimePrice | null>();
     
-    const promises = assets.map(async (asset) => {
+    // Separate crypto assets for batch fetching
+    const cryptoAssets = assets.filter(a => a.category === ASSET_CATEGORY.CRYPTO);
+    const normalAssets = assets.filter(a => a.category !== ASSET_CATEGORY.CRYPTO);
+    
+    // Fetch crypto prices in batch
+    if (cryptoAssets.length > 0) {
+      const cryptoPrices = await this.cryptoCompareService.getMultiplePrices(cryptoAssets);
+      
+      for (const asset of cryptoAssets) {
+        const cryptoPrice = cryptoPrices.get(asset.id);
+        if (cryptoPrice) {
+          const realtimePrice: RealtimePrice = {
+            price: cryptoPrice.price,
+            timestamp: cryptoPrice.timestamp,
+            datetime: cryptoPrice.datetime,
+          };
+          results.set(asset.id, realtimePrice);
+        } else {
+          results.set(asset.id, null);
+        }
+      }
+    }
+    
+    // Fetch normal assets individually
+    const promises = normalAssets.map(async (asset) => {
       try {
         const price = await this.getCurrentPrice(asset, false);
         results.set(asset.id, price);
@@ -329,11 +392,13 @@ export class PriceFetcherService {
       cacheSize: this.priceCache.size,
       consecutiveFailures: this.consecutiveFailures,
       isHealthy: this.consecutiveFailures < this.MAX_CONSECUTIVE_FAILURES,
+      cryptoStats: this.cryptoCompareService.getStats(),
     };
   }
 
   clearCache(): void {
     this.priceCache.clear();
+    this.cryptoCompareService.clearCache();
     this.logger.log('🗑️ Price cache cleared');
   }
 

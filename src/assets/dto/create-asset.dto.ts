@@ -1,5 +1,5 @@
 // src/assets/dto/create-asset.dto.ts
-// ✅ UPDATED: Support for 1 second duration
+// ✅ UPDATED: Added category and cryptoConfig
 
 import { 
   IsString, IsNumber, IsBoolean, IsEnum, IsOptional, 
@@ -7,8 +7,9 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ASSET_CATEGORY, ASSET_DATA_SOURCE } from '../../common/constants';
 
-// ✅ Simulator Settings DTO
+// Simulator Settings DTO
 export class SimulatorSettingsDto {
   @ApiProperty({ 
     example: 40.022, 
@@ -20,7 +21,7 @@ export class SimulatorSettingsDto {
 
   @ApiProperty({ 
     example: 0.001, 
-    description: 'Minimum daily volatility (percentage, e.g., 0.001 = 0.1%)' 
+    description: 'Minimum daily volatility (percentage)' 
   })
   @IsNumber()
   @Min(0)
@@ -56,7 +57,7 @@ export class SimulatorSettingsDto {
 
   @ApiPropertyOptional({ 
     example: 20.0, 
-    description: 'Minimum allowed price (optional, default: 50% of initial)' 
+    description: 'Minimum allowed price (optional)' 
   })
   @IsOptional()
   @IsNumber()
@@ -65,7 +66,7 @@ export class SimulatorSettingsDto {
 
   @ApiPropertyOptional({ 
     example: 80.0, 
-    description: 'Maximum allowed price (optional, default: 200% of initial)' 
+    description: 'Maximum allowed price (optional)' 
   })
   @IsOptional()
   @IsNumber()
@@ -73,7 +74,7 @@ export class SimulatorSettingsDto {
   maxPrice?: number;
 }
 
-// ✅ UPDATED: Trading Settings with 1 second support
+// Trading Settings DTO
 export class TradingSettingsDto {
   @ApiProperty({ 
     example: 1000, 
@@ -93,7 +94,7 @@ export class TradingSettingsDto {
 
   @ApiProperty({ 
     example: [0.0167, 1, 2, 3, 4, 5, 15, 30, 45, 60], 
-    description: 'Allowed durations in minutes. Use 0.0167 for 1 second (will be displayed as "1s" in frontend)',
+    description: 'Allowed durations in minutes. Use 0.0167 for 1 second',
     type: [Number]
   })
   @IsArray()
@@ -102,21 +103,55 @@ export class TradingSettingsDto {
   allowedDurations: number[];
 }
 
+// ✅ NEW: Crypto Configuration DTO
+export class CryptoConfigDto {
+  @ApiProperty({ 
+    example: 'BTC',
+    description: 'Base currency (e.g., BTC, ETH, BNB)'
+  })
+  @IsString()
+  baseCurrency: string;
+
+  @ApiProperty({ 
+    example: 'USD',
+    description: 'Quote currency (e.g., USD, USDT, EUR)'
+  })
+  @IsString()
+  quoteCurrency: string;
+
+  @ApiPropertyOptional({ 
+    example: 'Binance',
+    description: 'Optional: Specific exchange to use'
+  })
+  @IsOptional()
+  @IsString()
+  exchange?: string;
+}
+
 // ✅ MAIN: Create Asset DTO
 export class CreateAssetDto {
   @ApiProperty({ 
-    example: 'IDX STC', 
+    example: 'Bitcoin',
     description: 'Asset display name' 
   })
   @IsString()
   name: string;
 
   @ApiProperty({ 
-    example: 'IDX_STC', 
+    example: 'BTC/USD',
     description: 'Asset symbol (unique identifier)' 
   })
   @IsString()
   symbol: string;
+
+  // ✅ NEW: Category field
+  @ApiProperty({ 
+    enum: ASSET_CATEGORY,
+    example: 'crypto',
+    description: 'Asset category: normal or crypto'
+  })
+  @IsEnum(ASSET_CATEGORY)
+  category: string;
 
   @ApiProperty({ 
     example: 85, 
@@ -135,16 +170,16 @@ export class CreateAssetDto {
   isActive: boolean;
 
   @ApiProperty({ 
-    enum: ['realtime_db', 'api', 'mock'], 
-    example: 'realtime_db',
-    description: 'Data source for price feeds'
+    enum: ASSET_DATA_SOURCE,
+    example: 'cryptocompare',
+    description: 'Data source: realtime_db, api, mock, or cryptocompare (for crypto)'
   })
-  @IsEnum(['realtime_db', 'api', 'mock'])
+  @IsEnum(ASSET_DATA_SOURCE)
   dataSource: string;
 
   @ApiPropertyOptional({ 
     example: '/idx_stc',
-    description: 'Firebase Realtime DB path (required if dataSource is realtime_db). Do NOT include /current_price suffix.'
+    description: 'Firebase Realtime DB path (for realtime_db data source)'
   })
   @IsOptional()
   @IsString()
@@ -152,14 +187,24 @@ export class CreateAssetDto {
 
   @ApiPropertyOptional({ 
     example: 'https://api.example.com/price',
-    description: 'API endpoint URL (required if dataSource is api)'
+    description: 'API endpoint URL (for api data source)'
   })
   @IsOptional()
   @IsString()
   apiEndpoint?: string;
 
+  // ✅ NEW: Crypto configuration
   @ApiPropertyOptional({ 
-    example: 'Indonesian stock index with 1 second trading support',
+    type: CryptoConfigDto,
+    description: 'Crypto configuration (required for crypto category with cryptocompare data source)'
+  })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => CryptoConfigDto)
+  cryptoConfig?: CryptoConfigDto;
+
+  @ApiPropertyOptional({ 
+    example: 'Bitcoin - Leading cryptocurrency',
     description: 'Asset description'
   })
   @IsOptional()
@@ -168,7 +213,7 @@ export class CreateAssetDto {
 
   @ApiPropertyOptional({ 
     type: SimulatorSettingsDto,
-    description: 'Simulator settings - controls price generation behavior'
+    description: 'Simulator settings (for non-crypto assets)'
   })
   @IsOptional()
   @ValidateNested()
@@ -177,7 +222,7 @@ export class CreateAssetDto {
 
   @ApiPropertyOptional({ 
     type: TradingSettingsDto,
-    description: 'Trading constraints and allowed durations (including 1 second support with 0.0167 value)'
+    description: 'Trading constraints and allowed durations'
   })
   @IsOptional()
   @ValidateNested()

@@ -1,5 +1,5 @@
 // src/common/interfaces/index.ts
-// ✅ ENHANCED: Complete user profile information
+// ✅ UPDATED: Added category and crypto-specific fields
 
 export interface ApiResponse<T = any> {
   success: boolean;
@@ -25,16 +25,13 @@ export interface PaginatedResponse<T> {
   totalPages: number;
 }
 
-// ✅ ENHANCED: User Profile Information
 export interface UserProfile {
-  // Personal Information
   fullName?: string;
   phoneNumber?: string;
   dateOfBirth?: string;
   gender?: 'male' | 'female' | 'other';
   nationality?: string;
   
-  // Address Information
   address?: {
     street?: string;
     city?: string;
@@ -43,7 +40,6 @@ export interface UserProfile {
     country?: string;
   };
   
-  // Identity Information (KYC)
   identityDocument?: {
     type?: 'ktp' | 'passport' | 'sim';
     number?: string;
@@ -53,7 +49,6 @@ export interface UserProfile {
     verifiedAt?: string;
   };
   
-  // Bank Information
   bankAccount?: {
     bankName?: string;
     accountNumber?: string;
@@ -62,13 +57,11 @@ export interface UserProfile {
     verifiedAt?: string;
   };
   
-  // Profile Picture
   avatar?: {
     url?: string;
     uploadedAt?: string;
   };
   
-  // Account Settings
   settings?: {
     emailNotifications?: boolean;
     smsNotifications?: boolean;
@@ -78,7 +71,6 @@ export interface UserProfile {
     timezone?: string;
   };
   
-  // Account Verification
   verification?: {
     emailVerified?: boolean;
     phoneVerified?: boolean;
@@ -88,7 +80,6 @@ export interface UserProfile {
   };
 }
 
-// ✅ ENHANCED: Complete User Interface
 export interface User {
   id: string;
   email: string;
@@ -96,15 +87,9 @@ export interface User {
   role: 'super_admin' | 'admin' | 'user';
   status: 'standard' | 'gold' | 'vip';
   isActive: boolean;
-  
-  // ✅ NEW: Profile Information
   profile?: UserProfile;
-  
-  // Referral
   referralCode: string;
   referredBy?: string;
-  
-  // Metadata
   createdAt: string;
   updatedAt?: string;
   createdBy?: string;
@@ -133,15 +118,34 @@ export interface Affiliate {
   createdAt: string;
 }
 
+// ✅ UPDATED: Asset Interface with Category and Crypto Support
 export interface Asset {
   id: string;
   name: string;
   symbol: string;
+  
+  // ✅ NEW: Category to differentiate normal assets from crypto
+  category: 'normal' | 'crypto';
+  
   profitRate: number;
   isActive: boolean;
-  dataSource: 'realtime_db' | 'api' | 'mock';
+  
+  // Data source can now be: realtime_db, api, mock, or cryptocompare
+  dataSource: 'realtime_db' | 'api' | 'mock' | 'cryptocompare';
+  
+  // For realtime_db data source
   realtimeDbPath?: string;
+  
+  // For api data source
   apiEndpoint?: string;
+  
+  // ✅ NEW: For cryptocompare data source (crypto assets only)
+  cryptoConfig?: {
+    baseCurrency: string;    // e.g., "BTC", "ETH"
+    quoteCurrency: string;   // e.g., "USD", "USDT"
+    exchange?: string;       // Optional: specific exchange like "Binance"
+  };
+  
   description?: string;
   
   simulatorSettings?: {
@@ -193,6 +197,19 @@ export interface RealtimePrice {
   datetime: string;
 }
 
+// ✅ NEW: CryptoCompare Price Response
+export interface CryptoComparePrice {
+  price: number;
+  timestamp: number;
+  datetime: string;
+  volume24h?: number;
+  change24h?: number;
+  changePercent24h?: number;
+  high24h?: number;
+  low24h?: number;
+  marketCap?: number;
+}
+
 export interface BalanceSummary {
   realBalance: number;
   demoBalance: number;
@@ -217,7 +234,6 @@ export interface AffiliateStats {
   referrals: Affiliate[];
 }
 
-// ✅ NEW: Profile Update History
 export interface ProfileUpdateHistory {
   id: string;
   user_id: string;
