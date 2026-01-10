@@ -1,3 +1,4 @@
+// src/admin/admin.service.ts
 import { Injectable, NotFoundException, ConflictException, Logger, BadRequestException } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 import { FirebaseService } from '../firebase/firebase.service';
@@ -366,18 +367,18 @@ export class AdminService {
       .orderBy('createdAt', 'desc')
       .get();
 
-    const balanceHistory = balanceSnapshot.docs.map(doc => doc.data() as Balance);
-    const realBalanceHistory = balanceHistory.filter(b => b.accountType === BALANCE_ACCOUNT_TYPE.REAL);
-    const demoBalanceHistory = balanceHistory.filter(b => b.accountType === BALANCE_ACCOUNT_TYPE.DEMO);
+    const balanceHistory: Balance[] = balanceSnapshot.docs.map(doc => doc.data() as Balance);
+    const realBalanceHistory: Balance[] = balanceHistory.filter(b => b.accountType === BALANCE_ACCOUNT_TYPE.REAL);
+    const demoBalanceHistory: Balance[] = balanceHistory.filter(b => b.accountType === BALANCE_ACCOUNT_TYPE.DEMO);
 
     const ordersSnapshot = await db.collection(COLLECTIONS.ORDERS)
       .where('user_id', '==', userId)
       .orderBy('createdAt', 'desc')
       .get();
 
-    const ordersHistory = ordersSnapshot.docs.map(doc => doc.data() as BinaryOrder);
-    const realOrders = ordersHistory.filter(o => o.accountType === BALANCE_ACCOUNT_TYPE.REAL);
-    const demoOrders = ordersHistory.filter(o => o.accountType === BALANCE_ACCOUNT_TYPE.DEMO);
+    const ordersHistory: BinaryOrder[] = ordersSnapshot.docs.map(doc => doc.data() as BinaryOrder);
+    const realOrders: BinaryOrder[] = ordersHistory.filter(o => o.accountType === BALANCE_ACCOUNT_TYPE.REAL);
+    const demoOrders: BinaryOrder[] = ordersHistory.filter(o => o.accountType === BALANCE_ACCOUNT_TYPE.DEMO);
 
     const realStats = this.calculateAccountStats(realBalanceHistory, realOrders);
     const demoStats = this.calculateAccountStats(demoBalanceHistory, demoOrders);
@@ -415,9 +416,9 @@ export class AdminService {
       .where('user_id', '==', userId)
       .get();
 
-    const orders = ordersSnapshot.docs.map(doc => doc.data() as BinaryOrder);
-    const realOrders = orders.filter(o => o.accountType === BALANCE_ACCOUNT_TYPE.REAL);
-    const demoOrders = orders.filter(o => o.accountType === BALANCE_ACCOUNT_TYPE.DEMO);
+    const orders: BinaryOrder[] = ordersSnapshot.docs.map(doc => doc.data() as BinaryOrder);
+    const realOrders: BinaryOrder[] = orders.filter(o => o.accountType === BALANCE_ACCOUNT_TYPE.REAL);
+    const demoOrders: BinaryOrder[] = orders.filter(o => o.accountType === BALANCE_ACCOUNT_TYPE.DEMO);
 
     const realStats = this.calculateTradingStats(realOrders);
     const demoStats = this.calculateTradingStats(demoOrders);
@@ -425,11 +426,11 @@ export class AdminService {
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
     
-    const recentRealOrders = realOrders.filter(
+    const recentRealOrders: BinaryOrder[] = realOrders.filter(
       o => new Date(o.createdAt) >= sevenDaysAgo
     );
 
-    const recentDemoOrders = demoOrders.filter(
+    const recentDemoOrders: BinaryOrder[] = demoOrders.filter(
       o => new Date(o.createdAt) >= sevenDaysAgo
     );
 
@@ -468,22 +469,22 @@ export class AdminService {
     const db = this.firebaseService.getFirestore();
 
     const usersSnapshot = await db.collection(COLLECTIONS.USERS).get();
-    const users = usersSnapshot.docs.map(doc => doc.data() as User);
+    const users: User[] = usersSnapshot.docs.map(doc => doc.data() as User);
 
     const ordersSnapshot = await db.collection(COLLECTIONS.ORDERS).get();
-    const orders = ordersSnapshot.docs.map(doc => doc.data() as BinaryOrder);
+    const orders: BinaryOrder[] = ordersSnapshot.docs.map(doc => doc.data() as BinaryOrder);
 
     const balanceSnapshot = await db.collection(COLLECTIONS.BALANCE).get();
-    const transactions = balanceSnapshot.docs.map(doc => doc.data() as Balance);
+    const transactions: Balance[] = balanceSnapshot.docs.map(doc => doc.data() as Balance);
 
     const affiliatesSnapshot = await db.collection(COLLECTIONS.AFFILIATES).get();
-    const affiliates = affiliatesSnapshot.docs.map(doc => doc.data() as Affiliate);
+    const affiliates: Affiliate[] = affiliatesSnapshot.docs.map(doc => doc.data() as Affiliate);
 
-    const realOrders = orders.filter(o => o.accountType === BALANCE_ACCOUNT_TYPE.REAL);
-    const demoOrders = orders.filter(o => o.accountType === BALANCE_ACCOUNT_TYPE.DEMO);
+    const realOrders: BinaryOrder[] = orders.filter(o => o.accountType === BALANCE_ACCOUNT_TYPE.REAL);
+    const demoOrders: BinaryOrder[] = orders.filter(o => o.accountType === BALANCE_ACCOUNT_TYPE.DEMO);
 
-    const realTransactions = transactions.filter(t => t.accountType === BALANCE_ACCOUNT_TYPE.REAL);
-    const demoTransactions = transactions.filter(t => t.accountType === BALANCE_ACCOUNT_TYPE.DEMO);
+    const realTransactions: Balance[] = transactions.filter(t => t.accountType === BALANCE_ACCOUNT_TYPE.REAL);
+    const demoTransactions: Balance[] = transactions.filter(t => t.accountType === BALANCE_ACCOUNT_TYPE.DEMO);
 
     const totalUsers = users.length;
     const activeUsers = users.filter(u => u.isActive).length;
@@ -495,8 +496,8 @@ export class AdminService {
       vip: users.filter(u => u.status === USER_STATUS.VIP).length,
     };
 
-    const completedAffiliates = affiliates.filter(a => a.status === AFFILIATE_STATUS.COMPLETED);
-    const pendingAffiliates = affiliates.filter(a => a.status === AFFILIATE_STATUS.PENDING);
+    const completedAffiliates: Affiliate[] = affiliates.filter(a => a.status === AFFILIATE_STATUS.COMPLETED);
+    const pendingAffiliates: Affiliate[] = affiliates.filter(a => a.status === AFFILIATE_STATUS.PENDING);
     const totalAffiliateCommissions = completedAffiliates.reduce((sum, a) => sum + a.commission_amount, 0);
 
     const realStats = {
