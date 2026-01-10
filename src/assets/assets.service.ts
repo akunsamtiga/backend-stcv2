@@ -59,114 +59,204 @@ export class AssetsService {
   /**
    * ✅ CREATE ASSET - Support both normal and crypto assets
    */
-  async createAsset(createAssetDto: CreateAssetDto, createdBy: string) {
-    const db = this.firebaseService.getFirestore();
+  // src/assets/assets.service.ts
+// ✅ ENHANCED: Stricter validation and better sync with simulator
 
-    // Check duplicate symbol
-    const existingSnapshot = await db.collection(COLLECTIONS.ASSETS)
-      .where('symbol', '==', createAssetDto.symbol)
-      .limit(1)
-      .get();
+async createAsset(createAssetDto: CreateAssetDto, createdBy: string) {
+  const db = this.firebaseService.getFirestore();
 
-    if (!existingSnapshot.empty) {
-      throw new ConflictException(`Asset with symbol ${createAssetDto.symbol} already exists`);
+  // Check duplicate symbol
+  const existingSnapshot = await db.collection(COLLECTIONS.ASSETS)
+    .where('symbol', '==', createAssetDto.symbol)
+    .limit(1)
+    .get();
+
+  if (!existingSnapshot.empty) {
+    throw new ConflictException(`Asset with symbol ${createAssetDto.symbol} already exists`);
+  }
+
+  // ✅ VALIDATION 1: Category must be valid
+  if (!createAssetDto.category || 
+      (createAssetDto.category !== ASSET_CATEGORY.NORMAL && 
+       createAssetDto.category !== ASSET_CATEGORY.CRYPTO)) {
+    throw new BadRequestException(
+      `Category is required and must be either 'normal' or 'crypto'`
+    );
+  }
+
+  // ✅ VALIDATION 2: Category-specific validation
+  if (createAssetDto.category === ASSET_CATEGORY.CRYPTO) {
+    await this.validateCryptoAsset(createAssetDto);
+  } else if (createAssetDto.category === ASSET_CATEGORY.NORMAL) {
+    this.validateNormalAsset(createAssetDto);
+  }
+
+  const assetId = await this.firebaseService.generateId(COLLECTIONS.ASSETS);
+  const timestamp = new Date().toISOString();
+
+  let assetData: Asset;
+
+  if (createAssetDto.category === ASSET_CATEGORY.CRYPTO) {
+    // ✅ CRYPTO ASSET
+    if (createAssetDto.dataSource !== ASSET_DATA_SOURCE.CRYPTOCOMPARE) {
+      throw new BadRequestException(
+        'Crypto assets must use "cryptocompare" as data source'
+      );
     }
 
-    // ✅ VALIDATE BASED ON CATEGORY
-    if (createAssetDto.category === ASSET_CATEGORY.CRYPTO) {
-      await this.validateCryptoAsset(createAssetDto);
-    } else {
-      this.validateNormalAsset(createAssetDto);
+    if (!createAssetDto.cryptoConfig) {
+      throw new BadRequestException(
+        'cryptoConfig is required for crypto assets'
+      );
     }
 
-    const assetId = await this.firebaseService.generateId(COLLECTIONS.ASSETS);
-    const timestamp = new Date().toISOString();
-
-    // ✅ Prepare asset data based on category
-    let assetData: Asset;
-
-    if (createAssetDto.category === ASSET_CATEGORY.CRYPTO) {
-      // Crypto asset - no simulator settings needed
-      assetData = {
-        id: assetId,
-        name: createAssetDto.name,
-        symbol: createAssetDto.symbol,
-        category: createAssetDto.category as 'crypto',
-        profitRate: createAssetDto.profitRate,
-        isActive: createAssetDto.isActive,
-        dataSource: createAssetDto.dataSource as any,
-        cryptoConfig: createAssetDto.cryptoConfig,
-        description: createAssetDto.description,
-        tradingSettings: createAssetDto.tradingSettings || this.DEFAULT_TRADING_SETTINGS,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-        createdBy,
-      };
-    } else {
-      // Normal asset - with simulator settings
-      const simulatorSettings = createAssetDto.simulatorSettings 
-        ? {
-            ...this.DEFAULT_SIMULATOR_SETTINGS,
-            ...createAssetDto.simulatorSettings,
-            minPrice: createAssetDto.simulatorSettings.minPrice || 
-                      (createAssetDto.simulatorSettings.initialPrice * 0.5),
-            maxPrice: createAssetDto.simulatorSettings.maxPrice || 
-                      (createAssetDto.simulatorSettings.initialPrice * 2.0),
-          }
-        : this.DEFAULT_SIMULATOR_SETTINGS;
-
-      assetData = {
-        id: assetId,
-        name: createAssetDto.name,
-        symbol: createAssetDto.symbol,
-        category: createAssetDto.category as 'normal',
-        profitRate: createAssetDto.profitRate,
-        isActive: createAssetDto.isActive,
-        dataSource: createAssetDto.dataSource as any,
-        realtimeDbPath: createAssetDto.realtimeDbPath,
-        apiEndpoint: createAssetDto.apiEndpoint,
-        description: createAssetDto.description,
-        simulatorSettings,
-        tradingSettings: createAssetDto.tradingSettings || this.DEFAULT_TRADING_SETTINGS,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-        createdBy,
-      };
+    // ✅ EXPLICITLY prevent simulatorSettings for crypto
+    if (createAssetDto.simulatorSettings) {
+      throw new BadRequestException(
+        'Crypto assets should not have simulatorSettings (they use real-time API)'
+      );
     }
 
-    await db.collection(COLLECTIONS.ASSETS).doc(assetId).set(assetData);
+    assetData = {
+      id: assetId,
+      name: createAssetDto.name,
+      symbol: createAssetDto.symbol,
+      category: 'crypto', // ✅ Explicitly set
+      profitRate: createAssetDto.profitRate,
+      isActive: createAssetDto.isActive,
+      dataSource: 'cryptocompare',
+      cryptoConfig: createAssetDto.cryptoConfig,
+      description: createAssetDto.description,
+      tradingSettings: createAssetDto.tradingSettings || this.DEFAULT_TRADING_SETTINGS,
+      // ✅ NO simulatorSettings
+      // ✅ NO realtimeDbPath
+      // ✅ NO apiEndpoint
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      createdBy,
+    };
+  } else {
+    // ✅ NORMAL ASSET
+    if (createAssetDto.dataSource === ASSET_DATA_SOURCE.CRYPTOCOMPARE) {
+      throw new BadRequestException(
+        'Normal assets cannot use "cryptocompare" data source. Use "realtime_db" or "mock".'
+      );
+    }
 
-    this.invalidateCache();
+    // ✅ EXPLICITLY prevent cryptoConfig for normal
+    if (createAssetDto.cryptoConfig) {
+      throw new BadRequestException(
+        'Normal assets should not have cryptoConfig (only for crypto category)'
+      );
+    }
 
-    // ✅ LOG CREATION
-    this.logger.log('');
-    this.logger.log('🎉 ================================================');
-    this.logger.log(`🎉 NEW ${createAssetDto.category.toUpperCase()} ASSET: ${createAssetDto.symbol}`);
-    this.logger.log('🎉 ================================================');
-    this.logger.log(`   Name: ${createAssetDto.name}`);
-    this.logger.log(`   Category: ${createAssetDto.category.toUpperCase()}`);
-    this.logger.log(`   Data Source: ${createAssetDto.dataSource}`);
-    
-    if (createAssetDto.category === ASSET_CATEGORY.CRYPTO) {
-      this.logger.log(`   💎 Base: ${createAssetDto.cryptoConfig?.baseCurrency}`);
-      this.logger.log(`   💎 Quote: ${createAssetDto.cryptoConfig?.quoteCurrency}`);
-      this.logger.log(`   💎 Source: CryptoCompare API`);
-    } else {
-      if (createAssetDto.dataSource === ASSET_DATA_SOURCE.REALTIME_DB) {
-        this.logger.log(`   Path: ${createAssetDto.realtimeDbPath}`);
+    // ✅ Validate data source specific requirements
+    if (createAssetDto.dataSource === ASSET_DATA_SOURCE.REALTIME_DB) {
+      if (!createAssetDto.realtimeDbPath) {
+        throw new BadRequestException(
+          'realtimeDbPath is required for realtime_db data source'
+        );
       }
-      this.logger.log(`   Initial Price: ${assetData.simulatorSettings?.initialPrice}`);
-    }
-    
-    this.logger.log(`   Profit Rate: ${createAssetDto.profitRate}%`);
-    this.logger.log('🎉 ================================================');
-    this.logger.log('');
 
-    return {
-      message: `${createAssetDto.category} asset created successfully`,
-      asset: assetData,
+      // ✅ Ensure path starts with /
+      if (!createAssetDto.realtimeDbPath.startsWith('/')) {
+        throw new BadRequestException(
+          'realtimeDbPath must start with / (e.g., /idx_stc)'
+        );
+      }
+
+      // ✅ Warn if path includes /current_price
+      if (createAssetDto.realtimeDbPath.includes('/current_price')) {
+        throw new BadRequestException(
+          'realtimeDbPath should NOT include /current_price (added automatically)'
+        );
+      }
+    }
+
+    if (createAssetDto.dataSource === ASSET_DATA_SOURCE.API) {
+      if (!createAssetDto.apiEndpoint) {
+        throw new BadRequestException(
+          'apiEndpoint is required for api data source'
+        );
+      }
+    }
+
+    // ✅ Build simulator settings with defaults
+    const simulatorSettings = createAssetDto.simulatorSettings 
+      ? {
+          ...this.DEFAULT_SIMULATOR_SETTINGS,
+          ...createAssetDto.simulatorSettings,
+          // ✅ Auto-calculate min/max if not provided
+          minPrice: createAssetDto.simulatorSettings.minPrice || 
+                    (createAssetDto.simulatorSettings.initialPrice * 0.5),
+          maxPrice: createAssetDto.simulatorSettings.maxPrice || 
+                    (createAssetDto.simulatorSettings.initialPrice * 2.0),
+        }
+      : this.DEFAULT_SIMULATOR_SETTINGS;
+
+    assetData = {
+      id: assetId,
+      name: createAssetDto.name,
+      symbol: createAssetDto.symbol,
+      category: 'normal', // ✅ Explicitly set
+      profitRate: createAssetDto.profitRate,
+      isActive: createAssetDto.isActive,
+      dataSource: createAssetDto.dataSource as any,
+      realtimeDbPath: createAssetDto.realtimeDbPath,
+      apiEndpoint: createAssetDto.apiEndpoint,
+      description: createAssetDto.description,
+      simulatorSettings,
+      tradingSettings: createAssetDto.tradingSettings || this.DEFAULT_TRADING_SETTINGS,
+      // ✅ NO cryptoConfig
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      createdBy,
     };
   }
+
+  // ✅ Save to Firestore
+  await db.collection(COLLECTIONS.ASSETS).doc(assetId).set(assetData);
+
+  this.invalidateCache();
+
+  // ✅ LOG CREATION
+  this.logger.log('');
+  this.logger.log('🎉 ================================================');
+  this.logger.log(`🎉 NEW ${createAssetDto.category.toUpperCase()} ASSET: ${createAssetDto.symbol}`);
+  this.logger.log('🎉 ================================================');
+  this.logger.log(`   Name: ${createAssetDto.name}`);
+  this.logger.log(`   Category: ${createAssetDto.category.toUpperCase()}`);
+  this.logger.log(`   Data Source: ${createAssetDto.dataSource}`);
+  
+  if (createAssetDto.category === ASSET_CATEGORY.CRYPTO) {
+    this.logger.log(`   💎 Base: ${createAssetDto.cryptoConfig?.baseCurrency}`);
+    this.logger.log(`   💎 Quote: ${createAssetDto.cryptoConfig?.quoteCurrency}`);
+    this.logger.log(`   💎 Source: CryptoCompare API`);
+    this.logger.log(`   ⚡ Simulator: NOT USED (real-time API)`);
+  } else {
+    if (createAssetDto.dataSource === ASSET_DATA_SOURCE.REALTIME_DB) {
+      this.logger.log(`   📍 Path: ${createAssetDto.realtimeDbPath}`);
+      this.logger.log(`   ⚡ Simulator: WILL BE SIMULATED`);
+    } else if (createAssetDto.dataSource === ASSET_DATA_SOURCE.MOCK) {
+      this.logger.log(`   📍 Path: /mock/${createAssetDto.symbol.toLowerCase()}`);
+      this.logger.log(`   ⚡ Simulator: WILL BE SIMULATED (mock mode)`);
+    }
+    this.logger.log(`   💰 Initial Price: ${assetData.simulatorSettings?.initialPrice}`);
+    this.logger.log(`   📊 Volatility: ${assetData.simulatorSettings?.secondVolatilityMin} - ${assetData.simulatorSettings?.secondVolatilityMax}`);
+  }
+  
+  this.logger.log(`   📈 Profit Rate: ${createAssetDto.profitRate}%`);
+  this.logger.log('🎉 ================================================');
+  this.logger.log('');
+
+  return {
+    message: `${createAssetDto.category} asset created successfully`,
+    asset: assetData,
+    simulatorNote: createAssetDto.category === 'crypto' 
+      ? '💎 This crypto asset will use real-time CryptoCompare API (not simulated)'
+      : '📊 This normal asset will be simulated by the trading-simulator service',
+  };
+}
 
   /**
    * ✅ VALIDATE CRYPTO ASSET
@@ -236,64 +326,87 @@ export class AssetsService {
    * ✅ VALIDATE NORMAL ASSET
    */
   private validateNormalAsset(dto: CreateAssetDto): void {
-    if (dto.dataSource === ASSET_DATA_SOURCE.REALTIME_DB) {
-      if (!dto.realtimeDbPath) {
-        throw new BadRequestException(
-          'realtimeDbPath is required for realtime_db data source'
-        );
-      }
+  // ✅ Must NOT have cryptocompare as data source
+  if (dto.dataSource === ASSET_DATA_SOURCE.CRYPTOCOMPARE) {
+    throw new BadRequestException(
+      'Normal assets cannot use "cryptocompare" data source'
+    );
+  }
 
-      if (!dto.realtimeDbPath.startsWith('/')) {
-        throw new BadRequestException(
-          'realtimeDbPath must start with /'
-        );
-      }
+  // ✅ Must NOT have cryptoConfig
+  if (dto.cryptoConfig) {
+    throw new BadRequestException(
+      'Normal assets should not have cryptoConfig (only for crypto category)'
+    );
+  }
 
-      if (dto.realtimeDbPath.includes('/current_price')) {
-        throw new BadRequestException(
-          'realtimeDbPath should NOT include /current_price'
-        );
-      }
-    }
-
-    if (dto.dataSource === ASSET_DATA_SOURCE.API && !dto.apiEndpoint) {
+  // ✅ Validate dataSource-specific requirements
+  if (dto.dataSource === ASSET_DATA_SOURCE.REALTIME_DB) {
+    if (!dto.realtimeDbPath) {
       throw new BadRequestException(
-        'apiEndpoint is required for api data source'
+        'realtimeDbPath is required for realtime_db data source'
       );
     }
 
-    if (dto.simulatorSettings) {
-      const s = dto.simulatorSettings;
-      
-      if (s.dailyVolatilityMin > s.dailyVolatilityMax) {
-        throw new BadRequestException(
-          'dailyVolatilityMin must be <= dailyVolatilityMax'
-        );
-      }
-
-      if (s.secondVolatilityMin > s.secondVolatilityMax) {
-        throw new BadRequestException(
-          'secondVolatilityMin must be <= secondVolatilityMax'
-        );
-      }
+    if (!dto.realtimeDbPath.startsWith('/')) {
+      throw new BadRequestException(
+        'realtimeDbPath must start with /'
+      );
     }
 
-    if (dto.tradingSettings) {
-      const t = dto.tradingSettings;
-      
-      if (t.minOrderAmount > t.maxOrderAmount) {
-        throw new BadRequestException(
-          'minOrderAmount must be <= maxOrderAmount'
-        );
-      }
-
-      if (!t.allowedDurations || t.allowedDurations.length === 0) {
-        throw new BadRequestException(
-          'allowedDurations must contain at least one duration'
-        );
-      }
+    if (dto.realtimeDbPath.includes('/current_price')) {
+      throw new BadRequestException(
+        'realtimeDbPath should NOT include /current_price (added automatically)'
+      );
     }
   }
+
+  if (dto.dataSource === ASSET_DATA_SOURCE.API && !dto.apiEndpoint) {
+    throw new BadRequestException(
+      'apiEndpoint is required for api data source'
+    );
+  }
+
+  // ✅ Validate simulator settings if provided
+  if (dto.simulatorSettings) {
+    const s = dto.simulatorSettings;
+    
+    if (s.dailyVolatilityMin > s.dailyVolatilityMax) {
+      throw new BadRequestException(
+        'dailyVolatilityMin must be <= dailyVolatilityMax'
+      );
+    }
+
+    if (s.secondVolatilityMin > s.secondVolatilityMax) {
+      throw new BadRequestException(
+        'secondVolatilityMin must be <= secondVolatilityMax'
+      );
+    }
+
+    if (s.minPrice && s.maxPrice && s.minPrice >= s.maxPrice) {
+      throw new BadRequestException(
+        'minPrice must be < maxPrice'
+      );
+    }
+  }
+
+  // ✅ Validate trading settings
+  if (dto.tradingSettings) {
+    const t = dto.tradingSettings;
+    
+    if (t.minOrderAmount > t.maxOrderAmount) {
+      throw new BadRequestException(
+        'minOrderAmount must be <= maxOrderAmount'
+      );
+    }
+
+    if (!t.allowedDurations || t.allowedDurations.length === 0) {
+      throw new BadRequestException(
+        'allowedDurations must contain at least one duration'
+      );
+    }
+  }
+}
 
   /**
    * Existing methods with minor updates
