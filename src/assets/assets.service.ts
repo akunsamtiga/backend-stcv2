@@ -1,5 +1,5 @@
 // src/assets/assets.service.ts
-// ✅ FIXED: Better error handling for crypto assets
+// ✅ COMPLETE - Fixed class instance to plain object conversion for Firestore
 
 import { Injectable, NotFoundException, ConflictException, Logger, RequestTimeoutException, BadRequestException } from '@nestjs/common';
 import { FirebaseService } from '../firebase/firebase.service';
@@ -57,11 +57,53 @@ export class AssetsService {
   }
 
   /**
-   * ✅ CREATE ASSET - FIXED: Better validation and error handling
+   * ✅ CRITICAL: Helper to convert DTO classes to plain objects
+   * Firestore doesn't support objects with custom prototypes
+   */
+  private toPlainObject(obj: any): any {
+    if (obj === null || obj === undefined) {
+      return obj;
+    }
+    
+    // Handle arrays
+    if (Array.isArray(obj)) {
+      return obj.map(item => this.toPlainObject(item));
+    }
+    
+    // Handle dates
+    if (obj instanceof Date) {
+      return obj.toISOString();
+    }
+    
+    // Handle objects (including class instances)
+    if (typeof obj === 'object') {
+      const plain: any = {};
+      
+      // Get all enumerable properties (including from class)
+      for (const key in obj) {
+        if (obj.hasOwnProperty(key)) {
+          const value = obj[key];
+          
+          // Skip undefined values
+          if (value !== undefined) {
+            plain[key] = this.toPlainObject(value);
+          }
+        }
+      }
+      
+      return plain;
+    }
+    
+    // Primitive values
+    return obj;
+  }
+
+  /**
+   * ✅ CREATE ASSET - FIXED with plain object conversion
    */
   async createAsset(createAssetDto: CreateAssetDto, createdBy: string) {
     try {
-      this.logger.log('📝 Starting asset creation...');
+      this.logger.log('🔍 Starting asset creation...');
       this.logger.log(`Category: ${createAssetDto.category}`);
       this.logger.log(`DataSource: ${createAssetDto.dataSource}`);
       
@@ -101,17 +143,24 @@ export class AssetsService {
       const assetId = await this.firebaseService.generateId(COLLECTIONS.ASSETS);
       const timestamp = new Date().toISOString();
 
-      let assetData: Asset;
+      let assetData: any;
 
       if (createAssetDto.category === ASSET_CATEGORY.CRYPTO) {
-        // ✅ CRYPTO ASSET
+        // ===================================
+        // 💎 CRYPTO ASSET
+        // ===================================
         this.logger.log('💎 Creating crypto asset...');
         
         if (!createAssetDto.cryptoConfig) {
           throw new BadRequestException('cryptoConfig is required for crypto assets');
         }
 
-        // ✅ Build crypto asset data
+        // ✅ CRITICAL: Convert DTOs to plain objects
+        const plainCryptoConfig = this.toPlainObject(createAssetDto.cryptoConfig);
+        const plainTradingSettings = this.toPlainObject(
+          createAssetDto.tradingSettings || this.DEFAULT_TRADING_SETTINGS
+        );
+
         assetData = {
           id: assetId,
           name: createAssetDto.name,
@@ -121,23 +170,27 @@ export class AssetsService {
           isActive: createAssetDto.isActive,
           dataSource: 'cryptocompare',
           cryptoConfig: {
-            baseCurrency: createAssetDto.cryptoConfig.baseCurrency.toUpperCase(),
-            quoteCurrency: createAssetDto.cryptoConfig.quoteCurrency.toUpperCase(),
-            exchange: createAssetDto.cryptoConfig.exchange || undefined,
+            baseCurrency: plainCryptoConfig.baseCurrency.toUpperCase(),
+            quoteCurrency: plainCryptoConfig.quoteCurrency.toUpperCase(),
+            exchange: plainCryptoConfig.exchange || undefined,
           },
           description: createAssetDto.description || '',
-          tradingSettings: createAssetDto.tradingSettings || this.DEFAULT_TRADING_SETTINGS,
+          tradingSettings: plainTradingSettings,
           createdAt: timestamp,
           updatedAt: timestamp,
           createdBy,
         };
 
-        // ✅ NO simulatorSettings
-        // ✅ NO realtimeDbPath
-        // ✅ NO apiEndpoint
+        this.logger.log('💎 Crypto asset data prepared:', {
+          pair: `${assetData.cryptoConfig.baseCurrency}/${assetData.cryptoConfig.quoteCurrency}`,
+          hasSimulatorSettings: !!assetData.simulatorSettings,
+          hasRealtimeDbPath: !!assetData.realtimeDbPath,
+        });
 
       } else {
-        // ✅ NORMAL ASSET
+        // ===================================
+        // 📊 NORMAL ASSET
+        // ===================================
         this.logger.log('📊 Creating normal asset...');
         
         // Validate data source requirements
@@ -150,17 +203,18 @@ export class AssetsService {
           }
         }
 
-        // Build simulator settings
-        const simulatorSettings = createAssetDto.simulatorSettings 
-          ? {
-              ...this.DEFAULT_SIMULATOR_SETTINGS,
-              ...createAssetDto.simulatorSettings,
-              minPrice: createAssetDto.simulatorSettings.minPrice || 
-                        (createAssetDto.simulatorSettings.initialPrice * 0.5),
-              maxPrice: createAssetDto.simulatorSettings.maxPrice || 
-                        (createAssetDto.simulatorSettings.initialPrice * 2.0),
-            }
-          : this.DEFAULT_SIMULATOR_SETTINGS;
+        // ✅ CRITICAL: Convert DTOs to plain objects
+        const baseSimulatorSettings = createAssetDto.simulatorSettings || this.DEFAULT_SIMULATOR_SETTINGS;
+        const plainSimulatorSettings = this.toPlainObject({
+          ...this.DEFAULT_SIMULATOR_SETTINGS,
+          ...baseSimulatorSettings,
+          minPrice: baseSimulatorSettings.minPrice || (baseSimulatorSettings.initialPrice * 0.5),
+          maxPrice: baseSimulatorSettings.maxPrice || (baseSimulatorSettings.initialPrice * 2.0),
+        });
+
+        const plainTradingSettings = this.toPlainObject(
+          createAssetDto.tradingSettings || this.DEFAULT_TRADING_SETTINGS
+        );
 
         assetData = {
           id: assetId,
@@ -173,17 +227,26 @@ export class AssetsService {
           realtimeDbPath: createAssetDto.realtimeDbPath,
           apiEndpoint: createAssetDto.apiEndpoint,
           description: createAssetDto.description || '',
-          simulatorSettings,
-          tradingSettings: createAssetDto.tradingSettings || this.DEFAULT_TRADING_SETTINGS,
+          simulatorSettings: plainSimulatorSettings,
+          tradingSettings: plainTradingSettings,
           createdAt: timestamp,
           updatedAt: timestamp,
           createdBy,
         };
+
+        this.logger.log('📊 Normal asset data prepared:', {
+          dataSource: assetData.dataSource,
+          hasCryptoConfig: !!assetData.cryptoConfig,
+          hasSimulatorSettings: !!assetData.simulatorSettings,
+        });
       }
+
+      // ✅ CRITICAL: Final conversion to ensure no class instances
+      const plainAssetData = this.toPlainObject(assetData);
 
       // ✅ Save to Firestore
       this.logger.log(`💾 Saving asset to Firestore...`);
-      await db.collection(COLLECTIONS.ASSETS).doc(assetId).set(assetData);
+      await db.collection(COLLECTIONS.ASSETS).doc(assetId).set(plainAssetData);
 
       this.invalidateCache();
 
@@ -206,7 +269,7 @@ export class AssetsService {
           this.logger.log(`   📍 Path: ${createAssetDto.realtimeDbPath}`);
           this.logger.log(`   ⚡ Simulator: WILL BE SIMULATED`);
         }
-        this.logger.log(`   💰 Initial Price: ${assetData.simulatorSettings?.initialPrice}`);
+        this.logger.log(`   💰 Initial Price: ${plainAssetData.simulatorSettings?.initialPrice}`);
       }
       
       this.logger.log(`   📈 Profit Rate: ${createAssetDto.profitRate}%`);
@@ -215,7 +278,7 @@ export class AssetsService {
 
       return {
         message: `${createAssetDto.category} asset created successfully`,
-        asset: assetData,
+        asset: plainAssetData,
         simulatorNote: createAssetDto.category === 'crypto' 
           ? '💎 This crypto asset will use real-time CryptoCompare API (not simulated)'
           : '📊 This normal asset will be simulated by the trading-simulator service',
@@ -225,7 +288,6 @@ export class AssetsService {
       this.logger.error('❌ Asset creation error:', error.message);
       this.logger.error(error.stack);
       
-      // Re-throw with better error message
       if (error instanceof BadRequestException || 
           error instanceof ConflictException) {
         throw error;
@@ -238,7 +300,7 @@ export class AssetsService {
   }
 
   /**
-   * ✅ VALIDATE CRYPTO ASSET - FIXED: Better error handling
+   * ✅ VALIDATE CRYPTO ASSET
    */
   private async validateCryptoAsset(dto: CreateAssetDto): Promise<void> {
     this.logger.log('🔍 Validating crypto asset configuration...');
@@ -427,7 +489,7 @@ export class AssetsService {
   }
 
   /**
-   * Rest of the methods remain the same...
+   * ✅ UPDATE ASSET - FIXED with plain object conversion
    */
   async updateAsset(assetId: string, updateAssetDto: UpdateAssetDto) {
     const db = this.firebaseService.getFirestore();
@@ -439,12 +501,13 @@ export class AssetsService {
 
     const currentAsset = assetDoc.data() as Asset;
 
-    const updateData = {
+    // ✅ Convert DTO to plain object
+    const plainUpdateData = this.toPlainObject({
       ...updateAssetDto,
       updatedAt: new Date().toISOString(),
-    };
+    });
 
-    await db.collection(COLLECTIONS.ASSETS).doc(assetId).update(updateData);
+    await db.collection(COLLECTIONS.ASSETS).doc(assetId).update(plainUpdateData);
 
     this.invalidateCache();
 
@@ -455,6 +518,9 @@ export class AssetsService {
     };
   }
 
+  /**
+   * ✅ DELETE ASSET
+   */
   async deleteAsset(assetId: string) {
     const db = this.firebaseService.getFirestore();
 
@@ -476,6 +542,9 @@ export class AssetsService {
     };
   }
 
+  /**
+   * ✅ GET ALL ASSETS
+   */
   async getAllAssets(activeOnly: boolean = false) {
     const startTime = Date.now();
     
@@ -552,6 +621,9 @@ export class AssetsService {
     };
   }
 
+  /**
+   * ✅ GET ASSET BY ID
+   */
   async getAssetById(assetId: string): Promise<Asset> {
     const startTime = Date.now();
     
@@ -597,6 +669,9 @@ export class AssetsService {
     return asset;
   }
 
+  /**
+   * ✅ GET CURRENT PRICE
+   */
   async getCurrentPrice(assetId: string) {
     const startTime = Date.now();
     
@@ -642,10 +717,16 @@ export class AssetsService {
     }
   }
 
+  /**
+   * ✅ GET ASSET SETTINGS
+   */
   async getAssetSettings(assetId: string): Promise<Asset> {
     return this.getAssetById(assetId);
   }
 
+  /**
+   * ✅ WARMUP CACHE
+   */
   private async warmupCache(): Promise<void> {
     try {
       if (!this.firebaseService.isFirestoreReady()) {
@@ -675,6 +756,9 @@ export class AssetsService {
     }
   }
 
+  /**
+   * ✅ REFRESH CACHE
+   */
   private async refreshCache(): Promise<void> {
     try {
       await this.getAllAssets(false);
@@ -690,12 +774,18 @@ export class AssetsService {
     }
   }
 
+  /**
+   * ✅ INVALIDATE CACHE
+   */
   private invalidateCache(): void {
     this.assetCache.clear();
     this.allAssetsCache = null;
     this.logger.debug('Asset cache invalidated');
   }
 
+  /**
+   * ✅ BATCH GET ASSETS
+   */
   async batchGetAssets(assetIds: string[]): Promise<Map<string, Asset>> {
     const results = new Map<string, Asset>();
     
@@ -730,11 +820,17 @@ export class AssetsService {
     return results;
   }
 
+  /**
+   * ✅ GET ACTIVE ASSETS
+   */
   async getActiveAssets(): Promise<Asset[]> {
     const { assets } = await this.getAllAssets(true);
     return assets;
   }
 
+  /**
+   * ✅ GET PERFORMANCE STATS
+   */
   getPerformanceStats() {
     const normalAssets = Array.from(this.assetCache.values())
       .filter(c => c.asset.category === ASSET_CATEGORY.NORMAL);
