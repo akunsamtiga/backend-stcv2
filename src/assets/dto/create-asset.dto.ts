@@ -1,5 +1,5 @@
 // src/assets/dto/create-asset.dto.ts
-// ✅ UPDATED: Added category and cryptoConfig
+// ✅ COMPLETE: Support for both normal and crypto assets with Realtime DB storage
 
 import { 
   IsString, IsNumber, IsBoolean, IsEnum, IsOptional, 
@@ -103,7 +103,7 @@ export class TradingSettingsDto {
   allowedDurations: number[];
 }
 
-// ✅ NEW: Crypto Configuration DTO
+// ✅ Crypto Configuration DTO
 export class CryptoConfigDto {
   @ApiProperty({ 
     example: 'BTC',
@@ -144,7 +144,7 @@ export class CreateAssetDto {
   @IsString()
   symbol: string;
 
-  // ✅ NEW: Category field
+  // ✅ Category field
   @ApiProperty({ 
     enum: ASSET_CATEGORY,
     example: 'crypto',
@@ -177,9 +177,13 @@ export class CreateAssetDto {
   @IsEnum(ASSET_DATA_SOURCE)
   dataSource: string;
 
+  // ✅ UPDATED: Now optional for both normal and crypto assets
   @ApiPropertyOptional({ 
-    example: '/idx_stc',
-    description: 'Firebase Realtime DB path (for realtime_db data source)'
+    example: '/crypto/btc_usd',
+    description: `Firebase Realtime DB path. 
+    - For normal assets with realtime_db source: REQUIRED (e.g., /idx_stc)
+    - For crypto assets: OPTIONAL (auto-generated if not provided, e.g., /crypto/btc_usd)
+    - Must start with /`,
   })
   @IsOptional()
   @IsString()
@@ -187,13 +191,13 @@ export class CreateAssetDto {
 
   @ApiPropertyOptional({ 
     example: 'https://api.example.com/price',
-    description: 'API endpoint URL (for api data source)'
+    description: 'API endpoint URL (for api data source only, not for crypto)'
   })
   @IsOptional()
   @IsString()
   apiEndpoint?: string;
 
-  // ✅ NEW: Crypto configuration
+  // ✅ Crypto configuration
   @ApiPropertyOptional({ 
     type: CryptoConfigDto,
     description: 'Crypto configuration (required for crypto category with cryptocompare data source)'
@@ -211,18 +215,20 @@ export class CreateAssetDto {
   @IsString()
   description?: string;
 
+  // ✅ Simulator settings (for normal assets only)
   @ApiPropertyOptional({ 
     type: SimulatorSettingsDto,
-    description: 'Simulator settings (for non-crypto assets)'
+    description: 'Simulator settings (for normal assets only, NOT for crypto)'
   })
   @IsOptional()
   @ValidateNested()
   @Type(() => SimulatorSettingsDto)
   simulatorSettings?: SimulatorSettingsDto;
 
+  // ✅ Trading settings (for both normal and crypto)
   @ApiPropertyOptional({ 
     type: TradingSettingsDto,
-    description: 'Trading constraints and allowed durations'
+    description: 'Trading constraints and allowed durations (for both normal and crypto assets)'
   })
   @IsOptional()
   @ValidateNested()

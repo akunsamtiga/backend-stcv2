@@ -1,8 +1,9 @@
 // src/assets/services/cryptocompare.service.ts
-// ✅ NEW: CryptoCompare API Integration
+// ✅ COMPLETE: All TypeScript errors fixed
 
 import { Injectable, Logger } from '@nestjs/common';
 import axios, { AxiosInstance } from 'axios';
+import { FirebaseService } from '../../firebase/firebase.service';
 import { CRYPTOCOMPARE_CONFIG } from '../../common/constants';
 import { CryptoComparePrice, Asset } from '../../common/interfaces';
 import { TimezoneUtil } from '../../common/utils';
@@ -12,7 +13,6 @@ export class CryptoCompareService {
   private readonly logger = new Logger(CryptoCompareService.name);
   private readonly axios: AxiosInstance;
   
-  // Cache for crypto prices
   private priceCache: Map<string, {
     price: CryptoComparePrice;
     timestamp: number;
@@ -20,13 +20,15 @@ export class CryptoCompareService {
   
   private readonly CACHE_TTL = CRYPTOCOMPARE_CONFIG.CACHE_TTL;
   
-  // Statistics
   private apiCallCount = 0;
   private cacheHitCount = 0;
   private errorCount = 0;
   private lastCallTime = 0;
+  private realtimeWriteCount = 0;
 
-  constructor() {
+  constructor(
+    private firebaseService: FirebaseService,
+  ) {
     this.axios = axios.create({
       baseURL: CRYPTOCOMPARE_CONFIG.BASE_URL,
       timeout: CRYPTOCOMPARE_CONFIG.TIMEOUT,
@@ -35,12 +37,11 @@ export class CryptoCompareService {
       },
     });
 
-    // Cleanup stale cache every minute
     setInterval(() => this.cleanupCache(), 60000);
   }
 
   /**
-   * ✅ Get current price for a crypto asset
+   * ✅ Get current price and write to Realtime DB
    */
   async getCurrentPrice(asset: Asset): Promise<CryptoComparePrice | null> {
     if (!asset.cryptoConfig) {
@@ -95,6 +96,11 @@ export class CryptoCompareService {
         timestamp: Date.now(),
       });
 
+      // ✅ FIX: Write to Realtime Database (no truthiness check)
+      this.writePriceToRealtimeDb(asset, price).catch(error => {
+        this.logger.error(`RT DB write error: ${error.message}`);
+      });
+
       this.logger.debug(
         `✅ Fetched ${cacheKey}: $${price.price} ` +
         `(24h: ${price.changePercent24h?.toFixed(2)}%)`
@@ -108,7 +114,6 @@ export class CryptoCompareService {
         `❌ CryptoCompare API error for ${cacheKey}: ${error.message}`
       );
 
-      // Try to return stale cache if available
       const staleCache = this.getStaleCache(cacheKey);
       if (staleCache) {
         this.logger.warn(`⚠️ Using stale cache for ${cacheKey}`);
@@ -177,7 +182,12 @@ export class CryptoCompareService {
     const byCurrency = new Map<string, { asset: Asset; quote: string }[]>();
     
     for (const asset of assets) {
-      if (!asset.cryptoConfig) continue;
+      // ✅ FIX: Guard check before accessing cryptoConfig
+      if (!asset.cryptoConfig) {
+        this.logger.warn(`Asset ${asset.symbol} missing cryptoConfig, skipping`);
+        results.set(asset.id, null);
+        continue;
+      }
       
       const base = asset.cryptoConfig.baseCurrency;
       if (!byCurrency.has(base)) {
@@ -218,6 +228,11 @@ export class CryptoCompareService {
             };
             
             results.set(asset.id, price);
+            
+            // ✅ Write to Realtime DB (fire and forget)
+            this.writePriceToRealtimeDb(asset, price).catch(err => {
+              this.logger.error(`RT DB batch write error: ${err.message}`);
+            });
           } else {
             results.set(asset.id, null);
           }
@@ -272,6 +287,90 @@ export class CryptoCompareService {
   }
 
   /**
+   * ✅ FIX: Write crypto price to Realtime Database
+   */
+  private async writePriceToRealtimeDb(
+    asset: Asset,
+    price: CryptoComparePrice
+  ): Promise<void> {
+    try {
+      // ✅ FIX: Guard check before accessing cryptoConfig
+      if (!asset.cryptoConfig) {
+        this.logger.warn(
+          `Asset ${asset.symbol} missing cryptoConfig, skipping RT DB write`
+        );
+        return;
+      }
+
+      // Determine path for crypto asset
+      const path = this.getCryptoAssetPath(asset);
+
+      // Prepare price data
+      const priceData = {
+        price: price.price,
+        timestamp: price.timestamp,
+        datetime: price.datetime,
+        datetime_iso: TimezoneUtil.toISOString(),
+        timezone: 'Asia/Jakarta',
+        
+        // Crypto-specific data
+        volume24h: price.volume24h || 0,
+        change24h: price.change24h || 0,
+        changePercent24h: price.changePercent24h || 0,
+        high24h: price.high24h || 0,
+        low24h: price.low24h || 0,
+        marketCap: price.marketCap || 0,
+        
+        // Metadata
+        source: 'cryptocompare',
+        pair: `${asset.cryptoConfig.baseCurrency}/${asset.cryptoConfig.quoteCurrency}`,
+      };
+
+      // Write to Realtime Database
+      await this.firebaseService.setRealtimeDbValue(
+        `${path}/current_price`,
+        priceData,
+        false
+      );
+
+      this.realtimeWriteCount++;
+      
+      this.logger.debug(
+        `📝 Wrote ${asset.symbol} to RT DB: ${path}`
+      );
+
+    } catch (error) {
+      this.logger.error(
+        `❌ RT DB write failed for ${asset.symbol}: ${error.message}`
+      );
+    }
+  }
+
+  /**
+   * ✅ FIX: Get Realtime DB path with proper guard checks
+   */
+  private getCryptoAssetPath(asset: Asset): string {
+    // ✅ FIX: Guard check before accessing cryptoConfig
+    if (!asset.cryptoConfig) {
+      this.logger.warn(
+        `Asset ${asset.symbol} missing cryptoConfig, using fallback path`
+      );
+      return `/crypto/${asset.symbol.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+    }
+
+    // Option 1: Use realtimeDbPath if provided
+    if (asset.realtimeDbPath) {
+      return asset.realtimeDbPath.startsWith('/') 
+        ? asset.realtimeDbPath 
+        : `/${asset.realtimeDbPath}`;
+    }
+
+    // Option 2: Use standard crypto path format
+    const { baseCurrency, quoteCurrency } = asset.cryptoConfig;
+    return `/crypto/${baseCurrency.toLowerCase()}_${quoteCurrency.toLowerCase()}`;
+  }
+
+  /**
    * Private helper methods
    */
   private getCachedPrice(key: string): CryptoComparePrice | null {
@@ -291,7 +390,6 @@ export class CryptoCompareService {
     if (!cached) return null;
 
     const age = Date.now() - cached.timestamp;
-    // Allow stale cache up to 30 seconds
     if (age > 30000) {
       return null;
     }
@@ -301,7 +399,7 @@ export class CryptoCompareService {
 
   private cleanupCache(): void {
     const now = Date.now();
-    const staleThreshold = 60000; // 1 minute
+    const staleThreshold = 60000;
 
     for (const [key, cached] of this.priceCache.entries()) {
       if (now - cached.timestamp > staleThreshold) {
@@ -325,6 +423,7 @@ export class CryptoCompareService {
       cacheHitRate: `${cacheHitRate}%`,
       errors: this.errorCount,
       cacheSize: this.priceCache.size,
+      realtimeWrites: this.realtimeWriteCount,
       lastCall: this.lastCallTime > 0
         ? `${Math.floor((Date.now() - this.lastCallTime) / 1000)}s ago`
         : 'Never',
@@ -332,7 +431,7 @@ export class CryptoCompareService {
   }
 
   /**
-   * ✅ Clear cache (for testing/debugging)
+   * ✅ Clear cache
    */
   clearCache(): void {
     this.priceCache.clear();
