@@ -9,6 +9,7 @@ import { AssetsService } from './assets.service';
 import { PriceFetcherService } from './services/price-fetcher.service';
 import { CryptoCompareService } from './services/cryptocompare.service';
 import { AuthModule } from '../auth/auth.module';
+import { CryptoPriceSchedulerService } from './services/crypto-price-scheduler.service'; // ✅ NEW
 
 @Module({
   imports: [
@@ -29,11 +30,13 @@ import { AuthModule } from '../auth/auth.module';
     AssetsService, 
     PriceFetcherService,
     CryptoCompareService, // ✅ NEW
+    CryptoPriceSchedulerService,
   ],
   exports: [
     AssetsService, 
     PriceFetcherService,
     CryptoCompareService, // ✅ NEW
+    CryptoPriceSchedulerService,
   ],
 })
 export class AssetsModule {}
