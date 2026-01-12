@@ -87,244 +87,208 @@ export class AssetsService {
   }
 
   async createAsset(createAssetDto: CreateAssetDto, createdBy: string) {
-  try {
-    this.logger.log('🔧 Starting asset creation...');
-    this.logger.log(`Category: ${createAssetDto.category}`);
-    this.logger.log(`DataSource: ${createAssetDto.dataSource}`);
-    
-    const db = this.firebaseService.getFirestore();
-
-    // ============================================
-    // CHECK: Duplicate Symbol
-    // ============================================
-    const existingSnapshot = await db.collection(COLLECTIONS.ASSETS)
-      .where('symbol', '==', createAssetDto.symbol)
-      .limit(1)
-      .get();
-
-    if (!existingSnapshot.empty) {
-      throw new ConflictException(`Asset with symbol ${createAssetDto.symbol} already exists`);
-    }
-
-    // ============================================
-    // VALIDATE: Category
-    // ============================================
-    if (!createAssetDto.category) {
-      throw new BadRequestException('Category is required (normal or crypto)');
-    }
-
-    if (createAssetDto.category !== ASSET_CATEGORY.NORMAL && 
-        createAssetDto.category !== ASSET_CATEGORY.CRYPTO) {
-      throw new BadRequestException(
-        `Invalid category: ${createAssetDto.category}. Must be 'normal' or 'crypto'`
-      );
-    }
-
-    // ============================================
-    // VALIDATE: Based on Category
-    // ============================================
-    if (createAssetDto.category === ASSET_CATEGORY.CRYPTO) {
-      this.logger.log('🔍 Validating crypto asset...');
-      await this.validateCryptoAsset(createAssetDto);
-    } else {
-      this.logger.log('🔍 Validating normal asset...');
-      this.validateNormalAsset(createAssetDto);
-    }
-
-    // ============================================
-    // PREPARE: Common Data
-    // ============================================
-    const assetId = await this.firebaseService.generateId(COLLECTIONS.ASSETS);
-    const timestamp = new Date().toISOString();
-
-    let assetData: any;
-
-    // ============================================
-    // CREATE: CRYPTO ASSET
-    // ============================================
-    if (createAssetDto.category === ASSET_CATEGORY.CRYPTO) {
-      this.logger.log('💎 Creating crypto asset...');
+    try {
+      this.logger.log('🔧 Starting asset creation...');
+      this.logger.log(`Category: ${createAssetDto.category}`);
+      this.logger.log(`DataSource: ${createAssetDto.dataSource}`);
       
-      if (!createAssetDto.cryptoConfig) {
-        throw new BadRequestException('cryptoConfig is required for crypto assets');
+      const db = this.firebaseService.getFirestore();
+
+      const existingSnapshot = await db.collection(COLLECTIONS.ASSETS)
+        .where('symbol', '==', createAssetDto.symbol)
+        .limit(1)
+        .get();
+
+      if (!existingSnapshot.empty) {
+        throw new ConflictException(`Asset with symbol ${createAssetDto.symbol} already exists`);
       }
 
-      const plainCryptoConfig = this.toPlainObject(createAssetDto.cryptoConfig);
-      const plainTradingSettings = this.toPlainObject(
-        createAssetDto.tradingSettings || this.DEFAULT_TRADING_SETTINGS
-      );
+      if (!createAssetDto.category) {
+        throw new BadRequestException('Category is required (normal or crypto)');
+      }
 
-      // ✅ Generate Realtime DB path
-      const realtimeDbPath = createAssetDto.realtimeDbPath || 
-        `/crypto/${plainCryptoConfig.baseCurrency.toLowerCase()}_${plainCryptoConfig.quoteCurrency.toLowerCase()}`;
+      if (createAssetDto.category !== ASSET_CATEGORY.NORMAL && 
+          createAssetDto.category !== ASSET_CATEGORY.CRYPTO) {
+        throw new BadRequestException(
+          `Invalid category: ${createAssetDto.category}. Must be 'normal' or 'crypto'`
+        );
+      }
 
-      assetData = {
-        id: assetId,
-        name: createAssetDto.name,
-        symbol: createAssetDto.symbol,
-        category: 'crypto',
-        profitRate: createAssetDto.profitRate,
-        isActive: createAssetDto.isActive,
-        dataSource: 'cryptocompare',
+      if (createAssetDto.category === ASSET_CATEGORY.CRYPTO) {
+        this.logger.log('🔍 Validating crypto asset...');
+        await this.validateCryptoAsset(createAssetDto);
+      } else {
+        this.logger.log('🔍 Validating normal asset...');
+        this.validateNormalAsset(createAssetDto);
+      }
+
+      const assetId = await this.firebaseService.generateId(COLLECTIONS.ASSETS);
+      const timestamp = new Date().toISOString();
+
+      let assetData: any;
+
+      if (createAssetDto.category === ASSET_CATEGORY.CRYPTO) {
+        this.logger.log('💎 Creating crypto asset...');
         
-        // ✅ IMPORTANT: Store Realtime DB path for crypto
-        realtimeDbPath: realtimeDbPath,
-        
-        cryptoConfig: {
-          baseCurrency: plainCryptoConfig.baseCurrency.toUpperCase(),
-          quoteCurrency: plainCryptoConfig.quoteCurrency.toUpperCase(),
-          exchange: plainCryptoConfig.exchange || undefined,
-        },
-        description: createAssetDto.description || '',
-        tradingSettings: plainTradingSettings,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-        createdBy,
-      };
-
-      this.logger.log('💎 Crypto asset data prepared:', {
-        pair: `${assetData.cryptoConfig.baseCurrency}/${assetData.cryptoConfig.quoteCurrency}`,
-        path: realtimeDbPath,
-      });
-
-    } 
-    // ============================================
-    // CREATE: NORMAL ASSET
-    // ============================================
-    else {
-      this.logger.log('📊 Creating normal asset...');
-      
-      // Validate dataSource-specific requirements
-      if (createAssetDto.dataSource === ASSET_DATA_SOURCE.REALTIME_DB) {
-        if (!createAssetDto.realtimeDbPath) {
-          throw new BadRequestException('realtimeDbPath is required for realtime_db data source');
+        if (!createAssetDto.cryptoConfig) {
+          throw new BadRequestException('cryptoConfig is required for crypto assets');
         }
-        if (!createAssetDto.realtimeDbPath.startsWith('/')) {
-          throw new BadRequestException('realtimeDbPath must start with /');
-        }
-      }
 
-      // Prepare simulator settings
-      const baseSimulatorSettings = createAssetDto.simulatorSettings || this.DEFAULT_SIMULATOR_SETTINGS;
-      const plainSimulatorSettings = this.toPlainObject({
-        ...this.DEFAULT_SIMULATOR_SETTINGS,
-        ...baseSimulatorSettings,
-        minPrice: baseSimulatorSettings.minPrice || (baseSimulatorSettings.initialPrice * 0.5),
-        maxPrice: baseSimulatorSettings.maxPrice || (baseSimulatorSettings.initialPrice * 2.0),
-      });
+        const plainCryptoConfig = this.toPlainObject(createAssetDto.cryptoConfig);
+        const plainTradingSettings = this.toPlainObject(
+          createAssetDto.tradingSettings || this.DEFAULT_TRADING_SETTINGS
+        );
 
-      const plainTradingSettings = this.toPlainObject(
-        createAssetDto.tradingSettings || this.DEFAULT_TRADING_SETTINGS
-      );
+        const realtimeDbPath = createAssetDto.realtimeDbPath || 
+          `/crypto/${plainCryptoConfig.baseCurrency.toLowerCase()}_${plainCryptoConfig.quoteCurrency.toLowerCase()}`;
 
-      assetData = {
-        id: assetId,
-        name: createAssetDto.name,
-        symbol: createAssetDto.symbol,
-        category: 'normal',
-        profitRate: createAssetDto.profitRate,
-        isActive: createAssetDto.isActive,
-        dataSource: createAssetDto.dataSource as any,
-        realtimeDbPath: createAssetDto.realtimeDbPath,
-        apiEndpoint: createAssetDto.apiEndpoint,
-        description: createAssetDto.description || '',
-        simulatorSettings: plainSimulatorSettings,
-        tradingSettings: plainTradingSettings,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-        createdBy,
-      };
-
-      this.logger.log('📊 Normal asset data prepared:', {
-        dataSource: assetData.dataSource,
-        realtimeDbPath: assetData.realtimeDbPath,
-      });
-    }
-
-    // ============================================
-    // SAVE: To Firestore
-    // ============================================
-    const plainAssetData = this.toPlainObject(assetData);
-
-    this.logger.log(`💾 Saving asset to Firestore...`);
-    await db.collection(COLLECTIONS.ASSETS).doc(assetId).set(plainAssetData);
-
-    // ============================================
-    // CACHE: Invalidate
-    // ============================================
-    this.invalidateCache();
-
-    // ============================================
-    // LOG: Success Summary
-    // ============================================
-    this.logger.log('');
-    this.logger.log('🎉 ================================================');
-    this.logger.log(`🎉 NEW ${createAssetDto.category.toUpperCase()} ASSET: ${createAssetDto.symbol}`);
-    this.logger.log('🎉 ================================================');
-    this.logger.log(`   Name: ${createAssetDto.name}`);
-    this.logger.log(`   Category: ${createAssetDto.category.toUpperCase()}`);
-    this.logger.log(`   Data Source: ${createAssetDto.dataSource}`);
-    
-    if (createAssetDto.category === ASSET_CATEGORY.CRYPTO) {
-      this.logger.log(`   💎 Base: ${createAssetDto.cryptoConfig?.baseCurrency}`);
-      this.logger.log(`   💎 Quote: ${createAssetDto.cryptoConfig?.quoteCurrency}`);
-      if (createAssetDto.cryptoConfig?.exchange) {
-        this.logger.log(`   💎 Exchange: ${createAssetDto.cryptoConfig.exchange}`);
-      }
-      this.logger.log(`   💎 Source: CryptoCompare API`);
-      this.logger.log(`   📍 RT DB Path: ${plainAssetData.realtimeDbPath}`);
-      this.logger.log(`   ⚡ Price Flow: CryptoCompare → Realtime DB`);
-      this.logger.log(`   ⚡ Simulator: NOT USED (real-time API)`);
-    } else {
-      if (createAssetDto.dataSource === ASSET_DATA_SOURCE.REALTIME_DB) {
-        this.logger.log(`   📍 Path: ${createAssetDto.realtimeDbPath}`);
-        this.logger.log(`   ⚡ Simulator: WILL BE SIMULATED`);
-      }
-      this.logger.log(`   💰 Initial Price: ${plainAssetData.simulatorSettings?.initialPrice}`);
-    }
-    
-    this.logger.log(`   📈 Profit Rate: ${createAssetDto.profitRate}%`);
-    this.logger.log('🎉 ================================================');
-    this.logger.log('');
-
-    // ============================================
-    // RETURN: Success Response
-    // ============================================
-    return {
-      message: `${createAssetDto.category} asset created successfully`,
-      asset: plainAssetData,
-      storageInfo: createAssetDto.category === 'crypto' 
-        ? {
-            type: 'crypto',
-            description: '💎 Crypto prices fetched from CryptoCompare API and stored to Realtime Database',
-            priceFlow: 'CryptoCompare API → Backend → Realtime Database',
-            realtimeDbPath: plainAssetData.realtimeDbPath,
-            updateFrequency: 'Every price fetch (cached 5s)',
-          }
-        : {
-            type: 'normal',
-            description: '📊 Normal asset will be simulated by trading-simulator service',
-            priceFlow: 'Simulator → Realtime Database',
-            realtimeDbPath: plainAssetData.realtimeDbPath,
-            updateFrequency: '1 second',
+        assetData = {
+          id: assetId,
+          name: createAssetDto.name,
+          symbol: createAssetDto.symbol,
+          category: 'crypto',
+          profitRate: createAssetDto.profitRate,
+          isActive: createAssetDto.isActive,
+          dataSource: 'cryptocompare',
+          realtimeDbPath: realtimeDbPath,
+          cryptoConfig: {
+            baseCurrency: plainCryptoConfig.baseCurrency.toUpperCase(),
+            quoteCurrency: plainCryptoConfig.quoteCurrency.toUpperCase(),
+            exchange: plainCryptoConfig.exchange || undefined,
           },
-    };
+          description: createAssetDto.description || '',
+          tradingSettings: plainTradingSettings,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          createdBy,
+        };
 
-  } catch (error) {
-    this.logger.error('❌ Asset creation error:', error.message);
-    this.logger.error(error.stack);
-    
-    if (error instanceof BadRequestException || 
-        error instanceof ConflictException) {
-      throw error;
+        this.logger.log('💎 Crypto asset data prepared:', {
+          pair: `${assetData.cryptoConfig.baseCurrency}/${assetData.cryptoConfig.quoteCurrency}`,
+          path: realtimeDbPath,
+        });
+
+      } else {
+        this.logger.log('📊 Creating normal asset...');
+        
+        if (createAssetDto.dataSource === ASSET_DATA_SOURCE.REALTIME_DB) {
+          if (!createAssetDto.realtimeDbPath) {
+            throw new BadRequestException('realtimeDbPath is required for realtime_db data source');
+          }
+          if (!createAssetDto.realtimeDbPath.startsWith('/')) {
+            throw new BadRequestException('realtimeDbPath must start with /');
+          }
+        }
+
+        const baseSimulatorSettings = createAssetDto.simulatorSettings || this.DEFAULT_SIMULATOR_SETTINGS;
+        const plainSimulatorSettings = this.toPlainObject({
+          ...this.DEFAULT_SIMULATOR_SETTINGS,
+          ...baseSimulatorSettings,
+          minPrice: baseSimulatorSettings.minPrice || (baseSimulatorSettings.initialPrice * 0.5),
+          maxPrice: baseSimulatorSettings.maxPrice || (baseSimulatorSettings.initialPrice * 2.0),
+        });
+
+        const plainTradingSettings = this.toPlainObject(
+          createAssetDto.tradingSettings || this.DEFAULT_TRADING_SETTINGS
+        );
+
+        assetData = {
+          id: assetId,
+          name: createAssetDto.name,
+          symbol: createAssetDto.symbol,
+          category: 'normal',
+          profitRate: createAssetDto.profitRate,
+          isActive: createAssetDto.isActive,
+          dataSource: createAssetDto.dataSource as any,
+          realtimeDbPath: createAssetDto.realtimeDbPath,
+          apiEndpoint: createAssetDto.apiEndpoint,
+          description: createAssetDto.description || '',
+          simulatorSettings: plainSimulatorSettings,
+          tradingSettings: plainTradingSettings,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          createdBy,
+        };
+
+        this.logger.log('📊 Normal asset data prepared:', {
+          dataSource: assetData.dataSource,
+          realtimeDbPath: assetData.realtimeDbPath,
+        });
+      }
+
+      const plainAssetData = this.toPlainObject(assetData);
+
+      this.logger.log(`💾 Saving asset to Firestore...`);
+      await db.collection(COLLECTIONS.ASSETS).doc(assetId).set(plainAssetData);
+
+      this.invalidateCache();
+
+      this.logger.log('');
+      this.logger.log('🎉 ================================================');
+      this.logger.log(`🎉 NEW ${createAssetDto.category.toUpperCase()} ASSET: ${createAssetDto.symbol}`);
+      this.logger.log('🎉 ================================================');
+      this.logger.log(`   Name: ${createAssetDto.name}`);
+      this.logger.log(`   Category: ${createAssetDto.category.toUpperCase()}`);
+      this.logger.log(`   Data Source: ${createAssetDto.dataSource}`);
+      
+      if (createAssetDto.category === ASSET_CATEGORY.CRYPTO) {
+        this.logger.log(`   💎 Pair: ${createAssetDto.cryptoConfig?.baseCurrency}/${createAssetDto.cryptoConfig?.quoteCurrency}`);
+        if (createAssetDto.cryptoConfig?.exchange) {
+          this.logger.log(`   💎 Exchange: ${createAssetDto.cryptoConfig.exchange}`);
+        }
+        this.logger.log(`   📍 RT DB Path: ${plainAssetData.realtimeDbPath}`);
+        this.logger.log(`   ⚡ Price Source: CryptoCompare API`);
+        this.logger.log(`   ⚡ Price Flow: CryptoCompare → Backend → Realtime DB`);
+        this.logger.log(`   ⚡ Simulator: NOT USED (real-time API data)`);
+      } else {
+        this.logger.log(`   📍 RT DB Path: ${createAssetDto.realtimeDbPath || 'N/A'}`);
+        this.logger.log(`   ⚡ Simulator: WILL BE SIMULATED`);
+        this.logger.log(`   💰 Initial Price: ${plainAssetData.simulatorSettings?.initialPrice}`);
+        this.logger.log(`   📊 Volatility: ${plainAssetData.simulatorSettings?.secondVolatilityMin} - ${plainAssetData.simulatorSettings?.secondVolatilityMax}`);
+        this.logger.log(`   📏 Price Range: ${plainAssetData.simulatorSettings?.minPrice} - ${plainAssetData.simulatorSettings?.maxPrice}`);
+      }
+      
+      this.logger.log(`   📈 Profit Rate: ${createAssetDto.profitRate}%`);
+      this.logger.log(`   🎯 Status: ${createAssetDto.isActive ? 'ACTIVE' : 'INACTIVE'}`);
+      this.logger.log('🎉 ================================================');
+      this.logger.log('');
+
+      return {
+        message: `${createAssetDto.category} asset created successfully`,
+        asset: plainAssetData,
+        storageInfo: createAssetDto.category === 'crypto' 
+          ? {
+              type: 'crypto',
+              description: '💎 Crypto prices fetched from CryptoCompare API and stored to Realtime Database',
+              priceFlow: 'CryptoCompare API → Backend → Realtime Database',
+              realtimeDbPath: plainAssetData.realtimeDbPath,
+              updateFrequency: 'Every price fetch (cached 5s)',
+              simulatorUsed: false,
+            }
+          : {
+              type: 'normal',
+              description: '📊 Normal asset will be simulated by trading-simulator service',
+              priceFlow: 'Simulator → Realtime Database',
+              realtimeDbPath: plainAssetData.realtimeDbPath,
+              updateFrequency: '1 second',
+              simulatorUsed: true,
+            },
+      };
+
+    } catch (error) {
+      this.logger.error('❌ Asset creation error:', error.message);
+      this.logger.error(error.stack);
+      
+      if (error instanceof BadRequestException || 
+          error instanceof ConflictException) {
+        throw error;
+      }
+      
+      throw new BadRequestException(
+        `Failed to create asset: ${error.message}`
+      );
     }
-    
-    throw new BadRequestException(
-      `Failed to create asset: ${error.message}`
-    );
   }
-}
-
 
   private async validateCryptoAsset(dto: CreateAssetDto): Promise<void> {
   this.logger.log('🔍 Validating crypto asset configuration...');
