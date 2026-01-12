@@ -1,6 +1,4 @@
 // src/assets/assets.module.ts
-// ✅ UPDATED: Added CryptoCompareService
-
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
@@ -8,8 +6,8 @@ import { AssetsController } from './assets.controller';
 import { AssetsService } from './assets.service';
 import { PriceFetcherService } from './services/price-fetcher.service';
 import { CryptoCompareService } from './services/cryptocompare.service';
+import { CryptoPriceSchedulerService } from './services/crypto-price-scheduler.service';
 import { AuthModule } from '../auth/auth.module';
-import { CryptoPriceSchedulerService } from './services/crypto-price-scheduler.service'; // ✅ NEW
 
 @Module({
   imports: [
@@ -29,13 +27,13 @@ import { CryptoPriceSchedulerService } from './services/crypto-price-scheduler.s
   providers: [
     AssetsService, 
     PriceFetcherService,
-    CryptoCompareService, // ✅ NEW
-    CryptoPriceSchedulerService,
+    CryptoCompareService,
+    CryptoPriceSchedulerService, // ✅ Already included
   ],
   exports: [
     AssetsService, 
     PriceFetcherService,
-    CryptoCompareService, // ✅ NEW
+    CryptoCompareService,
     CryptoPriceSchedulerService,
   ],
 })
