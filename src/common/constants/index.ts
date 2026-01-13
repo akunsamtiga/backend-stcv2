@@ -1,6 +1,3 @@
-// src/common/constants/index.ts
-// ✅ UPDATED: Added Crypto Asset Category
-
 export const BALANCE_TYPES = {
   DEPOSIT: 'deposit',
   WITHDRAWAL: 'withdrawal',
@@ -88,29 +85,30 @@ export const COLLECTIONS = {
   AFFILIATES: 'affiliates',
 } as const;
 
-// ✅ NEW: Asset Categories
+// ✅ UPDATED: Asset Categories
 export const ASSET_CATEGORY = {
-  NORMAL: 'normal',      // Standard assets (stocks, indices, etc)
-  CRYPTO: 'crypto',      // Cryptocurrency assets
+  NORMAL: 'normal',
+  CRYPTO: 'crypto',
 } as const;
 
-// ✅ NEW: Asset Data Sources
+// ✅ UPDATED: Asset Data Sources - Changed CRYPTOCOMPARE to COINGECKO
 export const ASSET_DATA_SOURCE = {
-  REALTIME_DB: 'realtime_db',     // Firebase Realtime Database
-  API: 'api',                      // Generic API
-  MOCK: 'mock',                    // Mock/Simulated data
-  CRYPTOCOMPARE: 'cryptocompare',  // CryptoCompare API (for crypto assets)
+  REALTIME_DB: 'realtime_db',
+  API: 'api',
+  MOCK: 'mock',
+  COINGECKO: 'coingecko',  // ✅ Changed from cryptocompare
 } as const;
 
-// ✅ NEW: CryptoCompare Configuration
-export const CRYPTOCOMPARE_CONFIG = {
-  API_KEY: 'ffb687da5df95e3406d379e05a57507512343439f68e01476dd6a97894818d3b',
-  BASE_URL: 'https://min-api.cryptocompare.com/data',
-  CACHE_TTL: 5000, // 5 seconds cache for crypto prices
-  TIMEOUT: 3000,   // 3 seconds timeout
+// ✅ REMOVED: CRYPTOCOMPARE_CONFIG (no longer needed)
+
+// ✅ NEW: CoinGecko Configuration (No API key needed!)
+export const COINGECKO_CONFIG = {
+  BASE_URL: 'https://api.coingecko.com/api/v3',
+  CACHE_TTL: 10000, // 10 seconds cache (CoinGecko updates ~60s)
+  TIMEOUT: 5000,    // 5 seconds timeout
+  RATE_LIMIT_DELAY: 1500, // 1.5s between batch calls (40 calls/min)
 } as const;
 
-// ✅ NEW: Popular Crypto Symbols
 export const CRYPTO_SYMBOLS = {
   BITCOIN: 'BTC',
   ETHEREUM: 'ETH',
@@ -125,7 +123,7 @@ export const CRYPTO_SYMBOLS = {
 } as const;
 
 export const DURATIONS = {
-  ULTRA_SHORT: [0.0167], // 1 second
+  ULTRA_SHORT: [0.0167],
   SHORT: [1, 2, 3, 4, 5],
   MEDIUM: [15, 30, 45, 60],
 } as const;
@@ -137,7 +135,7 @@ export const DURATION_SECONDS = {
 } as const;
 
 export const ALL_DURATIONS = [
-  0.0167,  // 1 second
+  0.0167,
   1, 2, 3, 4, 5,
   15, 30, 45, 60
 ] as const;
@@ -161,3 +159,4 @@ export type UserStatus = typeof USER_STATUS[keyof typeof USER_STATUS];
 export type AffiliateStatus = typeof AFFILIATE_STATUS[keyof typeof AFFILIATE_STATUS];
 export type AssetCategory = typeof ASSET_CATEGORY[keyof typeof ASSET_CATEGORY];
 export type AssetDataSource = typeof ASSET_DATA_SOURCE[keyof typeof ASSET_DATA_SOURCE];
+

@@ -1,11 +1,10 @@
-// src/assets/assets.module.ts
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AssetsController } from './assets.controller';
 import { AssetsService } from './assets.service';
 import { PriceFetcherService } from './services/price-fetcher.service';
-import { CryptoCompareService } from './services/cryptocompare.service';
+import { CoinGeckoService } from './services/coingecko.service';  // ✅ Changed
 import { CryptoPriceSchedulerService } from './services/crypto-price-scheduler.service';
 import { AuthModule } from '../auth/auth.module';
 
@@ -27,13 +26,13 @@ import { AuthModule } from '../auth/auth.module';
   providers: [
     AssetsService, 
     PriceFetcherService,
-    CryptoCompareService,
-    CryptoPriceSchedulerService, // ✅ Already included
+    CoinGeckoService,  // ✅ Changed from CryptoCompareService
+    CryptoPriceSchedulerService,
   ],
   exports: [
     AssetsService, 
     PriceFetcherService,
-    CryptoCompareService,
+    CoinGeckoService,  // ✅ Changed from CryptoCompareService
     CryptoPriceSchedulerService,
   ],
 })

@@ -170,10 +170,10 @@ export class CreateAssetDto {
   isActive: boolean;
 
   @ApiProperty({ 
-    enum: ASSET_DATA_SOURCE,
-    example: 'cryptocompare',
-    description: 'Data source: realtime_db, api, mock, or cryptocompare (for crypto)'
-  })
+   enum: ASSET_DATA_SOURCE,
+  example: 'coingecko',  // ✅ Changed from 'cryptocompare'
+  description: 'Data source: realtime_db, api, mock, or coingecko (for crypto)'  // ✅ Changed
+})
   @IsEnum(ASSET_DATA_SOURCE)
   dataSource: string;
 

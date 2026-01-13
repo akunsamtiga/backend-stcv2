@@ -1,9 +1,6 @@
-// src/assets/services/price-fetcher.service.ts
-// ✅ UPDATED: Added CryptoCompare support for crypto assets
-
 import { Injectable, Logger } from '@nestjs/common';
 import { FirebaseService } from '../../firebase/firebase.service';
-import { CryptoCompareService } from './cryptocompare.service';
+import { CoinGeckoService } from './coingecko.service';  // ✅ Changed
 import { Asset, RealtimePrice } from '../../common/interfaces';
 import { ASSET_CATEGORY, ASSET_DATA_SOURCE } from '../../common/constants';
 
@@ -30,7 +27,7 @@ export class PriceFetcherService {
 
   constructor(
     private firebaseService: FirebaseService,
-    private cryptoCompareService: CryptoCompareService,
+    private coinGeckoService: CoinGeckoService,  // ✅ Changed from cryptoCompareService
   ) {
     setInterval(() => this.cleanupStaleCache(), 5000);
   }
@@ -126,38 +123,6 @@ export class PriceFetcherService {
     throw lastError || new Error('Failed to fetch price');
   }
 
-  private getCachedPrice(assetId: string, maxAge: number): RealtimePrice | null {
-    const cached = this.priceCache.get(assetId);
-    if (!cached) return null;
-
-    const age = Date.now() - cached.timestamp;
-    if (age > maxAge) {
-      return null;
-    }
-
-    return cached.price;
-  }
-
-  private getStaleCache(assetId: string): RealtimePrice | null {
-    const cached = this.priceCache.get(assetId);
-    if (!cached) return null;
-
-    const age = Date.now() - cached.timestamp;
-    
-    if (age < this.STALE_CACHE_TTL) {
-      return cached.price;
-    }
-
-    return null;
-  }
-
-  private getStaleAge(assetId: string): number {
-    const cached = this.priceCache.get(assetId);
-    if (!cached) return 0;
-
-    return Math.round((Date.now() - cached.timestamp) / 1000);
-  }
-
   private async fetchWithTimeout(asset: Asset): Promise<RealtimePrice | null> {
     return Promise.race([
       this.fetchPrice(asset),
@@ -168,12 +133,10 @@ export class PriceFetcherService {
   }
 
   private async fetchPrice(asset: Asset): Promise<RealtimePrice | null> {
-    // ✅ UPDATED: Route based on category
     if (asset.category === ASSET_CATEGORY.CRYPTO) {
       return await this.fetchCryptoPrice(asset);
     }
 
-    // Normal assets (existing logic)
     switch (asset.dataSource) {
       case ASSET_DATA_SOURCE.REALTIME_DB:
         return await this.fetchFromRealtimeDb(asset);
@@ -190,18 +153,14 @@ export class PriceFetcherService {
     }
   }
 
-  /**
-   * ✅ NEW: Fetch price for crypto assets from CryptoCompare
-   */
   private async fetchCryptoPrice(asset: Asset): Promise<RealtimePrice | null> {
     try {
-      const cryptoPrice = await this.cryptoCompareService.getCurrentPrice(asset);
+      const cryptoPrice = await this.coinGeckoService.getCurrentPrice(asset);  // ✅ Changed
       
       if (!cryptoPrice) {
         return null;
       }
 
-      // Convert CryptoComparePrice to RealtimePrice format
       const realtimePrice: RealtimePrice = {
         price: cryptoPrice.price,
         timestamp: cryptoPrice.timestamp,
@@ -216,9 +175,6 @@ export class PriceFetcherService {
     }
   }
 
-  /**
-   * Existing methods (unchanged)
-   */
   private async fetchFromRealtimeDb(asset: Asset): Promise<RealtimePrice | null> {
     if (!asset.realtimeDbPath) {
       this.logger.error(`Realtime DB path not configured for ${asset.symbol}`);
@@ -235,13 +191,8 @@ export class PriceFetcherService {
         true
       );
 
-      if (!data) {
-        this.logger.warn(`⚠️ No data at ${fullPath}`);
-        return null;
-      }
-
-      if (!data.price) {
-        this.logger.warn(`⚠️ No price field at ${fullPath}, got: ${JSON.stringify(data)}`);
+      if (!data || !data.price) {
+        this.logger.warn(`⚠️ No price at ${fullPath}`);
         return null;
       }
 
@@ -251,7 +202,7 @@ export class PriceFetcherService {
       
       if (dataAge > 30) {
         this.logger.warn(
-          `⚠️ Price for ${asset.symbol} is ${dataAge}s old - simulator may be slow or stopped`
+          `⚠️ Price for ${asset.symbol} is ${dataAge}s old - simulator may be slow`
         );
       }
 
@@ -304,6 +255,36 @@ export class PriceFetcherService {
     };
   }
 
+  private getCachedPrice(assetId: string, maxAge: number): RealtimePrice | null {
+    const cached = this.priceCache.get(assetId);
+    if (!cached) return null;
+
+    const age = Date.now() - cached.timestamp;
+    if (age > maxAge) return null;
+
+    return cached.price;
+  }
+
+  private getStaleCache(assetId: string): RealtimePrice | null {
+    const cached = this.priceCache.get(assetId);
+    if (!cached) return null;
+
+    const age = Date.now() - cached.timestamp;
+    
+    if (age < this.STALE_CACHE_TTL) {
+      return cached.price;
+    }
+
+    return null;
+  }
+
+  private getStaleAge(assetId: string): number {
+    const cached = this.priceCache.get(assetId);
+    if (!cached) return 0;
+
+    return Math.round((Date.now() - cached.timestamp) / 1000);
+  }
+
   private cleanupStaleCache(): void {
     const now = Date.now();
     const MAX_AGE = 60000;
@@ -342,13 +323,11 @@ export class PriceFetcherService {
   async batchFetchPrices(assets: Asset[]): Promise<Map<string, RealtimePrice | null>> {
     const results = new Map<string, RealtimePrice | null>();
     
-    // Separate crypto assets for batch fetching
     const cryptoAssets = assets.filter(a => a.category === ASSET_CATEGORY.CRYPTO);
     const normalAssets = assets.filter(a => a.category !== ASSET_CATEGORY.CRYPTO);
     
-    // Fetch crypto prices in batch
     if (cryptoAssets.length > 0) {
-      const cryptoPrices = await this.cryptoCompareService.getMultiplePrices(cryptoAssets);
+      const cryptoPrices = await this.coinGeckoService.getMultiplePrices(cryptoAssets);  // ✅ Changed
       
       for (const asset of cryptoAssets) {
         const cryptoPrice = cryptoPrices.get(asset.id);
@@ -365,7 +344,6 @@ export class PriceFetcherService {
       }
     }
     
-    // Fetch normal assets individually
     const promises = normalAssets.map(async (asset) => {
       try {
         const price = await this.getCurrentPrice(asset, false);
@@ -392,13 +370,13 @@ export class PriceFetcherService {
       cacheSize: this.priceCache.size,
       consecutiveFailures: this.consecutiveFailures,
       isHealthy: this.consecutiveFailures < this.MAX_CONSECUTIVE_FAILURES,
-      cryptoStats: this.cryptoCompareService.getStats(),
+      cryptoStats: this.coinGeckoService.getStats(),  // ✅ Changed
     };
   }
 
   clearCache(): void {
     this.priceCache.clear();
-    this.cryptoCompareService.clearCache();
+    this.coinGeckoService.clearCache();  // ✅ Changed
     this.logger.log('🗑️ Price cache cleared');
   }
 

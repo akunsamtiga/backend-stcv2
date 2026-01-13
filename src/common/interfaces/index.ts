@@ -123,31 +123,18 @@ export interface Asset {
   id: string;
   name: string;
   symbol: string;
-  
-  // ✅ NEW: Category to differentiate normal assets from crypto
   category: 'normal' | 'crypto';
-  
   profitRate: number;
   isActive: boolean;
-  
-  // Data source can now be: realtime_db, api, mock, or cryptocompare
-  dataSource: 'realtime_db' | 'api' | 'mock' | 'cryptocompare';
-  
-  // For realtime_db data source
+  dataSource: 'realtime_db' | 'api' | 'mock' | 'coingecko';
   realtimeDbPath?: string;
-  
-  // For api data source
   apiEndpoint?: string;
-  
-  // ✅ NEW: For cryptocompare data source (crypto assets only)
   cryptoConfig?: {
-    baseCurrency: string;    // e.g., "BTC", "ETH"
-    quoteCurrency: string;   // e.g., "USD", "USDT"
-    exchange?: string;       // Optional: specific exchange like "Binance"
+    baseCurrency: string;
+    quoteCurrency: string;
+    exchange?: string;
   };
-  
   description?: string;
-  
   simulatorSettings?: {
     initialPrice: number;
     dailyVolatilityMin: number;
@@ -157,17 +144,17 @@ export interface Asset {
     minPrice?: number;
     maxPrice?: number;
   };
-  
   tradingSettings?: {
     minOrderAmount: number;
     maxOrderAmount: number;
     allowedDurations: number[];
   };
-  
   createdAt: string;
   updatedAt?: string;
   createdBy?: string;
 }
+
+
 
 export interface BinaryOrder {
   id: string;
@@ -209,6 +196,8 @@ export interface CryptoComparePrice {
   low24h?: number;
   marketCap?: number;
 }
+
+export type CoinGeckoPrice = CryptoComparePrice;
 
 export interface BalanceSummary {
   realBalance: number;
