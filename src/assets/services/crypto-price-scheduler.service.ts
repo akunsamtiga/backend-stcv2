@@ -1,7 +1,10 @@
+// src/assets/services/crypto-price-scheduler.service.ts
+// ✅ FIXED: Stop scheduler if no crypto assets
+
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron, SchedulerRegistry } from '@nestjs/schedule';
 import { FirebaseService } from '../../firebase/firebase.service';
-import { CoinGeckoService } from './coingecko.service';  // ✅ Changed
+import { CoinGeckoService } from './coingecko.service';
 import { AssetsService } from '../assets.service';
 import { CryptoTimeframeManager, CryptoBar } from './crypto-timeframe-manager';
 import { ASSET_CATEGORY } from '../../common/constants';
@@ -23,10 +26,14 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
   private readonly REFRESH_INTERVAL = 600000;
   private readonly CLEANUP_INTERVAL = 7200000;
   private lastCleanupTime = 0;
+  
+  // ✅ NEW: Track if scheduler should be active
+  private schedulerActive = false;
+  private updateIntervalHandle: any = null;
 
   constructor(
     private firebaseService: FirebaseService,
-    private coinGeckoService: CoinGeckoService,  // ✅ Changed from cryptoCompareService
+    private coinGeckoService: CoinGeckoService,
     private assetsService: AssetsService,
     private schedulerRegistry: SchedulerRegistry,
   ) {}
@@ -36,7 +43,14 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       try {
         await this.firebaseService.waitForFirestore(10000);
         await this.loadCryptoAssets();
-        await this.startScheduler();
+        
+        // ✅ Only start if there are crypto assets
+        if (this.cryptoAssets.length > 0) {
+          await this.startScheduler();
+        } else {
+          this.logger.warn('⚠️ No crypto assets found - scheduler NOT started');
+          this.logger.warn('💡 Crypto assets will be handled by backend when added');
+        }
       } catch (error) {
         this.logger.error(`❌ Scheduler initialization failed: ${error.message}`);
       }
@@ -53,9 +67,11 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       
       if (this.cryptoAssets.length === 0) {
         this.logger.warn('⚠️ No active crypto assets found');
+        this.logger.warn('💡 If you add crypto assets, restart the backend');
         return;
       }
       
+      // Initialize managers for each crypto asset
       this.cryptoAssets.forEach(asset => {
         if (!this.timeframeManagers.has(asset.id)) {
           this.timeframeManagers.set(asset.id, new CryptoTimeframeManager());
@@ -65,7 +81,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       
       this.logger.log('');
       this.logger.log('💎 ================================================');
-      this.logger.log('💎 CRYPTO PRICE SCHEDULER WITH OHLC - COINGECKO');  // ✅ Changed
+      this.logger.log('💎 CRYPTO PRICE SCHEDULER WITH OHLC - COINGECKO');
       this.logger.log('💎 ================================================');
       this.logger.log(`💎 Active Crypto Assets: ${this.cryptoAssets.length}`);
       this.cryptoAssets.forEach(asset => {
@@ -78,7 +94,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       this.logger.log(`📊 OHLC Timeframes: 1s, 1m, 5m, 15m, 30m, 1h, 4h, 1d`);
       this.logger.log(`🔄 Asset Refresh: ${this.REFRESH_INTERVAL}ms (${this.REFRESH_INTERVAL / 60000}m)`);
       this.logger.log(`🗑️ Cleanup: Every ${this.CLEANUP_INTERVAL / 3600000}h`);
-      this.logger.log('💎 API: CoinGecko FREE (No API key needed)');  // ✅ Changed
+      this.logger.log('💎 API: CoinGecko FREE (No API key needed)');
       this.logger.log('💎 ================================================');
       this.logger.log('');
       
@@ -88,39 +104,62 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
   }
 
   private async startScheduler(): Promise<void> {
+    // ✅ Safety check
     if (this.cryptoAssets.length === 0) {
-      this.logger.warn('⚠️ No crypto assets to schedule');
+      this.logger.warn('⚠️ Cannot start scheduler: no crypto assets');
+      return;
+    }
+
+    if (this.isRunning) {
+      this.logger.warn('⚠️ Scheduler already running');
       return;
     }
 
     this.isRunning = true;
+    this.schedulerActive = true;
     
+    // Initial update
     await this.updateAllPrices();
     
-    const interval = setInterval(async () => {
-      if (this.isRunning) {
+    // Start interval
+    this.updateIntervalHandle = setInterval(async () => {
+      if (this.isRunning && this.schedulerActive) {
         await this.updateAllPrices();
       }
     }, this.UPDATE_INTERVAL);
     
-    this.schedulerRegistry.addInterval('crypto-price-ohlc-update', interval);
-    
-    this.logger.log('✅ Crypto price scheduler with OHLC started (CoinGecko)');  // ✅ Changed
+    this.logger.log('✅ Crypto price scheduler with OHLC started (CoinGecko)');
   }
 
   @Cron('*/10 * * * *')
   async refreshCryptoAssets() {
     this.logger.debug('🔄 Refreshing crypto assets list...');
+    
+    const previousCount = this.cryptoAssets.length;
     await this.loadCryptoAssets();
+    const currentCount = this.cryptoAssets.length;
+    
+    // ✅ Handle state changes
+    if (previousCount === 0 && currentCount > 0) {
+      this.logger.log('✅ Crypto assets detected! Starting scheduler...');
+      await this.startScheduler();
+    } else if (previousCount > 0 && currentCount === 0) {
+      this.logger.warn('⚠️ No more crypto assets! Stopping scheduler...');
+      await this.stopScheduler();
+    }
   }
 
   private async updateAllPrices(): Promise<void> {
-    if (this.cryptoAssets.length === 0) return;
+    // ✅ Safety check
+    if (this.cryptoAssets.length === 0) {
+      this.logger.debug('⏭️ No crypto assets to update, skipping');
+      return;
+    }
 
     const startTime = Date.now();
     
     try {
-      const priceMap = await this.coinGeckoService.getMultiplePrices(this.cryptoAssets);  // ✅ Changed
+      const priceMap = await this.coinGeckoService.getMultiplePrices(this.cryptoAssets);
       
       let successCount = 0;
       let failCount = 0;
@@ -249,6 +288,11 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
   }
 
   private async cleanupOldData(): Promise<void> {
+    if (this.cryptoAssets.length === 0) {
+      this.logger.debug('⏭️ No crypto assets, skipping cleanup');
+      return;
+    }
+    
     this.logger.log('🗑️ Starting OHLC cleanup...');
     
     const manager = new CryptoTimeframeManager();
@@ -299,12 +343,18 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
 
   @Cron('*/2 * * * *')
   async logStats() {
-    const stats = this.coinGeckoService.getStats();  // ✅ Changed
+    // ✅ Only log if scheduler is active
+    if (!this.schedulerActive || this.cryptoAssets.length === 0) {
+      this.logger.debug('⏭️ Crypto scheduler inactive, skipping stats');
+      return;
+    }
+    
+    const stats = this.coinGeckoService.getStats();
     const uptime = Date.now() - this.lastUpdateTime;
     
     this.logger.log('');
     this.logger.log('📊 ================================================');
-    this.logger.log('📊 CRYPTO PRICE + OHLC SCHEDULER STATS (COINGECKO)');  // ✅ Changed
+    this.logger.log('📊 CRYPTO PRICE + OHLC SCHEDULER STATS (COINGECKO)');
     this.logger.log('📊 ================================================');
     this.logger.log(`   Assets: ${this.cryptoAssets.length}`);
     this.logger.log(`   Running: ${this.isRunning ? '✅' : '❌'}`);
@@ -326,7 +376,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     });
     this.logger.log('');
     
-    this.logger.log('   CoinGecko Stats:');  // ✅ Changed
+    this.logger.log('   CoinGecko Stats:');
     this.logger.log(`     API Calls: ${stats.apiCalls}`);
     this.logger.log(`     Cache Hits: ${stats.cacheHits}`);
     this.logger.log(`     Hit Rate: ${stats.cacheHitRate}`);
@@ -337,6 +387,11 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
   }
 
   async triggerUpdate(): Promise<void> {
+    if (this.cryptoAssets.length === 0) {
+      this.logger.warn('⚠️ Cannot trigger update: no crypto assets');
+      return;
+    }
+    
     this.logger.log('🔄 Manual update triggered');
     await this.updateAllPrices();
   }
@@ -353,6 +408,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     
     return {
       isRunning: this.isRunning,
+      schedulerActive: this.schedulerActive,
       assetCount: this.cryptoAssets.length,
       updateCount: this.updateCount,
       errorCount: this.errorCount,
@@ -360,7 +416,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
         ? `${Math.floor((Date.now() - this.lastUpdateTime) / 1000)}s ago`
         : 'Never',
       updateInterval: `${this.UPDATE_INTERVAL}ms`,
-      api: 'CoinGecko FREE',  // ✅ Changed
+      api: 'CoinGecko FREE',
       assets: this.cryptoAssets.map(a => ({
         symbol: a.symbol,
         pair: `${a.cryptoConfig?.baseCurrency}/${a.cryptoConfig?.quoteCurrency}`,
@@ -370,20 +426,22 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     };
   }
 
-  async onModuleDestroy() {
-    this.logger.log('🛑 Stopping crypto price + OHLC scheduler...');
-    this.isRunning = false;
+  // ✅ NEW: Stop scheduler gracefully
+  private async stopScheduler(): Promise<void> {
+    this.logger.log('🛑 Stopping crypto price scheduler...');
     
-    try {
-      const interval = this.schedulerRegistry.getInterval('crypto-price-ohlc-update');
-      if (interval) {
-        clearInterval(interval);
-        this.schedulerRegistry.deleteInterval('crypto-price-ohlc-update');
-      }
-    } catch (error) {
-      // Interval might not exist
+    this.isRunning = false;
+    this.schedulerActive = false;
+    
+    if (this.updateIntervalHandle) {
+      clearInterval(this.updateIntervalHandle);
+      this.updateIntervalHandle = null;
     }
     
-    this.logger.log('✅ Crypto price + OHLC scheduler stopped');
+    this.logger.log('✅ Crypto price scheduler stopped');
+  }
+
+  async onModuleDestroy() {
+    await this.stopScheduler();
   }
 }
