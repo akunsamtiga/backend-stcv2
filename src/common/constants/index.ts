@@ -99,14 +99,14 @@ export const ASSET_DATA_SOURCE = {
   COINGECKO: 'coingecko',  // ✅ Changed from cryptocompare
 } as const;
 
-// ✅ REMOVED: CRYPTOCOMPARE_CONFIG (no longer needed)
-
 // ✅ NEW: CoinGecko Configuration (No API key needed!)
 export const COINGECKO_CONFIG = {
   BASE_URL: 'https://api.coingecko.com/api/v3',
-  CACHE_TTL: 10000, // 10 seconds cache (CoinGecko updates ~60s)
-  TIMEOUT: 5000,    // 5 seconds timeout
-  RATE_LIMIT_DELAY: 1500, // 1.5s between batch calls (40 calls/min)
+  CACHE_TTL: 60000,        // ✅ 60 seconds (was 10s)
+  STALE_CACHE_TTL: 300000, // ✅ 5 minutes for fallback
+  TIMEOUT: 10000,          // ✅ 10 seconds timeout
+  RATE_LIMIT_DELAY: 3000,  // ✅ 3 seconds between batch calls (20/min)
+  MIN_CALL_INTERVAL: 2000, // ✅ 2 seconds minimum between any calls
 } as const;
 
 export const CRYPTO_SYMBOLS = {

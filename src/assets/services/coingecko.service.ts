@@ -1,21 +1,37 @@
+// src/assets/services/coingecko.service.ts
+// ✅ FIXED: Better rate limiting, longer cache, error handling
+
 import { Injectable, Logger } from '@nestjs/common';
 import axios, { AxiosInstance } from 'axios';
 import { FirebaseService } from '../../firebase/firebase.service';
-import { COINGECKO_CONFIG } from '../../common/constants';
-import { CoinGeckoPrice, Asset } from '../../common/interfaces';
+import { Asset } from '../../common/interfaces';
 import { TimezoneUtil } from '../../common/utils';
+
+export interface CoinGeckoPrice {
+  price: number;
+  timestamp: number;
+  datetime: string;
+  volume24h?: number;
+  change24h?: number;
+  changePercent24h?: number;
+  high24h?: number;
+  low24h?: number;
+  marketCap?: number;
+}
 
 @Injectable()
 export class CoinGeckoService {
   private readonly logger = new Logger(CoinGeckoService.name);
   private readonly axios: AxiosInstance;
   
+  // ✅ LONGER cache to reduce API calls
   private priceCache: Map<string, {
     price: CoinGeckoPrice;
     timestamp: number;
   }> = new Map();
   
-  private readonly CACHE_TTL = COINGECKO_CONFIG.CACHE_TTL;
+  private readonly CACHE_TTL = 60000; // ✅ 60 seconds (was 10s)
+  private readonly STALE_CACHE_TTL = 300000; // ✅ 5 minutes for fallback
   
   private apiCallCount = 0;
   private cacheHitCount = 0;
@@ -23,7 +39,13 @@ export class CoinGeckoService {
   private lastCallTime = 0;
   private realtimeWriteCount = 0;
   
-  // CoinGecko coin ID mapping
+  // ✅ Rate limiting
+  private lastApiCallTime = 0;
+  private readonly MIN_CALL_INTERVAL = 2000; // ✅ 2 seconds between calls
+  private isRateLimited = false;
+  private rateLimitUntil = 0;
+  
+  // ✅ UPDATED: Better coin ID mapping
   private readonly COIN_ID_MAP: Record<string, string> = {
     'BTC': 'bitcoin',
     'ETH': 'ethereum',
@@ -34,6 +56,7 @@ export class CoinGeckoService {
     'DOT': 'polkadot',
     'DOGE': 'dogecoin',
     'MATIC': 'matic-network',
+    'POLYGON': 'matic-network', // ✅ Alias
     'LTC': 'litecoin',
     'AVAX': 'avalanche-2',
     'LINK': 'chainlink',
@@ -66,8 +89,8 @@ export class CoinGeckoService {
     private firebaseService: FirebaseService,
   ) {
     this.axios = axios.create({
-      baseURL: COINGECKO_CONFIG.BASE_URL,
-      timeout: COINGECKO_CONFIG.TIMEOUT,
+      baseURL: 'https://api.coingecko.com/api/v3',
+      timeout: 10000, // ✅ Longer timeout
       headers: {
         'Accept': 'application/json',
       },
@@ -77,10 +100,13 @@ export class CoinGeckoService {
     
     this.logger.log('✅ CoinGecko Service initialized (FREE API)');
     this.logger.log('   Rate Limit: 10-50 calls/minute');
-    this.logger.log('   Cache TTL: 10 seconds');
+    this.logger.log('   Cache TTL: 60 seconds');
     this.logger.log(`   Supported coins: ${Object.keys(this.COIN_ID_MAP).length}`);
   }
 
+  /**
+   * ✅ FIXED: Better rate limiting and error handling
+   */
   async getCurrentPrice(asset: Asset): Promise<CoinGeckoPrice | null> {
     if (!asset.cryptoConfig) {
       this.logger.error(`Asset ${asset.symbol} missing cryptoConfig`);
@@ -90,11 +116,42 @@ export class CoinGeckoService {
     const { baseCurrency, quoteCurrency } = asset.cryptoConfig;
     const cacheKey = `${baseCurrency}/${quoteCurrency}`;
 
+    // ✅ Check cache first
     const cached = this.getCachedPrice(cacheKey);
     if (cached) {
       this.cacheHitCount++;
       this.logger.debug(`💰 Cache hit for ${cacheKey}`);
       return cached;
+    }
+
+    // ✅ Check if rate limited
+    if (this.isRateLimited) {
+      const now = Date.now();
+      if (now < this.rateLimitUntil) {
+        const waitTime = Math.ceil((this.rateLimitUntil - now) / 1000);
+        this.logger.warn(`⏸️ Rate limited, waiting ${waitTime}s...`);
+        
+        // Return stale cache if available
+        const staleCache = this.getStaleCache(cacheKey);
+        if (staleCache) {
+          this.logger.warn(`⚠️ Using stale cache for ${cacheKey}`);
+          return staleCache;
+        }
+        
+        return null;
+      } else {
+        this.isRateLimited = false;
+        this.logger.log('✅ Rate limit expired, resuming...');
+      }
+    }
+
+    // ✅ Enforce minimum interval between calls
+    const now = Date.now();
+    const timeSinceLastCall = now - this.lastApiCallTime;
+    if (timeSinceLastCall < this.MIN_CALL_INTERVAL) {
+      const waitTime = this.MIN_CALL_INTERVAL - timeSinceLastCall;
+      this.logger.debug(`⏳ Waiting ${waitTime}ms before next API call...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
     }
 
     const coinId = this.getCoinId(baseCurrency);
@@ -112,6 +169,9 @@ export class CoinGeckoService {
     try {
       this.apiCallCount++;
       this.lastCallTime = Date.now();
+      this.lastApiCallTime = Date.now();
+
+      this.logger.debug(`📡 API call #${this.apiCallCount}: ${coinId} (${cacheKey})`);
 
       const response = await this.axios.get(`/coins/${coinId}`, {
         params: {
@@ -154,11 +214,13 @@ export class CoinGeckoService {
         marketCap: marketCap || 0,
       };
 
+      // ✅ Cache for longer
       this.priceCache.set(cacheKey, {
         price,
         timestamp: Date.now(),
       });
 
+      // ✅ Write to Realtime DB (async, non-blocking)
       this.writePriceToRealtimeDb(asset, price).catch(error => {
         this.logger.error(`RT DB write error: ${error.message}`);
       });
@@ -173,28 +235,41 @@ export class CoinGeckoService {
     } catch (error) {
       this.errorCount++;
       
+      // ✅ Handle rate limit (429)
       if (error.response?.status === 429) {
-        this.logger.error(`⚠️ CoinGecko rate limit reached for ${cacheKey}`);
+        this.isRateLimited = true;
+        this.rateLimitUntil = Date.now() + 60000; // Wait 60 seconds
+        
+        this.logger.error(`⚠️ CoinGecko rate limit (429) for ${cacheKey}`);
+        this.logger.warn(`⏸️ Pausing API calls for 60 seconds...`);
+        
+        // Return stale cache if available
+        const staleCache = this.getStaleCache(cacheKey);
+        if (staleCache) {
+          this.logger.warn(`⚠️ Using stale cache for ${cacheKey}`);
+          return staleCache;
+        }
       } else {
         this.logger.error(`❌ CoinGecko API error for ${cacheKey}: ${error.message}`);
-      }
-
-      const staleCache = this.getStaleCache(cacheKey);
-      if (staleCache) {
-        this.logger.warn(`⚠️ Using stale cache for ${cacheKey}`);
-        return staleCache;
       }
 
       return null;
     }
   }
 
+  /**
+   * ✅ FIXED: Batch with longer delays and better error handling
+   */
   async getMultiplePrices(
     assets: Asset[]
   ): Promise<Map<string, CoinGeckoPrice | null>> {
     const results = new Map<string, CoinGeckoPrice | null>();
     
-    for (const asset of assets) {
+    this.logger.log(`📊 Fetching prices for ${assets.length} crypto assets...`);
+    
+    for (let i = 0; i < assets.length; i++) {
+      const asset = assets[i];
+      
       if (!asset.cryptoConfig) {
         this.logger.warn(`Asset ${asset.symbol} missing cryptoConfig, skipping`);
         results.set(asset.id, null);
@@ -205,14 +280,20 @@ export class CoinGeckoService {
         const price = await this.getCurrentPrice(asset);
         results.set(asset.id, price);
         
-        // Rate limiting: Wait 1.5s between calls
-        await new Promise(resolve => setTimeout(resolve, COINGECKO_CONFIG.RATE_LIMIT_DELAY));
+        // ✅ Longer delay between batch calls (3 seconds = 20 calls/minute max)
+        if (i < assets.length - 1) {
+          this.logger.debug(`⏳ Waiting 3s before next request...`);
+          await new Promise(resolve => setTimeout(resolve, 3000));
+        }
         
       } catch (error) {
         this.logger.error(`Batch fetch error for ${asset.symbol}: ${error.message}`);
         results.set(asset.id, null);
       }
     }
+
+    const successCount = Array.from(results.values()).filter(p => p !== null).length;
+    this.logger.log(`✅ Batch complete: ${successCount}/${assets.length} successful`);
 
     return results;
   }
@@ -254,11 +335,13 @@ export class CoinGeckoService {
   }
 
   private getCoinId(symbol: string): string | null {
-    return this.COIN_ID_MAP[symbol.toUpperCase()] || null;
+    const upperSymbol = symbol.toUpperCase();
+    return this.COIN_ID_MAP[upperSymbol] || null;
   }
 
   private getVsCurrency(currency: string): string | null {
-    return this.VS_CURRENCY_MAP[currency.toUpperCase()] || null;
+    const upperCurrency = currency.toUpperCase();
+    return this.VS_CURRENCY_MAP[upperCurrency] || null;
   }
 
   private async writePriceToRealtimeDb(
@@ -331,14 +414,14 @@ export class CoinGeckoService {
     if (!cached) return null;
 
     const age = Date.now() - cached.timestamp;
-    if (age > 300000) return null;
+    if (age > this.STALE_CACHE_TTL) return null;
 
     return cached.price;
   }
 
   private cleanupCache(): void {
     const now = Date.now();
-    const staleThreshold = 300000;
+    const staleThreshold = this.STALE_CACHE_TTL;
 
     for (const [key, cached] of this.priceCache.entries()) {
       if (now - cached.timestamp > staleThreshold) {
@@ -365,7 +448,9 @@ export class CoinGeckoService {
         : 'Never',
       supportedCoins: Object.keys(this.COIN_ID_MAP).length,
       api: 'CoinGecko Free Tier',
-      rateLimit: '10-50 calls/minute',
+      rateLimit: this.isRateLimited ? `⏸️ Limited until ${new Date(this.rateLimitUntil).toLocaleTimeString()}` : '✅ OK',
+      cacheTTL: `${this.CACHE_TTL / 1000}s`,
+      minCallInterval: `${this.MIN_CALL_INTERVAL / 1000}s`,
     };
   }
 
