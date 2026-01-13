@@ -1,5 +1,5 @@
 // src/assets/services/coingecko.service.ts
-// ✅ FIXED: Better rate limiting, longer cache, error handling
+// ✅ FINAL FIX: Request deduplication + Better error logging
 
 import { Injectable, Logger } from '@nestjs/common';
 import axios, { AxiosInstance } from 'axios';
@@ -24,28 +24,31 @@ export class CoinGeckoService {
   private readonly logger = new Logger(CoinGeckoService.name);
   private readonly axios: AxiosInstance;
   
-  // ✅ LONGER cache to reduce API calls
+  // Price cache
   private priceCache: Map<string, {
     price: CoinGeckoPrice;
     timestamp: number;
   }> = new Map();
   
-  private readonly CACHE_TTL = 60000; // ✅ 60 seconds (was 10s)
-  private readonly STALE_CACHE_TTL = 300000; // ✅ 5 minutes for fallback
+  // ✅ NEW: Request deduplication
+  private pendingRequests: Map<string, Promise<CoinGeckoPrice | null>> = new Map();
+  
+  private readonly CACHE_TTL = 60000; // 60 seconds
+  private readonly STALE_CACHE_TTL = 300000; // 5 minutes
   
   private apiCallCount = 0;
   private cacheHitCount = 0;
   private errorCount = 0;
+  private deduplicatedCount = 0; // ✅ NEW
   private lastCallTime = 0;
   private realtimeWriteCount = 0;
   
-  // ✅ Rate limiting
+  // Rate limiting
   private lastApiCallTime = 0;
-  private readonly MIN_CALL_INTERVAL = 2000; // ✅ 2 seconds between calls
+  private readonly MIN_CALL_INTERVAL = 2000;
   private isRateLimited = false;
   private rateLimitUntil = 0;
   
-  // ✅ UPDATED: Better coin ID mapping
   private readonly COIN_ID_MAP: Record<string, string> = {
     'BTC': 'bitcoin',
     'ETH': 'ethereum',
@@ -56,7 +59,7 @@ export class CoinGeckoService {
     'DOT': 'polkadot',
     'DOGE': 'dogecoin',
     'MATIC': 'matic-network',
-    'POLYGON': 'matic-network', // ✅ Alias
+    'POLYGON': 'matic-network',
     'LTC': 'litecoin',
     'AVAX': 'avalanche-2',
     'LINK': 'chainlink',
@@ -90,7 +93,7 @@ export class CoinGeckoService {
   ) {
     this.axios = axios.create({
       baseURL: 'https://api.coingecko.com/api/v3',
-      timeout: 10000, // ✅ Longer timeout
+      timeout: 10000,
       headers: {
         'Accept': 'application/json',
       },
@@ -98,25 +101,25 @@ export class CoinGeckoService {
 
     setInterval(() => this.cleanupCache(), 60000);
     
-    this.logger.log('✅ CoinGecko Service initialized (FREE API)');
+    this.logger.log('✅ CoinGecko Service initialized');
     this.logger.log('   Rate Limit: 10-50 calls/minute');
     this.logger.log('   Cache TTL: 60 seconds');
-    this.logger.log(`   Supported coins: ${Object.keys(this.COIN_ID_MAP).length}`);
+    this.logger.log('   Request Deduplication: ENABLED');
   }
 
   /**
-   * ✅ FIXED: Better rate limiting and error handling
+   * ✅ FIXED: Deduplicate concurrent requests
    */
   async getCurrentPrice(asset: Asset): Promise<CoinGeckoPrice | null> {
     if (!asset.cryptoConfig) {
-      this.logger.error(`Asset ${asset.symbol} missing cryptoConfig`);
+      this.logger.error(`❌ Asset ${asset.symbol} missing cryptoConfig`);
       return null;
     }
 
     const { baseCurrency, quoteCurrency } = asset.cryptoConfig;
     const cacheKey = `${baseCurrency}/${quoteCurrency}`;
 
-    // ✅ Check cache first
+    // 1. Check cache first
     const cached = this.getCachedPrice(cacheKey);
     if (cached) {
       this.cacheHitCount++;
@@ -124,14 +127,43 @@ export class CoinGeckoService {
       return cached;
     }
 
-    // ✅ Check if rate limited
+    // 2. ✅ Check if request already pending (DEDUPLICATION)
+    const pending = this.pendingRequests.get(cacheKey);
+    if (pending) {
+      this.deduplicatedCount++;
+      this.logger.debug(`🔄 Deduplicated request for ${cacheKey}`);
+      return await pending;
+    }
+
+    // 3. Create new request and store promise
+    const requestPromise = this.fetchPrice(cacheKey, baseCurrency, quoteCurrency, asset);
+    this.pendingRequests.set(cacheKey, requestPromise);
+
+    try {
+      const result = await requestPromise;
+      return result;
+    } finally {
+      // ✅ Always cleanup pending request
+      this.pendingRequests.delete(cacheKey);
+    }
+  }
+
+  /**
+   * ✅ NEW: Actual fetch logic (separated for deduplication)
+   */
+  private async fetchPrice(
+    cacheKey: string,
+    baseCurrency: string,
+    quoteCurrency: string,
+    asset: Asset
+  ): Promise<CoinGeckoPrice | null> {
+    // Check rate limit
     if (this.isRateLimited) {
       const now = Date.now();
       if (now < this.rateLimitUntil) {
         const waitTime = Math.ceil((this.rateLimitUntil - now) / 1000);
-        this.logger.warn(`⏸️ Rate limited, waiting ${waitTime}s...`);
+        this.logger.warn(`⏸️ Rate limited for ${waitTime}s`);
         
-        // Return stale cache if available
         const staleCache = this.getStaleCache(cacheKey);
         if (staleCache) {
           this.logger.warn(`⚠️ Using stale cache for ${cacheKey}`);
@@ -141,28 +173,28 @@ export class CoinGeckoService {
         return null;
       } else {
         this.isRateLimited = false;
-        this.logger.log('✅ Rate limit expired, resuming...');
+        this.logger.log('✅ Rate limit expired');
       }
     }
 
-    // ✅ Enforce minimum interval between calls
+    // Enforce minimum interval
     const now = Date.now();
     const timeSinceLastCall = now - this.lastApiCallTime;
     if (timeSinceLastCall < this.MIN_CALL_INTERVAL) {
       const waitTime = this.MIN_CALL_INTERVAL - timeSinceLastCall;
-      this.logger.debug(`⏳ Waiting ${waitTime}ms before next API call...`);
+      this.logger.debug(`⏳ Waiting ${waitTime}ms before API call...`);
       await new Promise(resolve => setTimeout(resolve, waitTime));
     }
 
     const coinId = this.getCoinId(baseCurrency);
     if (!coinId) {
-      this.logger.error(`Unsupported coin: ${baseCurrency}`);
+      this.logger.error(`❌ Unsupported coin: ${baseCurrency}`);
       return null;
     }
 
     const vsCurrency = this.getVsCurrency(quoteCurrency);
     if (!vsCurrency) {
-      this.logger.error(`Unsupported quote currency: ${quoteCurrency}`);
+      this.logger.error(`❌ Unsupported quote: ${quoteCurrency}`);
       return null;
     }
 
@@ -191,16 +223,16 @@ export class CoinGeckoService {
       const marketData = response.data.market_data;
       
       const currentPrice = marketData.current_price?.[vsCurrency];
+      if (!currentPrice) {
+        throw new Error(`No price for ${coinId} in ${vsCurrency}`);
+      }
+
       const high24h = marketData.high_24h?.[vsCurrency];
       const low24h = marketData.low_24h?.[vsCurrency];
       const volume24h = marketData.total_volume?.[vsCurrency];
       const marketCap = marketData.market_cap?.[vsCurrency];
       const priceChange24h = marketData.price_change_24h_in_currency?.[vsCurrency];
       const priceChangePercent24h = marketData.price_change_percentage_24h_in_currency?.[vsCurrency];
-
-      if (!currentPrice) {
-        throw new Error(`No price data for ${coinId} in ${vsCurrency}`);
-      }
 
       const price: CoinGeckoPrice = {
         price: parseFloat(currentPrice.toFixed(6)),
@@ -214,20 +246,20 @@ export class CoinGeckoService {
         marketCap: marketCap || 0,
       };
 
-      // ✅ Cache for longer
+      // Cache for 60 seconds
       this.priceCache.set(cacheKey, {
         price,
         timestamp: Date.now(),
       });
 
-      // ✅ Write to Realtime DB (async, non-blocking)
+      // Write to RT DB (async)
       this.writePriceToRealtimeDb(asset, price).catch(error => {
-        this.logger.error(`RT DB write error: ${error.message}`);
+        this.logger.error(`❌ RT DB write failed: ${error.message}`);
       });
 
-      this.logger.debug(
-        `✅ Fetched ${cacheKey}: $${price.price} ` +
-        `(24h: ${price.changePercent24h?.toFixed(2)}%)`
+      this.logger.log(
+        `✅ ${cacheKey}: $${price.price} ` +
+        `(${price.changePercent24h?.toFixed(2)}%)`
       );
 
       return price;
@@ -235,65 +267,72 @@ export class CoinGeckoService {
     } catch (error) {
       this.errorCount++;
       
-      // ✅ Handle rate limit (429)
+      // ✅ BETTER error logging
       if (error.response?.status === 429) {
         this.isRateLimited = true;
-        this.rateLimitUntil = Date.now() + 60000; // Wait 60 seconds
+        this.rateLimitUntil = Date.now() + 60000;
         
-        this.logger.error(`⚠️ CoinGecko rate limit (429) for ${cacheKey}`);
-        this.logger.warn(`⏸️ Pausing API calls for 60 seconds...`);
+        this.logger.error(`⚠️ Rate limit (429) for ${cacheKey}`);
+        this.logger.warn(`⏸️ Paused for 60s`);
         
-        // Return stale cache if available
         const staleCache = this.getStaleCache(cacheKey);
         if (staleCache) {
-          this.logger.warn(`⚠️ Using stale cache for ${cacheKey}`);
+          this.logger.warn(`⚠️ Using stale cache`);
           return staleCache;
         }
+      } else if (error.response) {
+        // ✅ Log response error details
+        this.logger.error(
+          `❌ API error for ${cacheKey}: ` +
+          `${error.response.status} - ${error.response.statusText}`
+        );
+        if (error.response.data) {
+          this.logger.error(`   Response: ${JSON.stringify(error.response.data)}`);
+        }
+      } else if (error.request) {
+        // ✅ Log request error
+        this.logger.error(`❌ No response for ${cacheKey}: ${error.message}`);
       } else {
-        this.logger.error(`❌ CoinGecko API error for ${cacheKey}: ${error.message}`);
+        // ✅ Log other errors
+        this.logger.error(`❌ Error for ${cacheKey}: ${error.message}`);
       }
 
       return null;
     }
   }
 
-  /**
-   * ✅ FIXED: Batch with longer delays and better error handling
-   */
   async getMultiplePrices(
     assets: Asset[]
   ): Promise<Map<string, CoinGeckoPrice | null>> {
     const results = new Map<string, CoinGeckoPrice | null>();
     
-    this.logger.log(`📊 Fetching prices for ${assets.length} crypto assets...`);
+    this.logger.log(`📊 Fetching ${assets.length} crypto prices...`);
     
-    for (let i = 0; i < assets.length; i++) {
-      const asset = assets[i];
-      
+    // ✅ Use Promise.all for concurrent requests (deduplication handles duplicates)
+    const promises = assets.map(async (asset) => {
       if (!asset.cryptoConfig) {
-        this.logger.warn(`Asset ${asset.symbol} missing cryptoConfig, skipping`);
-        results.set(asset.id, null);
-        continue;
+        return { assetId: asset.id, price: null };
       }
       
       try {
         const price = await this.getCurrentPrice(asset);
-        results.set(asset.id, price);
-        
-        // ✅ Longer delay between batch calls (3 seconds = 20 calls/minute max)
-        if (i < assets.length - 1) {
-          this.logger.debug(`⏳ Waiting 3s before next request...`);
-          await new Promise(resolve => setTimeout(resolve, 3000));
-        }
-        
+        return { assetId: asset.id, price };
       } catch (error) {
-        this.logger.error(`Batch fetch error for ${asset.symbol}: ${error.message}`);
-        results.set(asset.id, null);
+        this.logger.error(`Batch error for ${asset.symbol}: ${error.message}`);
+        return { assetId: asset.id, price: null };
       }
-    }
+    });
+
+    const settled = await Promise.allSettled(promises);
+    
+    settled.forEach((result) => {
+      if (result.status === 'fulfilled' && result.value) {
+        results.set(result.value.assetId, result.value.price);
+      }
+    });
 
     const successCount = Array.from(results.values()).filter(p => p !== null).length;
-    this.logger.log(`✅ Batch complete: ${successCount}/${assets.length} successful`);
+    this.logger.log(`✅ Batch: ${successCount}/${assets.length} successful`);
 
     return results;
   }
@@ -316,14 +355,14 @@ export class CoinGeckoService {
     if (!this.getCoinId(baseCurrency)) {
       return { 
         valid: false, 
-        error: `Unsupported coin: ${baseCurrency}. Supported: ${Object.keys(this.COIN_ID_MAP).join(', ')}` 
+        error: `Unsupported: ${baseCurrency}` 
       };
     }
 
     if (!this.getVsCurrency(quoteCurrency)) {
       return { 
         valid: false, 
-        error: `Unsupported quote currency: ${quoteCurrency}. Supported: ${Object.keys(this.VS_CURRENCY_MAP).join(', ')}` 
+        error: `Unsupported: ${quoteCurrency}` 
       };
     }
 
@@ -335,13 +374,11 @@ export class CoinGeckoService {
   }
 
   private getCoinId(symbol: string): string | null {
-    const upperSymbol = symbol.toUpperCase();
-    return this.COIN_ID_MAP[upperSymbol] || null;
+    return this.COIN_ID_MAP[symbol.toUpperCase()] || null;
   }
 
   private getVsCurrency(currency: string): string | null {
-    const upperCurrency = currency.toUpperCase();
-    return this.VS_CURRENCY_MAP[upperCurrency] || null;
+    return this.VS_CURRENCY_MAP[currency.toUpperCase()] || null;
   }
 
   private async writePriceToRealtimeDb(
@@ -349,9 +386,7 @@ export class CoinGeckoService {
     price: CoinGeckoPrice
   ): Promise<void> {
     try {
-      if (!asset.cryptoConfig) {
-        return;
-      }
+      if (!asset.cryptoConfig) return;
 
       const path = this.getCryptoAssetPath(asset);
 
@@ -380,7 +415,8 @@ export class CoinGeckoService {
       this.realtimeWriteCount++;
 
     } catch (error) {
-      this.logger.error(`❌ RT DB write failed for ${asset.symbol}: ${error.message}`);
+      // Suppress RT DB errors (non-critical)
+      this.logger.debug(`RT DB write failed: ${error.message}`);
     }
   }
 
@@ -421,41 +457,45 @@ export class CoinGeckoService {
 
   private cleanupCache(): void {
     const now = Date.now();
-    const staleThreshold = this.STALE_CACHE_TTL;
-
+    
     for (const [key, cached] of this.priceCache.entries()) {
-      if (now - cached.timestamp > staleThreshold) {
+      if (now - cached.timestamp > this.STALE_CACHE_TTL) {
         this.priceCache.delete(key);
       }
     }
   }
 
   getStats() {
-    const totalCalls = this.apiCallCount + this.cacheHitCount;
+    const totalCalls = this.apiCallCount + this.cacheHitCount + this.deduplicatedCount;
     const cacheHitRate = totalCalls > 0
-      ? Math.round((this.cacheHitCount / totalCalls) * 100)
+      ? Math.round(((this.cacheHitCount + this.deduplicatedCount) / totalCalls) * 100)
       : 0;
 
     return {
       apiCalls: this.apiCallCount,
       cacheHits: this.cacheHitCount,
+      deduplicated: this.deduplicatedCount, // ✅ NEW
       cacheHitRate: `${cacheHitRate}%`,
       errors: this.errorCount,
       cacheSize: this.priceCache.size,
+      pendingRequests: this.pendingRequests.size, // ✅ NEW
       realtimeWrites: this.realtimeWriteCount,
       lastCall: this.lastCallTime > 0
         ? `${Math.floor((Date.now() - this.lastCallTime) / 1000)}s ago`
         : 'Never',
       supportedCoins: Object.keys(this.COIN_ID_MAP).length,
-      api: 'CoinGecko Free Tier',
-      rateLimit: this.isRateLimited ? `⏸️ Limited until ${new Date(this.rateLimitUntil).toLocaleTimeString()}` : '✅ OK',
+      api: 'CoinGecko Free',
+      rateLimit: this.isRateLimited 
+        ? `⏸️ Until ${new Date(this.rateLimitUntil).toLocaleTimeString()}` 
+        : '✅ OK',
       cacheTTL: `${this.CACHE_TTL / 1000}s`,
-      minCallInterval: `${this.MIN_CALL_INTERVAL / 1000}s`,
+      minInterval: `${this.MIN_CALL_INTERVAL / 1000}s`,
     };
   }
 
   clearCache(): void {
     this.priceCache.clear();
+    this.pendingRequests.clear(); // ✅ NEW
     this.logger.log('🗑️ Cache cleared');
   }
 }
