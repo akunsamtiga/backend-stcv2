@@ -647,25 +647,82 @@ export class AssetsService {
   }
 
   async deleteAsset(assetId: string) {
-    const db = this.firebaseService.getFirestore();
+  const db = this.firebaseService.getFirestore();
 
-    const assetDoc = await db.collection(COLLECTIONS.ASSETS).doc(assetId).get();
-    if (!assetDoc.exists) {
-      throw new NotFoundException('Asset not found');
-    }
-
-    const asset = assetDoc.data() as Asset;
-
-    await db.collection(COLLECTIONS.ASSETS).doc(assetId).delete();
-
-    this.invalidateCache();
-
-    this.logger.log(`🗑️ Asset deleted: ${asset.symbol}`);
-
-    return {
-      message: 'Asset deleted successfully',
-    };
+  // 1. Get asset data first to know the Realtime DB path
+  const assetDoc = await db.collection(COLLECTIONS.ASSETS).doc(assetId).get();
+  
+  if (!assetDoc.exists) {
+    throw new NotFoundException('Asset not found');
   }
+
+  const asset = assetDoc.data() as Asset;
+  const assetPath = asset.realtimeDbPath || this.generateAssetPath(asset);
+
+  this.logger.log('');
+  this.logger.log('🗑️ ================================================');
+  this.logger.log('🗑️ DELETING ASSET WITH REALTIME DB CLEANUP');
+  this.logger.log('🗑️ ================================================');
+  this.logger.log(`   Asset: ${asset.symbol} (${assetId})`);
+  this.logger.log(`   Category: ${asset.category}`);
+  this.logger.log(`   RT DB Path: ${assetPath}`);
+  this.logger.log('🗑️ ================================================');
+
+  // 2. DELETE from Realtime Database FIRST
+  let realtimeDeleteSuccess = false;
+  try {
+    realtimeDeleteSuccess = await this.firebaseService.deleteRealtimeDbData(assetPath);
+    
+    if (realtimeDeleteSuccess) {
+      this.logger.log(`✅ Realtime DB cleanup successful for ${asset.symbol}`);
+    } else {
+      this.logger.warn(`⚠️ Realtime DB cleanup may have failed for ${asset.symbol}`);
+    }
+  } catch (error) {
+    this.logger.error(`❌ Realtime DB cleanup error: ${error.message}`);
+    // Continue with Firestore deletion even if RT DB fails
+  }
+
+  // 3. DELETE from Firestore
+  await db.collection(COLLECTIONS.ASSETS).doc(assetId).delete();
+
+  // 4. Clear cache
+  this.invalidateCache();
+
+  this.logger.log('');
+  this.logger.log('✅ Asset deletion complete');
+  this.logger.log(`   Symbol: ${asset.symbol}`);
+  this.logger.log(`   RT DB: ${realtimeDeleteSuccess ? 'Cleaned' : 'Failed'}`);
+  this.logger.log(`   Firestore: Deleted`);
+  this.logger.log('🗑️ ================================================');
+  this.logger.log('');
+
+  return {
+    message: 'Asset deleted successfully',
+    details: {
+      symbol: asset.symbol,
+      realtimeDbCleaned: realtimeDeleteSuccess,
+      firestoreDeleted: true,
+    },
+  };
+}
+
+// Helper method to generate path if not stored in asset
+private generateAssetPath(asset: Asset): string {
+  if (asset.realtimeDbPath) {
+    return asset.realtimeDbPath;
+  }
+
+  // For crypto assets
+  if (asset.category === 'crypto' && asset.cryptoConfig) {
+    const { baseCurrency, quoteCurrency } = asset.cryptoConfig;
+    return `/crypto/${baseCurrency.toLowerCase()}_${quoteCurrency.toLowerCase().replace('usd', 'usdt')}`;
+  }
+
+  // For normal assets
+  return `/${asset.symbol.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+}
+
 
   async getAllAssets(activeOnly: boolean = false) {
     const startTime = Date.now();

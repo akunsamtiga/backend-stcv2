@@ -21,13 +21,13 @@ export class FirebaseService implements OnModuleInit {
   private readonly logger = new Logger(FirebaseService.name);
   
   private db: admin.firestore.Firestore;
-  private realtimeDb: admin.database.Database | null = null;
+  private realtimeDbAdmin: admin.database.Database | null = null;
   private realtimeDbRest: AxiosInstance | null = null;
   
-  private initialized = false;
-  private firestoreReady = false;
-  private useRestForRealtimeDb = false;
+  // ✅ NEW: Connection status flag
+  private isConnected = false;
   
+  private useRestForRealtimeDb = false;
   private restConnectionPool: AxiosInstance[] = [];
   private readonly POOL_SIZE = 3;
   private currentPoolIndex = 0;
@@ -36,26 +36,39 @@ export class FirebaseService implements OnModuleInit {
   private readonly CACHE_TTL = 30000;
   private readonly STALE_CACHE_TTL = 120000;
   
-  private connectionHealth = {
-    restConnections: new Map<number, { lastSuccess: number; failures: number }>(),
-    lastSuccessfulFetch: Date.now(),
-    consecutiveFailures: 0,
+  private writeQueue: Array<() => Promise<void>> = [];
+  private isProcessingQueue = false;
+  
+  private writeStats = { 
+    success: 0, 
+    failed: 0, 
+    queued: 0,
+    lastSuccessTime: Date.now() 
   };
   
-  private readonly MAX_RETRIES = 2;
-  private readonly RETRY_DELAY_MS = 200;
-  private readonly MAX_CONSECUTIVE_FAILURES = 5;
+  private firestoreReadCount = 0;
+  private realtimeWriteCount = 0;
+  private lastReadReset = Date.now();
+  
+  private lastHeartbeat = Date.now();
+  private heartbeatInterval: NodeJS.Timeout | null = null;
+  
+  private consecutiveErrors = 0;
+  private readonly MAX_CONSECUTIVE_ERRORS = 5;
   
   private operationCount = 0;
   private avgResponseTime = 0;
   private cacheHitRate = 0;
   
-  private writeQueue: Array<() => Promise<void>> = [];
-  private isProcessingQueue = false;
+  private readonly MAX_RETRIES = 2;
+  private readonly RETRY_DELAY_MS = 200;
+  private readonly MAX_CONSECUTIVE_FAILURES = 5;
   
-  private readCount = 0;
-  private writeCount = 0;
-  private lastStatsReset = Date.now();
+  private connectionHealth = {
+    restConnections: new Map<number, { lastSuccess: number; failures: number }>(),
+    lastSuccessfulFetch: Date.now(),
+    consecutiveFailures: 0,
+  };
 
   constructor(private configService: ConfigService) {}
 
@@ -78,11 +91,11 @@ export class FirebaseService implements OnModuleInit {
       if (!admin.apps.length) {
         admin.initializeApp({
           credential: admin.credential.cert(serviceAccount as admin.ServiceAccount),
+          databaseURL: this.configService.get('firebase.realtimeDbUrl'),
         });
       }
 
       this.db = admin.firestore();
-      
       this.db.settings({
         ignoreUndefinedProperties: true,
         timestampsInSnapshots: true,
@@ -94,16 +107,16 @@ export class FirebaseService implements OnModuleInit {
           this.db.collection('_health_check').limit(1).get(),
           new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 3000))
         ]);
-        this.firestoreReady = true;
         this.logger.log('✅ Firestore ready');
       } catch (error) {
         this.logger.warn(`⚠️ Firestore test failed: ${error.message}`);
-        this.firestoreReady = true;
       }
 
       await this.initializeRealtimeDbWithPool();
       
-      this.initialized = true;
+      // ✅ Set initial connection status
+      this.isConnected = this.useRestForRealtimeDb || this.realtimeDbAdmin !== null;
+      
       this.logger.log('✅ Firebase OPTIMIZED mode ready!');
       this.logger.log('💡 Optimizations:');
       this.logger.log('   • Connection pool: 3');
@@ -116,6 +129,7 @@ export class FirebaseService implements OnModuleInit {
       
     } catch (error) {
       this.logger.error(`❌ Firebase initialization failed: ${error.message}`);
+      this.isConnected = false; // ✅ Set false on error
       throw error;
     }
   }
@@ -125,6 +139,7 @@ export class FirebaseService implements OnModuleInit {
     
     if (!realtimeDbUrl) {
       this.logger.warn('⚠️ Realtime DB URL not configured');
+      this.isConnected = false; // ✅ Set false jika tidak ada URL
       return;
     }
 
@@ -175,21 +190,25 @@ export class FirebaseService implements OnModuleInit {
       
       this.useRestForRealtimeDb = true;
       this.realtimeDbRest = this.restConnectionPool[0];
+      this.isConnected = true; // ✅ Set true jika sukses
       
       this.logger.log(`✅ Optimized REST pool created (${this.POOL_SIZE} connections)`);
       
     } catch (restError) {
       this.logger.warn(`⚠️ REST API failed: ${restError.message}`);
+      this.isConnected = false; // ✅ Set false jika gagal
       
       try {
         this.logger.log('⚡ Trying Admin SDK...');
-        this.realtimeDb = admin.database();
-        this.realtimeDb.goOffline();
-        this.realtimeDb.goOnline();
+        this.realtimeDbAdmin = admin.database();
+        this.realtimeDbAdmin.goOffline();
+        this.realtimeDbAdmin.goOnline();
         this.useRestForRealtimeDb = false;
+        this.isConnected = true; // ✅ Set true jika Admin SDK berhasil
         this.logger.log('✅ Realtime DB via Admin SDK');
       } catch (sdkError) {
         this.logger.error('❌ Both methods failed');
+        this.isConnected = false;
       }
     }
   }
@@ -222,8 +241,8 @@ export class FirebaseService implements OnModuleInit {
   }
 
   async getRealtimeDbValue(path: string, useCache = true): Promise<any> {
-    if (!this.initialized) {
-      throw new Error('Firebase not initialized');
+    if (!this.isConnected) { // ✅ Use the isConnected property
+      throw new Error('Firebase not connected');
     }
 
     const startTime = Date.now();
@@ -258,7 +277,6 @@ export class FirebaseService implements OnModuleInit {
 
       } catch (error) {
         lastError = error;
-        
         const connIndex = this.currentPoolIndex;
         const health = this.connectionHealth.restConnections.get(connIndex);
         if (health) {
@@ -317,8 +335,8 @@ export class FirebaseService implements OnModuleInit {
       
       return response.data;
       
-    } else if (this.realtimeDb) {
-      const snapshot = await this.realtimeDb.ref(path).once('value');
+    } else if (this.realtimeDbAdmin) {
+      const snapshot = await this.realtimeDbAdmin.ref(path).once('value');
       return snapshot.val();
       
     } else {
@@ -327,8 +345,10 @@ export class FirebaseService implements OnModuleInit {
   }
 
   async setRealtimeDbValue(path: string, data: any, critical = false): Promise<void> {
-    if (!this.initialized) {
-      throw new Error('Firebase not initialized');
+    if (!this.isConnected) {
+      this.logger.error('❌ Cannot write: Firebase not connected');
+      this.writeStats.failed++;
+      return;
     }
 
     const writeOperation = async () => {
@@ -337,13 +357,16 @@ export class FirebaseService implements OnModuleInit {
           if (this.useRestForRealtimeDb && this.restConnectionPool.length > 0) {
             const conn = this.getNextConnection();
             await conn.put(`${path}.json`, data);
-          } else if (this.realtimeDb) {
-            await this.realtimeDb.ref(path).set(data);
+          } else if (this.realtimeDbAdmin) {
+            await this.realtimeDbAdmin.ref(path).set(data);
           } else {
             throw new Error('Realtime Database not available');
           }
 
-          this.writeCount++;
+          this.writeStats.success++;
+          this.realtimeWriteCount++;
+          this.writeStats.lastSuccessTime = Date.now();
+          this.consecutiveErrors = 0;
           this.queryCache.delete(path);
           return;
 
@@ -353,30 +376,92 @@ export class FirebaseService implements OnModuleInit {
           }
         }
       }
+      
+      this.writeStats.failed++;
+      this.consecutiveErrors++;
     };
 
     if (critical) {
       await writeOperation();
     } else {
+      this.writeStats.queued++;
       this.writeQueue.push(writeOperation);
       this.processWriteQueue();
     }
   }
 
-  private async processWriteQueue() {
-    if (this.isProcessingQueue || this.writeQueue.length === 0) return;
+  async setRealtimeDbValueAsync(path: string, data: any): Promise<void> {
+    this.writeStats.queued++;
+    this.writeQueue.push(async () => {
+      try {
+        await this.setRealtimeDbValue(path, data, true);
+      } catch (error) {
+        this.logger.error(`Async write failed: ${error.message}`);
+      }
+    });
+    
+    if (this.writeQueue.length > 500) {
+      this.logger.warn(`⚠️ Write queue overflow (${this.writeQueue.length}), dropping oldest entries`);
+      this.writeQueue = this.writeQueue.slice(-250);
+    }
+  }
+
+  private async processWriteQueue(): Promise<void> {
+    if (this.isProcessingQueue || this.writeQueue.length === 0) {
+      return;
+    }
     
     this.isProcessingQueue = true;
     
-    while (this.writeQueue.length > 0) {
-      const batch = this.writeQueue.splice(0, 5);
-      
-      await Promise.allSettled(
-        batch.map(write => write())
-      );
-    }
+    const batch = this.writeQueue.splice(0, 20);
+    
+    await Promise.allSettled(
+      batch.map(write => write())
+    );
+    
+    const now = Date.now();
+    this.writeQueue = this.writeQueue.filter(item => {
+      // Keep items that are less than 5 minutes old
+      return now - (item as any).addedAt < 300000;
+    });
     
     this.isProcessingQueue = false;
+  }
+
+  // ✅ FIXED: Delete method for Realtime Database
+  async deleteRealtimeDbData(path: string): Promise<boolean> {
+    // ✅ Check connection status correctly
+    if (!this.isConnected || (!this.useRestForRealtimeDb && !this.realtimeDbAdmin)) {
+      this.logger.error('❌ Cannot delete: Realtime DB not available');
+      return false;
+    }
+
+    try {
+      // Ensure path starts with /
+      const cleanPath = path.startsWith('/') ? path : `/${path}`;
+      
+      this.logger.log(`🗑️ Deleting Realtime DB path: ${cleanPath}...`);
+
+      if (this.useRestForRealtimeDb && this.restConnectionPool.length > 0) {
+        const conn = this.getNextConnection();
+        await conn.delete(`${cleanPath}.json`);
+      } else if (this.realtimeDbAdmin) {
+        await this.realtimeDbAdmin.ref(cleanPath).remove();
+      }
+
+      this.logger.log(`✅ Successfully deleted: ${cleanPath}`);
+      return true;
+
+    } catch (error) {
+      // Jika path tidak ada, tetap anggap sukses (idempotent)
+      if (error.response?.status === 404 || error.code === 'DATABASE_REFERENCE_NOT_FOUND') {
+        this.logger.warn(`⚠️ Path not found (treating as success): ${path}`);
+        return true;
+      }
+
+      this.logger.error(`❌ Failed to delete ${path}: ${error.message}`);
+      return false;
+    }
   }
 
   private getCachedQuery(path: string): any | null {
@@ -468,29 +553,30 @@ export class FirebaseService implements OnModuleInit {
       
     } catch (error) {
       this.logger.error(`❌ Reconnection failed: ${error.message}`);
+      this.isConnected = false;
     }
   }
 
   private resetDailyStats(): void {
-    const hoursSinceReset = (Date.now() - this.lastStatsReset) / 3600000;
+    const hoursSinceReset = (Date.now() - this.lastReadReset) / 3600000;
     
     this.logger.log('📊 Daily Stats:');
-    this.logger.log(`   • Reads: ${this.readCount} (${Math.round(this.readCount / hoursSinceReset)}/hour)`);
-    this.logger.log(`   • Writes: ${this.writeCount} (${Math.round(this.writeCount / hoursSinceReset)}/hour)`);
+    this.logger.log(`   • Reads: ${this.firestoreReadCount} (${Math.round(this.firestoreReadCount / hoursSinceReset)}/hour)`);
+    this.logger.log(`   • Writes: ${this.writeStats.success} (${Math.round(this.writeStats.success / hoursSinceReset)}/hour)`);
     
-    this.readCount = 0;
-    this.writeCount = 0;
-    this.lastStatsReset = Date.now();
+    this.firestoreReadCount = 0;
+    this.writeStats.success = 0;
+    this.lastReadReset = Date.now();
   }
 
   isFirestoreReady(): boolean {
-    return this.firestoreReady;
+    return this.db !== undefined;
   }
 
   async waitForFirestore(maxWaitMs: number = 5000): Promise<void> {
     const startTime = Date.now();
     
-    while (!this.firestoreReady) {
+    while (!this.isFirestoreReady()) {
       if (Date.now() - startTime > maxWaitMs) {
         throw new Error('Firestore initialization timeout');
       }
@@ -499,28 +585,22 @@ export class FirebaseService implements OnModuleInit {
   }
 
   getFirestore(): admin.firestore.Firestore {
-    if (!this.initialized || !this.db) {
+    if (!this.db) {
       throw new Error('Firestore not initialized');
     }
-    if (!this.firestoreReady) {
+    if (!this.isFirestoreReady()) {
       throw new Error('Firestore not ready yet');
     }
     
-    this.readCount++;
+    this.firestoreReadCount++;
     return this.db;
   }
 
   getRealtimeDatabase(): admin.database.Database {
-    if (!this.initialized) {
-      throw new Error('Firebase not initialized');
-    }
-    if (this.useRestForRealtimeDb) {
-      throw new Error('Use getRealtimeDbValue() instead');
-    }
-    if (!this.realtimeDb) {
+    if (!this.realtimeDbAdmin) {
       throw new Error('Realtime Database not available');
     }
-    return this.realtimeDb;
+    return this.realtimeDbAdmin;
   }
 
   async generateId(collection: string): Promise<string> {
@@ -538,7 +618,7 @@ export class FirebaseService implements OnModuleInit {
       updatedAt: timestamp,
     });
     
-    this.writeCount++;
+    this.writeStats.success++;
     return id;
   }
 
@@ -548,7 +628,7 @@ export class FirebaseService implements OnModuleInit {
       updatedAt: new Date().toISOString(),
     });
     
-    this.writeCount++;
+    this.writeStats.success++;
   }
 
   async batchWrite(operations: BatchOperation[]): Promise<void> {
@@ -580,7 +660,7 @@ export class FirebaseService implements OnModuleInit {
       }
 
       await batch.commit();
-      this.writeCount += chunk.length;
+      this.writeStats.success += chunk.length;
     }
   }
 
@@ -594,7 +674,7 @@ export class FirebaseService implements OnModuleInit {
     const timeSinceLastSuccess = Date.now() - this.connectionHealth.lastSuccessfulFetch;
     const totalOps = this.operationCount + this.cacheHitRate;
     const cacheHitPercentage = totalOps > 0 ? Math.round((this.cacheHitRate / totalOps) * 100) : 0;
-    const hoursSinceReset = (Date.now() - this.lastStatsReset) / 3600000;
+    const hoursSinceReset = (Date.now() - this.lastReadReset) / 3600000;
     
     return {
       operations: this.operationCount,
@@ -604,20 +684,37 @@ export class FirebaseService implements OnModuleInit {
       connectionPoolSize: this.restConnectionPool.length,
       writeQueueSize: this.writeQueue.length,
       usingREST: this.useRestForRealtimeDb,
-      firestoreReady: this.firestoreReady,
       dailyStats: {
-        reads: this.readCount,
-        writes: this.writeCount,
-        estimatedDailyReads: Math.round(this.readCount / hoursSinceReset * 24),
-        estimatedDailyWrites: Math.round(this.writeCount / hoursSinceReset * 24),
-        readsRemaining: 250000 - Math.round(this.readCount / hoursSinceReset * 24),
-        writesRemaining: 100000 - Math.round(this.writeCount / hoursSinceReset * 24),
+        reads: this.firestoreReadCount,
+        writes: this.writeStats.success,
+        estimatedDailyReads: Math.round(this.firestoreReadCount / hoursSinceReset * 24),
+        estimatedDailyWrites: Math.round(this.writeStats.success / hoursSinceReset * 24),
       },
       health: {
         consecutiveFailures: this.connectionHealth.consecutiveFailures,
         lastSuccessMs: timeSinceLastSuccess,
         isHealthy: this.connectionHealth.consecutiveFailures < this.MAX_CONSECUTIVE_FAILURES,
+        isConnected: this.isConnected, // ✅ Return connection status
       },
     };
+  }
+
+  async shutdown() {
+    this.logger.warn('🛑 Shutting down Firebase Service...');
+    
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+    }
+    
+    if (this.writeQueue.length > 0) {
+      this.logger.warn(`📤 Processing ${this.writeQueue.length} remaining writes...`);
+      
+      while (this.writeQueue.length > 0) {
+        const batch = this.writeQueue.splice(0, 10);
+        await Promise.allSettled(batch.map(write => write()));
+      }
+    }
+    
+    this.logger.warn('✅ Firebase Service shutdown complete');
   }
 }

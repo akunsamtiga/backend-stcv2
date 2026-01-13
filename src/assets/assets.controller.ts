@@ -94,21 +94,33 @@ export class AssetsController {
     return this.assetsService.updateAsset(assetId, updateAssetDto);
   }
 
-  @Delete(':id')
-  @UseGuards(RolesGuard)
-  @Roles(USER_ROLES.SUPER_ADMIN)
-  @ApiOperation({ 
-    summary: 'Delete asset (Super Admin only)',
-    description: 'Permanently delete an asset'
-  })
-  @ApiParam({ name: 'id', description: 'Asset ID' })
-  @ApiResponse({ 
-    status: 200, 
-    description: 'Asset deleted successfully' 
-  })
-  deleteAsset(@Param('id') assetId: string) {
-    return this.assetsService.deleteAsset(assetId);
+@Delete(':id')
+@UseGuards(RolesGuard)
+@Roles(USER_ROLES.SUPER_ADMIN)
+@ApiOperation({ 
+  summary: 'Delete asset (Super Admin only)',
+  description: 'Permanently delete an asset and clean up associated Realtime Database data'
+})
+@ApiParam({ name: 'id', description: 'Asset ID' })
+@ApiResponse({ 
+  status: 200, 
+  description: 'Asset deleted successfully with cleanup',
+  schema: {
+    example: {
+      success: true,
+      message: 'Asset deleted successfully',
+      data: {
+        symbol: 'BTC/USD',
+        realtimeDbCleaned: true,
+        firestoreDeleted: true,
+        path: '/crypto/btc_usdt'
+      }
+    }
   }
+})
+async deleteAsset(@Param('id') assetId: string) {
+  return this.assetsService.deleteAsset(assetId);
+}
 
   @Get(':id/settings')
   @UseGuards(RolesGuard)
