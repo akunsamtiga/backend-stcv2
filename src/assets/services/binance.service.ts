@@ -1,5 +1,5 @@
 // src/assets/services/binance.service.ts
-// ✅ FIXED: Automatic USD to USDT mapping for Binance
+// ✅ FIXED: Automatic USD to USDT mapping for Binance with enhanced debug logging
 
 import { Injectable, Logger } from '@nestjs/common';
 import axios, { AxiosInstance } from 'axios';
@@ -99,7 +99,7 @@ export class BinanceService {
   }
 
   /**
-   * ✅ FIXED: Main entry point with proper error handling
+   * ✅ FIXED: Main entry point with proper error handling and debug logging
    */
   async getCurrentPrice(asset: Asset): Promise<BinancePrice | null> {
     if (!asset.cryptoConfig) {
@@ -157,7 +157,7 @@ export class BinanceService {
   }
 
   /**
-   * ✅ FIXED: Actual fetch logic with better error messages
+   * ✅ FIXED: Actual fetch logic with BETTER error messages and Firebase debug
    */
   private async fetchPrice(
     cacheKey: string,
@@ -200,11 +200,12 @@ export class BinanceService {
 
       this.logger.debug(`📡 API call #${this.apiCallCount}: ${binanceSymbol} (${cacheKey})`);
 
-      // ✅ Call Binance API
+      // ✅ Call Binance API with explicit timeout
       const response = await this.axios.get('/ticker/24hr', {
         params: {
           symbol: binanceSymbol,
         },
+        timeout: 5000, // ✅ 5 second timeout
       });
 
       if (!response.data?.lastPrice) {
@@ -231,9 +232,14 @@ export class BinanceService {
         timestamp: Date.now(),
       });
 
-      // Write to RT DB (async)
+      // ✅ Write to RT DB (async) with DEBUG LOG
+      const path = this.getCryptoAssetPath(asset);
+      this.logger.log(`💾 Writing to Firebase: ${asset.symbol} → ${path}/current_price`);
+      
       this.writePriceToRealtimeDb(asset, price).catch(error => {
         this.logger.error(`❌ RT DB write failed: ${error.message}`);
+        this.logger.error(`❌ Path: ${path}/current_price`);
+        this.logger.error(`❌ Error details: ${JSON.stringify(error.response?.data || error.message)}`);
       });
 
       this.logger.log(
@@ -250,7 +256,6 @@ export class BinanceService {
       if (error.response?.status === 429) {
         this.isRateLimited = true;
         this.rateLimitUntil = Date.now() + 60000;
-        
         this.logger.error(`⚠️ Rate limit (429) for ${cacheKey}`);
         this.logger.warn(`⏸️ Paused for 60s`);
         
@@ -259,6 +264,12 @@ export class BinanceService {
           this.logger.warn(`⚠️ Using stale cache`);
           return staleCache;
         }
+      } else if (error.response?.status === 401) {
+        // ❌ CRITICAL: Firebase unauthorized
+        this.logger.error(`❌ UNAUTHORIZED - Check Firebase RT DB rules! ${error.message}`);
+      } else if (error.response?.status === 403) {
+        // ❌ CRITICAL: Firebase forbidden
+        this.logger.error(`❌ FORBIDDEN - Firebase permission denied! ${error.message}`);
       } else if (error.response?.status === 400) {
         // Symbol not found or invalid
         this.logger.error(`❌ Invalid symbol: ${binanceSymbol}`);
@@ -285,7 +296,7 @@ export class BinanceService {
   }
 
   /**
-   * ✅ Batch fetch multiple prices
+   * ✅ FIXED: Batch fetch multiple prices
    */
   async getMultiplePrices(
     assets: Asset[]
@@ -384,47 +395,6 @@ export class BinanceService {
   }
 
   /**
-   * ✅ Write price to Realtime Database
-   */
-  private async writePriceToRealtimeDb(
-    asset: Asset,
-    price: BinancePrice
-  ): Promise<void> {
-    try {
-      if (!asset.cryptoConfig) return;
-
-      const path = this.getCryptoAssetPath(asset);
-
-      const priceData = {
-        price: price.price,
-        timestamp: price.timestamp,
-        datetime: price.datetime,
-        datetime_iso: TimezoneUtil.toISOString(),
-        timezone: 'Asia/Jakarta',
-        volume24h: price.volume24h || 0,
-        change24h: price.change24h || 0,
-        changePercent24h: price.changePercent24h || 0,
-        high24h: price.high24h || 0,
-        low24h: price.low24h || 0,
-        marketCap: 0, // Binance doesn't provide market cap in this endpoint
-        source: 'binance',
-        pair: `${asset.cryptoConfig.baseCurrency}/${asset.cryptoConfig.quoteCurrency}`,
-      };
-
-      await this.firebaseService.setRealtimeDbValue(
-        `${path}/current_price`,
-        priceData,
-        false
-      );
-
-      this.realtimeWriteCount++;
-
-    } catch (error) {
-      this.logger.error(`❌ RT DB write failed: ${error.message}`);
-    }
-  }
-
-  /**
    * ✅ FIXED: Generate proper path with USD->USDT mapping
    */
   private getCryptoAssetPath(asset: Asset): string {
@@ -443,14 +413,60 @@ export class BinanceService {
     const { baseCurrency, quoteCurrency } = asset.cryptoConfig;
     
     // ✅ Auto-map USD to USDT in path
-    const normalizedQuote = quoteCurrency.toUpperCase() === 'USD' 
-      ? 'usdt' 
-      : quoteCurrency.toLowerCase();
+    const normalizedQuote = quoteCurrency.toUpperCase();
+    const finalQuote = normalizedQuote === 'USD' ? 'usdt' : quoteCurrency.toLowerCase();
     
-    const path = `/crypto/${baseCurrency.toLowerCase()}_${normalizedQuote}`;
+    const path = `/crypto/${baseCurrency.toLowerCase()}_${finalQuote}`;
     return path;
   }
+/**
+ * ✅ FIXED: Firebase write with proper error handling and debug logging
+ */
+private async writePriceToRealtimeDb(
+  asset: Asset,
+  price: BinancePrice
+): Promise<void> {
+  let path = ''; // ✅ Initialize with default value
+  try {
+    if (!asset.cryptoConfig) return;
 
+    path = this.getCryptoAssetPath(asset); // ✅ Assign value
+    this.logger.log(`📝 Writing price to: ${path}/current_price`);
+
+    const priceData = {
+      price: price.price,
+      timestamp: price.timestamp,
+      datetime: price.datetime,
+      datetime_iso: TimezoneUtil.toISOString(),
+      timezone: 'Asia/Jakarta',
+      volume24h: price.volume24h || 0,
+      change24h: price.change24h || 0,
+      changePercent24h: price.changePercent24h || 0,
+      high24h: price.high24h || 0,
+      low24h: price.low24h || 0,
+      marketCap: 0,
+      source: 'binance',
+      pair: `${asset.cryptoConfig.baseCurrency}/${asset.cryptoConfig.quoteCurrency}`,
+    };
+
+    await this.firebaseService.setRealtimeDbValue(
+      `${path}/current_price`,
+      priceData,
+      false
+    );
+
+    this.realtimeWriteCount++;
+    this.logger.log(`✅ RT DB write success for ${asset.symbol}`);
+
+  } catch (error) {
+    this.logger.error(`❌ RT DB write failed: ${error.message}`);
+    if (path) { // ✅ Pastikan path sudah didefinisikan sebelum dipakai
+      this.logger.error(`❌ Path: ${path}/current_price`);
+    }
+    this.logger.error(`❌ Error details: ${JSON.stringify(error.response?.data || error.message)}`);
+    throw error;
+  }
+}
   /**
    * Cache management
    */
