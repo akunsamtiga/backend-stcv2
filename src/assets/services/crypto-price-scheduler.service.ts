@@ -1,10 +1,7 @@
-// src/assets/services/crypto-price-scheduler.service.ts
-// ✅ FIXED: Stop scheduler if no crypto assets
-
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron, SchedulerRegistry } from '@nestjs/schedule';
 import { FirebaseService } from '../../firebase/firebase.service';
-import { CoinGeckoService } from './coingecko.service';
+import { BinanceService } from './binance.service';  // ✅ CHANGED
 import { AssetsService } from '../assets.service';
 import { CryptoTimeframeManager, CryptoBar } from './crypto-timeframe-manager';
 import { ASSET_CATEGORY } from '../../common/constants';
@@ -33,7 +30,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
 
   constructor(
     private firebaseService: FirebaseService,
-    private coinGeckoService: CoinGeckoService,
+    private binanceService: BinanceService,  // ✅ CHANGED
     private assetsService: AssetsService,
     private schedulerRegistry: SchedulerRegistry,
   ) {}
@@ -81,20 +78,20 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       
       this.logger.log('');
       this.logger.log('💎 ================================================');
-      this.logger.log('💎 CRYPTO PRICE SCHEDULER WITH OHLC - COINGECKO');
+      this.logger.log('💎 CRYPTO PRICE SCHEDULER WITH OHLC - BINANCE');  // ✅ CHANGED
       this.logger.log('💎 ================================================');
       this.logger.log(`💎 Active Crypto Assets: ${this.cryptoAssets.length}`);
       this.cryptoAssets.forEach(asset => {
         const pair = `${asset.cryptoConfig?.baseCurrency}/${asset.cryptoConfig?.quoteCurrency}`;
         const path = asset.realtimeDbPath || 
-          `/crypto/${asset.cryptoConfig?.baseCurrency.toLowerCase()}_${asset.cryptoConfig?.quoteCurrency.toLowerCase()}`;
+          `/crypto/${asset.cryptoConfig?.baseCurrency.toLowerCase()}_${asset.cryptoConfig?.quoteCurrency.toLowerCase().replace('usd', 'usdt')}`;
         this.logger.log(`   • ${asset.symbol} (${pair}) → ${path}`);
       });
       this.logger.log(`⚡ Update Interval: ${this.UPDATE_INTERVAL}ms (${this.UPDATE_INTERVAL / 1000}s)`);
       this.logger.log(`📊 OHLC Timeframes: 1s, 1m, 5m, 15m, 30m, 1h, 4h, 1d`);
       this.logger.log(`🔄 Asset Refresh: ${this.REFRESH_INTERVAL}ms (${this.REFRESH_INTERVAL / 60000}m)`);
       this.logger.log(`🗑️ Cleanup: Every ${this.CLEANUP_INTERVAL / 3600000}h`);
-      this.logger.log('💎 API: CoinGecko FREE (No API key needed)');
+      this.logger.log('💎 API: Binance FREE (No API key needed)');  // ✅ CHANGED
       this.logger.log('💎 ================================================');
       this.logger.log('');
       
@@ -128,7 +125,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       }
     }, this.UPDATE_INTERVAL);
     
-    this.logger.log('✅ Crypto price scheduler with OHLC started (CoinGecko)');
+    this.logger.log('✅ Crypto price scheduler with OHLC started (Binance)');  // ✅ CHANGED
   }
 
   @Cron('*/10 * * * *')
@@ -159,7 +156,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     const startTime = Date.now();
     
     try {
-      const priceMap = await this.coinGeckoService.getMultiplePrices(this.cryptoAssets);
+      const priceMap = await this.binanceService.getMultiplePrices(this.cryptoAssets);  // ✅ CHANGED
       
       let successCount = 0;
       let failCount = 0;
@@ -284,7 +281,9 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     }
     
     const { baseCurrency, quoteCurrency } = asset.cryptoConfig;
-    return `/crypto/${baseCurrency.toLowerCase()}_${quoteCurrency.toLowerCase()}`;
+    // ✅ FIXED: Map USD to USDT for Binance
+    const quote = quoteCurrency.toLowerCase().replace('usd', 'usdt');
+    return `/crypto/${baseCurrency.toLowerCase()}_${quote}`;
   }
 
   private async cleanupOldData(): Promise<void> {
@@ -349,12 +348,12 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       return;
     }
     
-    const stats = this.coinGeckoService.getStats();
+    const stats = this.binanceService.getStats();  // ✅ CHANGED
     const uptime = Date.now() - this.lastUpdateTime;
     
     this.logger.log('');
     this.logger.log('📊 ================================================');
-    this.logger.log('📊 CRYPTO PRICE + OHLC SCHEDULER STATS (COINGECKO)');
+    this.logger.log('📊 CRYPTO PRICE + OHLC SCHEDULER STATS (BINANCE)');  // ✅ CHANGED
     this.logger.log('📊 ================================================');
     this.logger.log(`   Assets: ${this.cryptoAssets.length}`);
     this.logger.log(`   Running: ${this.isRunning ? '✅' : '❌'}`);
@@ -376,7 +375,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     });
     this.logger.log('');
     
-    this.logger.log('   CoinGecko Stats:');
+    this.logger.log('   Binance Stats:');  // ✅ CHANGED
     this.logger.log(`     API Calls: ${stats.apiCalls}`);
     this.logger.log(`     Cache Hits: ${stats.cacheHits}`);
     this.logger.log(`     Hit Rate: ${stats.cacheHitRate}`);
@@ -416,7 +415,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
         ? `${Math.floor((Date.now() - this.lastUpdateTime) / 1000)}s ago`
         : 'Never',
       updateInterval: `${this.UPDATE_INTERVAL}ms`,
-      api: 'CoinGecko FREE',
+      api: 'Binance FREE',  // ✅ CHANGED
       assets: this.cryptoAssets.map(a => ({
         symbol: a.symbol,
         pair: `${a.cryptoConfig?.baseCurrency}/${a.cryptoConfig?.quoteCurrency}`,

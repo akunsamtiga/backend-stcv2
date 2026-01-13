@@ -1,10 +1,7 @@
-// src/assets/assets.service.ts
-// ✅ UPDATED: Changed from CryptoCompare to CoinGecko
-
 import { Injectable, NotFoundException, ConflictException, Logger, RequestTimeoutException, BadRequestException } from '@nestjs/common';
 import { FirebaseService } from '../firebase/firebase.service';
 import { PriceFetcherService } from './services/price-fetcher.service';
-import { CoinGeckoService } from './services/coingecko.service';  // ✅ Changed from CryptoCompareService
+import { BinanceService } from './services/binance.service';  // ✅ CHANGED
 import { CreateAssetDto } from './dto/create-asset.dto';
 import { UpdateAssetDto } from './dto/update-asset.dto';
 import { COLLECTIONS, ALL_DURATIONS, ASSET_CATEGORY, ASSET_DATA_SOURCE } from '../common/constants';
@@ -42,7 +39,7 @@ export class AssetsService {
   constructor(
     private firebaseService: FirebaseService,
     private priceFetcherService: PriceFetcherService,
-    private coinGeckoService: CoinGeckoService,  // ✅ Changed from cryptoCompareService
+    private binanceService: BinanceService,  // ✅ CHANGED
   ) {
     setTimeout(async () => {
       try {
@@ -151,7 +148,7 @@ export class AssetsService {
           category: 'crypto',
           profitRate: createAssetDto.profitRate,
           isActive: createAssetDto.isActive,
-          dataSource: 'coingecko',  // ✅ Changed from 'cryptocompare'
+          dataSource: 'binance',  // ✅ CHANGED
           realtimeDbPath: realtimeDbPath,
           cryptoConfig: {
             baseCurrency: plainCryptoConfig.baseCurrency.toUpperCase(),
@@ -239,9 +236,10 @@ export class AssetsService {
           this.logger.log(`   💎 Exchange: ${createAssetDto.cryptoConfig.exchange}`);
         }
         this.logger.log(`   🔗 RT DB Path: ${plainAssetData.realtimeDbPath}`);
-        this.logger.log(`   ⚡ Price Source: CoinGecko API (FREE)`);  // ✅ Changed
-        this.logger.log(`   ⚡ Price Flow: CoinGecko → Backend → Realtime DB`);  // ✅ Changed
+        this.logger.log(`   ⚡ Price Source: Binance API (FREE)`);  // ✅ CHANGED
+        this.logger.log(`   ⚡ Price Flow: Binance API → Backend → Realtime DB`);  // ✅ CHANGED
         this.logger.log(`   ⚡ Simulator: NOT USED (real-time API data)`);
+        this.logger.log(`   ⚡ API Key: Not required`);  // ✅ NEW
       } else {
         this.logger.log(`   🔗 RT DB Path: ${createAssetDto.realtimeDbPath || 'N/A'}`);
         this.logger.log(`   ⚡ Simulator: WILL BE SIMULATED`);
@@ -261,12 +259,12 @@ export class AssetsService {
         storageInfo: createAssetDto.category === 'crypto' 
           ? {
               type: 'crypto',
-              description: '💎 Crypto prices fetched from CoinGecko API and stored to Realtime Database',  // ✅ Changed
-              priceFlow: 'CoinGecko API → Backend → Realtime Database',  // ✅ Changed
+              description: '💎 Crypto prices fetched from Binance API and stored to Realtime Database',  // ✅ CHANGED
+              priceFlow: 'Binance API → Backend → Realtime Database',  // ✅ CHANGED
               realtimeDbPath: plainAssetData.realtimeDbPath,
-              updateFrequency: 'Every price fetch (cached 10s)',  // ✅ Changed cache duration
+              updateFrequency: 'Every price fetch (cached 60s)',  // ✅ CHANGED cache duration
               simulatorUsed: false,
-              apiInfo: 'CoinGecko FREE - No API key needed',  // ✅ New
+              apiInfo: 'Binance FREE - No API key needed',  // ✅ NEW
             }
           : {
               type: 'normal',
@@ -294,7 +292,7 @@ export class AssetsService {
   }
 
   /**
-   * ✅ UPDATED: Changed from CryptoCompare to CoinGecko validation
+   * ✅ UPDATED: Changed from CoinGecko to Binance validation
    */
   private async validateCryptoAsset(dto: CreateAssetDto): Promise<void> {
     this.logger.log('🔍 Validating crypto asset configuration...');
@@ -302,9 +300,9 @@ export class AssetsService {
     // ============================================
     // VALIDATION 1: Data Source
     // ============================================
-    if (dto.dataSource !== ASSET_DATA_SOURCE.COINGECKO) {  // ✅ Changed from CRYPTOCOMPARE
+    if (dto.dataSource !== ASSET_DATA_SOURCE.BINANCE) {  // ✅ CHANGED
       throw new BadRequestException(
-        'Crypto assets must use "coingecko" as data source'  // ✅ Changed
+        'Crypto assets must use "binance" as data source'  // ✅ CHANGED
       );
     }
 
@@ -351,7 +349,7 @@ export class AssetsService {
     // ============================================
     if (dto.apiEndpoint) {
       throw new BadRequestException(
-        'Crypto assets should NOT have apiEndpoint (they use CoinGecko API)'  // ✅ Changed
+        'Crypto assets should NOT have apiEndpoint (they use Binance API)'  // ✅ CHANGED
       );
     }
 
@@ -361,7 +359,7 @@ export class AssetsService {
     if (dto.realtimeDbPath) {
       if (!dto.realtimeDbPath.startsWith('/')) {
         throw new BadRequestException(
-          'realtimeDbPath must start with / (e.g., /crypto/btc_usd)'
+          'realtimeDbPath must start with / (e.g., /crypto/btc_usdt)'  // ✅ CHANGED example
         );
       }
 
@@ -394,7 +392,7 @@ export class AssetsService {
         `🔍 Custom Realtime DB path provided: ${dto.realtimeDbPath}`
       );
     } else {
-      const defaultPath = `/crypto/${baseCurrency.toLowerCase()}_${quoteCurrency.toLowerCase()}`;
+      const defaultPath = `/crypto/${baseCurrency.toLowerCase()}_${quoteCurrency.toLowerCase().replace('usd', 'usdt')}`;  // ✅ CHANGED
       this.logger.log(
         `🔍 No path provided, will use default: ${defaultPath}`
       );
@@ -420,10 +418,10 @@ export class AssetsService {
     this.logger.log(`✅ Basic validation passed: ${baseCurrency}/${quoteCurrency}`);
 
     // ============================================
-    // VALIDATION 9: Test CoinGecko API Connection
+    // VALIDATION 9: Test Binance API Connection
     // ============================================
     try {
-      this.logger.log(`🔌 Testing CoinGecko API for ${baseCurrency}/${quoteCurrency}...`);  // ✅ Changed
+      this.logger.log(`🔌 Testing Binance API for ${baseCurrency}/${quoteCurrency}...`);  // ✅ CHANGED
       
       const testAsset: Asset = {
         id: 'test',
@@ -432,7 +430,7 @@ export class AssetsService {
         category: 'crypto',
         profitRate: dto.profitRate,
         isActive: true,
-        dataSource: 'coingecko',  // ✅ Changed from 'cryptocompare'
+        dataSource: 'binance',  // ✅ CHANGED
         cryptoConfig: {
           baseCurrency: baseCurrency.toUpperCase(),
           quoteCurrency: quoteCurrency.toUpperCase(),
@@ -441,9 +439,9 @@ export class AssetsService {
         createdAt: new Date().toISOString(),
       };
 
-      const pricePromise = this.coinGeckoService.getCurrentPrice(testAsset);  // ✅ Changed from cryptoCompareService
+      const pricePromise = this.binanceService.getCurrentPrice(testAsset);  // ✅ CHANGED
       const timeoutPromise = new Promise<never>((_, reject) => 
-        setTimeout(() => reject(new Error('CoinGecko API timeout (5s)')), 5000)  // ✅ Changed
+        setTimeout(() => reject(new Error('Binance API timeout (5s)')), 5000)  // ✅ CHANGED
       );
 
       const price = await Promise.race([pricePromise, timeoutPromise]);
@@ -453,7 +451,7 @@ export class AssetsService {
           `⚠️ Could not fetch price for ${baseCurrency}/${quoteCurrency}, but continuing with creation`
         );
         this.logger.warn(
-          `⚠️ This might mean the currency pair is not available on CoinGecko`  // ✅ Changed
+          `⚠️ This might mean the currency pair is not available on Binance`  // ✅ CHANGED
         );
         this.logger.warn(
           `⚠️ The asset will be created, but price fetching may fail at runtime`
@@ -477,16 +475,16 @@ export class AssetsService {
       
       if (error.message.includes('timeout')) {
         this.logger.warn(
-          `⚠️ CoinGecko API timeout - the API might be slow or unreachable`  // ✅ Changed
+          `⚠️ Binance API timeout - the API might be slow or unreachable`  // ✅ CHANGED
         );
       } else if (error.message.includes('No data') || error.message.includes('Unsupported')) {  // ✅ Updated error check
         this.logger.warn(
-          `⚠️ Currency pair ${baseCurrency}/${quoteCurrency} might not be available on CoinGecko`  // ✅ Changed
+          `⚠️ Currency pair ${baseCurrency}/${quoteCurrency} might not be available on Binance`  // ✅ CHANGED
         );
       }
       
       this.logger.warn(
-        `⚠️ Continuing with asset creation anyway - verify the currency pair exists on CoinGecko`  // ✅ Changed
+        `⚠️ Continuing with asset creation anyway - verify the currency pair exists on Binance`  // ✅ CHANGED
       );
     }
 
@@ -494,8 +492,8 @@ export class AssetsService {
     // VALIDATION 10: Check for Common Mistakes
     // ============================================
     const commonMistakes: Record<string, string> = {
-      'USDT': 'Use USD instead of USDT for better CoinGecko compatibility',  // ✅ Changed recommendation
-      'BUSD': 'BUSD is deprecated, use USD or USDT',
+      'USDT': 'Use USD instead of USDT for better Binance compatibility',  // ✅ CHANGED recommendation
+      'BUSD': 'BUSD is being phased out, use USD or USDT',
     };
 
     if (commonMistakes[quoteCurrency.toUpperCase()]) {
@@ -530,24 +528,24 @@ export class AssetsService {
     // ============================================
     this.logger.log('');
     this.logger.log('✅ ================================================');
-    this.logger.log('✅ CRYPTO ASSET VALIDATION COMPLETE (COINGECKO)');  // ✅ Changed
+    this.logger.log('✅ CRYPTO ASSET VALIDATION COMPLETE (BINANCE)');  // ✅ CHANGED
     this.logger.log('✅ ================================================');
     this.logger.log(`   Pair: ${baseCurrency}/${quoteCurrency}`);
-    this.logger.log(`   Data Source: CoinGecko API (FREE)`);  // ✅ Changed
+    this.logger.log(`   Data Source: Binance API (FREE)`);  // ✅ CHANGED
     this.logger.log(`   RT DB Path: ${dto.realtimeDbPath || 'Auto-generated'}`);
     if (dto.cryptoConfig.exchange) {
       this.logger.log(`   Exchange: ${dto.cryptoConfig.exchange}`);
     }
-    this.logger.log(`   Rate Limit: 10-50 calls/min`);  // ✅ New
-    this.logger.log(`   API Key: Not required`);  // ✅ New
+    this.logger.log(`   Rate Limit: 1200 req/min`);  // ✅ NEW
+    this.logger.log(`   API Key: Not required`);  // ✅ NEW
     this.logger.log('✅ ================================================');
     this.logger.log('');
   }
 
   private validateNormalAsset(dto: CreateAssetDto): void {
-    if (dto.dataSource === ASSET_DATA_SOURCE.COINGECKO) {  // ✅ Changed from CRYPTOCOMPARE
+    if (dto.dataSource === ASSET_DATA_SOURCE.BINANCE) {  // ✅ CHANGED
       throw new BadRequestException(
-        'Normal assets cannot use "coingecko" data source'  // ✅ Changed
+        'Normal assets cannot use "binance" data source'  // ✅ CHANGED
       );
     }
 
@@ -768,164 +766,174 @@ export class AssetsService {
     let asset = assetDoc.data() as Asset;
 
     if (asset.category !== ASSET_CATEGORY.CRYPTO) {
-if (!asset.simulatorSettings) {
-asset.simulatorSettings = this.DEFAULT_SIMULATOR_SETTINGS;
-}
-}
-if (!asset.tradingSettings) {
-  asset.tradingSettings = this.DEFAULT_TRADING_SETTINGS;
-}
+      if (!asset.simulatorSettings) {
+        asset.simulatorSettings = this.DEFAULT_SIMULATOR_SETTINGS;
+      }
+    }
+    
+    if (!asset.tradingSettings) {
+      asset.tradingSettings = this.DEFAULT_TRADING_SETTINGS;
+    }
 
-this.assetCache.set(assetId, {
-  asset,
-  timestamp: Date.now(),
-});
+    this.assetCache.set(assetId, {
+      asset,
+      timestamp: Date.now(),
+    });
 
-const duration = Date.now() - startTime;
-this.logger.debug(`⚡ Fetched asset ${assetId} in ${duration}ms`);
+    const duration = Date.now() - startTime;
+    this.logger.debug(`⚡ Fetched asset ${assetId} in ${duration}ms`);
 
-return asset;
-}
-async getCurrentPrice(assetId: string) {
-const startTime = Date.now();
-try {
-  const asset = await this.getAssetById(assetId);
-
-  const priceData = await Promise.race([
-    this.priceFetcherService.getCurrentPrice(asset, true),
-    new Promise<never>((_, reject) => 
-      setTimeout(() => reject(new Error('Price timeout')), 2000)
-    ),
-  ]);
-
-  if (!priceData) {
-    throw new NotFoundException(`Price unavailable for ${asset.symbol}`);
+    return asset;
   }
 
-  const duration = Date.now() - startTime;
-  this.logger.debug(`⚡ Got price for ${asset.symbol} in ${duration}ms`);
+  async getCurrentPrice(assetId: string) {
+    const startTime = Date.now();
+    try {
+      const asset = await this.getAssetById(assetId);
 
-  return {
-    asset: {
-      id: asset.id,
-      name: asset.name,
-      symbol: asset.symbol,
-      category: asset.category,
-    },
-    price: priceData.price,
-    timestamp: priceData.timestamp,
-    datetime: priceData.datetime,
-    responseTime: duration,
-  };
+      const priceData = await Promise.race([
+        this.priceFetcherService.getCurrentPrice(asset, true),
+        new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error('Price timeout')), 2000)
+        ),
+      ]);
 
-} catch (error) {
-  const duration = Date.now() - startTime;
-  this.logger.error(`Price fetch failed after ${duration}ms: ${error.message}`);
-  
-  if (error.message.includes('timeout')) {
-    throw new RequestTimeoutException('Price service timeout');
-  }
-  
-  throw error;
-}
-}
-async getAssetSettings(assetId: string): Promise<Asset> {
-return this.getAssetById(assetId);
-}
-private async warmupCache(): Promise<void> {
-try {
-if (!this.firebaseService.isFirestoreReady()) {
-this.logger.warn('⚠️ Firestore not ready, skipping cache warmup');
-return;
-}
-  this.logger.log('⚡ Warming up asset cache...');
-  
-  const { assets } = await this.getAllAssets(false);
-  
-  this.logger.log(`✅ Cache warmed: ${assets.length} assets`);
-  
-  const activeAssets = assets.filter(a => a.isActive);
-  if (activeAssets.length > 0) {
-    await this.priceFetcherService.prefetchPrices(activeAssets);
-  }
-  
-  const cryptoAssets = assets.filter(a => a.category === ASSET_CATEGORY.CRYPTO);
-  
-  if (cryptoAssets.length > 0) {
-    this.logger.log(`💎 ${cryptoAssets.length} crypto assets ready (CoinGecko)`);  // ✅ Changed
-  }
-  
-} catch (error) {
-  this.logger.error(`Cache warmup failed: ${error.message}`);
-}
-}
-private async refreshCache(): Promise<void> {
-try {
-await this.getAllAssets(false);
-  const activeAssets = this.allAssetsCache?.assets.filter(a => a.isActive) || [];
-  if (activeAssets.length > 0) {
-    await this.priceFetcherService.prefetchPrices(activeAssets);
-  }
-  
-  this.logger.debug('⚡ Cache refreshed');
-} catch (error) {
-  this.logger.error(`Cache refresh failed: ${error.message}`);
-}
-}
-private invalidateCache(): void {
-this.assetCache.clear();
-this.allAssetsCache = null;
-this.logger.debug('Asset cache invalidated');
-}
-async batchGetAssets(assetIds: string[]): Promise<Map<string, Asset>> {
-const results = new Map<string, Asset>();
-const uncachedIds: string[] = [];
+      if (!priceData) {
+        throw new NotFoundException(`Price unavailable for ${asset.symbol}`);
+      }
 
-for (const assetId of assetIds) {
-  const cached = this.assetCache.get(assetId);
-  if (cached) {
-    const age = Date.now() - cached.timestamp;
-    if (age < this.ASSET_CACHE_TTL) {
-      results.set(assetId, cached.asset);
-      continue;
+      const duration = Date.now() - startTime;
+      this.logger.debug(`⚡ Got price for ${asset.symbol} in ${duration}ms`);
+
+      return {
+        asset: {
+          id: asset.id,
+          name: asset.name,
+          symbol: asset.symbol,
+          category: asset.category,
+        },
+        price: priceData.price,
+        timestamp: priceData.timestamp,
+        datetime: priceData.datetime,
+        responseTime: duration,
+      };
+
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      this.logger.error(`Price fetch failed after ${duration}ms: ${error.message}`);
+      
+      if (error.message.includes('timeout')) {
+        throw new RequestTimeoutException('Price service timeout');
+      }
+      
+      throw error;
     }
   }
-  uncachedIds.push(assetId);
-}
 
-if (uncachedIds.length > 0) {
-  const promises = uncachedIds.map(id => 
-    this.getAssetById(id).catch(() => null)
-  );
-  
-  const assets = await Promise.all(promises);
-  
-  assets.forEach((asset, index) => {
-    if (asset) {
-      results.set(uncachedIds[index], asset);
+  async getAssetSettings(assetId: string): Promise<Asset> {
+    return this.getAssetById(assetId);
+  }
+
+  private async warmupCache(): Promise<void> {
+    try {
+      if (!this.firebaseService.isFirestoreReady()) {
+        this.logger.warn('⚠️ Firestore not ready, skipping cache warmup');
+        return;
+      }
+
+      this.logger.log('⚡ Warming up asset cache...');
+      
+      const { assets } = await this.getAllAssets(false);
+      
+      this.logger.log(`✅ Cache warmed: ${assets.length} assets`);
+      
+      const activeAssets = assets.filter(a => a.isActive);
+      if (activeAssets.length > 0) {
+        await this.priceFetcherService.prefetchPrices(activeAssets);
+      }
+      
+      const cryptoAssets = assets.filter(a => a.category === ASSET_CATEGORY.CRYPTO);
+      
+      if (cryptoAssets.length > 0) {
+        this.logger.log(`💎 ${cryptoAssets.length} crypto assets ready (Binance)`);  // ✅ CHANGED
+      }
+      
+    } catch (error) {
+      this.logger.error(`Cache warmup failed: ${error.message}`);
     }
-  });
-}
+  }
 
-return results;
-}
-async getActiveAssets(): Promise<Asset[]> {
-const { assets } = await this.getAllAssets(true);
-return assets;
-}
-getPerformanceStats() {
-const normalAssets = Array.from(this.assetCache.values())
-.filter(c => c.asset.category === ASSET_CATEGORY.NORMAL);
-const cryptoAssets = Array.from(this.assetCache.values())
-  .filter(c => c.asset.category === ASSET_CATEGORY.CRYPTO);
+  private async refreshCache(): Promise<void> {
+    try {
+      await this.getAllAssets(false);
+      const activeAssets = this.allAssetsCache?.assets.filter(a => a.isActive) || [];
+      if (activeAssets.length > 0) {
+        await this.priceFetcherService.prefetchPrices(activeAssets);
+      }
+      
+      this.logger.debug('⚡ Cache refreshed');
+    } catch (error) {
+      this.logger.error(`Cache refresh failed: ${error.message}`);
+    }
+  }
 
-return {
-  cachedAssets: this.assetCache.size,
-  normalAssets: normalAssets.length,
-  cryptoAssets: cryptoAssets.length,
-  allAssetsCached: !!this.allAssetsCache,
-  priceStats: this.priceFetcherService.getPerformanceStats(),
-  cryptoApi: 'CoinGecko FREE',  // ✅ New
-};
-}
+  private invalidateCache(): void {
+    this.assetCache.clear();
+    this.allAssetsCache = null;
+    this.logger.debug('Asset cache invalidated');
+  }
+
+  async batchGetAssets(assetIds: string[]): Promise<Map<string, Asset>> {
+    const results = new Map<string, Asset>();
+    const uncachedIds: string[] = [];
+
+    for (const assetId of assetIds) {
+      const cached = this.assetCache.get(assetId);
+      if (cached) {
+        const age = Date.now() - cached.timestamp;
+        if (age < this.ASSET_CACHE_TTL) {
+          results.set(assetId, cached.asset);
+          continue;
+        }
+      }
+      uncachedIds.push(assetId);
+    }
+
+    if (uncachedIds.length > 0) {
+      const promises = uncachedIds.map(id => 
+        this.getAssetById(id).catch(() => null)
+      );
+      
+      const assets = await Promise.all(promises);
+      
+      assets.forEach((asset, index) => {
+        if (asset) {
+          results.set(uncachedIds[index], asset);
+        }
+      });
+    }
+
+    return results;
+  }
+
+  async getActiveAssets(): Promise<Asset[]> {
+    const { assets } = await this.getAllAssets(true);
+    return assets;
+  }
+
+  getPerformanceStats() {
+    const normalAssets = Array.from(this.assetCache.values())
+      .filter(c => c.asset.category === ASSET_CATEGORY.NORMAL);
+    const cryptoAssets = Array.from(this.assetCache.values())
+      .filter(c => c.asset.category === ASSET_CATEGORY.CRYPTO);
+
+    return {
+      cachedAssets: this.assetCache.size,
+      normalAssets: normalAssets.length,
+      cryptoAssets: cryptoAssets.length,
+      allAssetsCached: !!this.allAssetsCache,
+      priceStats: this.priceFetcherService.getPerformanceStats(),
+      cryptoApi: 'Binance FREE',  // ✅ NEW
+    };
+  }
 }

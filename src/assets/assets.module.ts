@@ -4,7 +4,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AssetsController } from './assets.controller';
 import { AssetsService } from './assets.service';
 import { PriceFetcherService } from './services/price-fetcher.service';
-import { CoinGeckoService } from './services/coingecko.service';  // ✅ Changed
+import { BinanceService } from './services/binance.service';  // ✅ Changed from CoinGeckoService
 import { CryptoPriceSchedulerService } from './services/crypto-price-scheduler.service';
 import { AuthModule } from '../auth/auth.module';
 
@@ -26,13 +26,13 @@ import { AuthModule } from '../auth/auth.module';
   providers: [
     AssetsService, 
     PriceFetcherService,
-    CoinGeckoService,  // ✅ Changed from CryptoCompareService
+    BinanceService,  // ✅ Changed from CoinGeckoService
     CryptoPriceSchedulerService,
   ],
   exports: [
     AssetsService, 
     PriceFetcherService,
-    CoinGeckoService,  // ✅ Changed from CryptoCompareService
+    BinanceService,  // ✅ Changed from CoinGeckoService
     CryptoPriceSchedulerService,
   ],
 })

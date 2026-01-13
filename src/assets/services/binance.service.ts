@@ -1,37 +1,33 @@
-// src/assets/services/coingecko.service.ts
-// ✅ FINAL FIX: Request deduplication + Better error logging
-
 import { Injectable, Logger } from '@nestjs/common';
 import axios, { AxiosInstance } from 'axios';
 import { FirebaseService } from '../../firebase/firebase.service';
 import { Asset } from '../../common/interfaces';
 import { TimezoneUtil } from '../../common/utils';
 
-export interface CoinGeckoPrice {
+export interface BinancePrice {
   price: number;
   timestamp: number;
   datetime: string;
-  volume24h?: number;
-  change24h?: number;
-  changePercent24h?: number;
-  high24h?: number;
-  low24h?: number;
-  marketCap?: number;
+  volume24h: number;
+  change24h: number;
+  changePercent24h: number;
+  high24h: number;
+  low24h: number;
 }
 
 @Injectable()
-export class CoinGeckoService {
-  private readonly logger = new Logger(CoinGeckoService.name);
+export class BinanceService {
+  private readonly logger = new Logger(BinanceService.name);
   private readonly axios: AxiosInstance;
   
   // Price cache
   private priceCache: Map<string, {
-    price: CoinGeckoPrice;
+    price: BinancePrice;
     timestamp: number;
   }> = new Map();
   
-  // ✅ NEW: Request deduplication
-  private pendingRequests: Map<string, Promise<CoinGeckoPrice | null>> = new Map();
+  // ✅ NEW: Request deduplication (same as CoinGecko)
+  private pendingRequests: Map<string, Promise<BinancePrice | null>> = new Map();
   
   private readonly CACHE_TTL = 60000; // 60 seconds
   private readonly STALE_CACHE_TTL = 300000; // 5 minutes
@@ -39,70 +35,61 @@ export class CoinGeckoService {
   private apiCallCount = 0;
   private cacheHitCount = 0;
   private errorCount = 0;
-  private deduplicatedCount = 0; // ✅ NEW
+  private deduplicatedCount = 0;
   private lastCallTime = 0;
   private realtimeWriteCount = 0;
   
-  // Rate limiting
+  // Rate limiting (Binance: 1200 req/min, we'll use conservative limits)
   private lastApiCallTime = 0;
-  private readonly MIN_CALL_INTERVAL = 2000;
+  private readonly MIN_CALL_INTERVAL = 50; // 50ms between calls = ~20 req/sec
   private isRateLimited = false;
   private rateLimitUntil = 0;
   
-  private readonly COIN_ID_MAP: Record<string, string> = {
-    'BTC': 'bitcoin',
-    'ETH': 'ethereum',
-    'BNB': 'binancecoin',
-    'XRP': 'ripple',
-    'ADA': 'cardano',
-    'SOL': 'solana',
-    'DOT': 'polkadot',
-    'DOGE': 'dogecoin',
-    'MATIC': 'matic-network',
-    'POLYGON': 'matic-network',
-    'LTC': 'litecoin',
-    'AVAX': 'avalanche-2',
-    'LINK': 'chainlink',
-    'UNI': 'uniswap',
-    'ATOM': 'cosmos',
-    'XLM': 'stellar',
-    'ALGO': 'algorand',
-    'VET': 'vechain',
-    'ICP': 'internet-computer',
-    'FIL': 'filecoin',
-    'TRX': 'tron',
-    'ETC': 'ethereum-classic',
-    'NEAR': 'near',
-    'APT': 'aptos',
-    'ARB': 'arbitrum',
-    'OP': 'optimism',
-  };
-  
-  private readonly VS_CURRENCY_MAP: Record<string, string> = {
-    'USD': 'usd',
-    'USDT': 'usd',
-    'EUR': 'eur',
-    'GBP': 'gbp',
-    'JPY': 'jpy',
-    'KRW': 'krw',
-    'IDR': 'idr',
+  // ✅ BINANCE SYMBOL MAPPING
+  private readonly BINANCE_SYMBOL_MAP: Record<string, string> = {
+    'BTC': 'BTCUSDT',
+    'ETH': 'ETHUSDT',
+    'BNB': 'BNBUSDT',
+    'XRP': 'XRPUSDT',
+    'ADA': 'ADAUSDT',
+    'SOL': 'SOLUSDT',
+    'DOT': 'DOTUSDT',
+    'DOGE': 'DOGEUSDT',
+    'MATIC': 'MATICUSDT',
+    'LTC': 'LTCUSDT',
+    'AVAX': 'AVAXUSDT',
+    'LINK': 'LINKUSDT',
+    'UNI': 'UNIUSDT',
+    'ATOM': 'ATOMUSDT',
+    'XLM': 'XLMUSDT',
+    'ALGO': 'ALGOUSDT',
+    'VET': 'VETUSDT',
+    'ICP': 'ICPUSDT',
+    'FIL': 'FILUSDT',
+    'TRX': 'TRXUSDT',
+    'ETC': 'ETCUSDT',
+    'NEAR': 'NEARUSDT',
+    'APT': 'APTUSDT',
+    'ARB': 'ARBUSDT',
+    'OP': 'OPUSDT',
   };
 
   constructor(
     private firebaseService: FirebaseService,
   ) {
     this.axios = axios.create({
-      baseURL: 'https://api.coingecko.com/api/v3',
+      baseURL: 'https://api.binance.com/api/v3',
       timeout: 10000,
       headers: {
         'Accept': 'application/json',
+        'User-Agent': 'binary-trading-platform/1.0',
       },
     });
 
     setInterval(() => this.cleanupCache(), 60000);
     
-    this.logger.log('✅ CoinGecko Service initialized');
-    this.logger.log('   Rate Limit: 10-50 calls/minute');
+    this.logger.log('✅ Binance Service initialized (PUBLIC API)');
+    this.logger.log('   Rate Limit: 1200 req/min (conservative: 20 req/sec)');
     this.logger.log('   Cache TTL: 60 seconds');
     this.logger.log('   Request Deduplication: ENABLED');
   }
@@ -110,13 +97,21 @@ export class CoinGeckoService {
   /**
    * ✅ FIXED: Deduplicate concurrent requests
    */
-  async getCurrentPrice(asset: Asset): Promise<CoinGeckoPrice | null> {
+  async getCurrentPrice(asset: Asset): Promise<BinancePrice | null> {
     if (!asset.cryptoConfig) {
       this.logger.error(`❌ Asset ${asset.symbol} missing cryptoConfig`);
       return null;
     }
 
     const { baseCurrency, quoteCurrency } = asset.cryptoConfig;
+    
+    // ✅ Map to Binance symbol (e.g., ETH/USD -> ETHUSDT)
+    const binanceSymbol = this.getBinanceSymbol(baseCurrency);
+    if (!binanceSymbol) {
+      this.logger.error(`❌ Unsupported coin: ${baseCurrency}`);
+      return null;
+    }
+
     const cacheKey = `${baseCurrency}/${quoteCurrency}`;
 
     // 1. Check cache first
@@ -136,7 +131,7 @@ export class CoinGeckoService {
     }
 
     // 3. Create new request and store promise
-    const requestPromise = this.fetchPrice(cacheKey, baseCurrency, quoteCurrency, asset);
+    const requestPromise = this.fetchPrice(cacheKey, binanceSymbol, asset);
     this.pendingRequests.set(cacheKey, requestPromise);
 
     try {
@@ -149,14 +144,13 @@ export class CoinGeckoService {
   }
 
   /**
-   * ✅ NEW: Actual fetch logic (separated for deduplication)
+   * ✅ NEW: Actual fetch logic for Binance
    */
   private async fetchPrice(
     cacheKey: string,
-    baseCurrency: string,
-    quoteCurrency: string,
+    binanceSymbol: string,
     asset: Asset
-  ): Promise<CoinGeckoPrice | null> {
+  ): Promise<BinancePrice | null> {
     // Check rate limit
     if (this.isRateLimited) {
       const now = Date.now();
@@ -186,64 +180,34 @@ export class CoinGeckoService {
       await new Promise(resolve => setTimeout(resolve, waitTime));
     }
 
-    const coinId = this.getCoinId(baseCurrency);
-    if (!coinId) {
-      this.logger.error(`❌ Unsupported coin: ${baseCurrency}`);
-      return null;
-    }
-
-    const vsCurrency = this.getVsCurrency(quoteCurrency);
-    if (!vsCurrency) {
-      this.logger.error(`❌ Unsupported quote: ${quoteCurrency}`);
-      return null;
-    }
-
     try {
       this.apiCallCount++;
       this.lastCallTime = Date.now();
       this.lastApiCallTime = Date.now();
 
-      this.logger.debug(`📡 API call #${this.apiCallCount}: ${coinId} (${cacheKey})`);
+      this.logger.debug(`📡 API call #${this.apiCallCount}: ${binanceSymbol} (${cacheKey})`);
 
-      const response = await this.axios.get(`/coins/${coinId}`, {
+      const response = await this.axios.get('/ticker/24hr', {
         params: {
-          localization: false,
-          tickers: false,
-          market_data: true,
-          community_data: false,
-          developer_data: false,
-          sparkline: false,
+          symbol: binanceSymbol,
         },
       });
 
-      if (!response.data?.market_data) {
-        throw new Error(`No market data for ${coinId}`);
+      if (!response.data?.lastPrice) {
+        throw new Error(`No price data for ${binanceSymbol}`);
       }
 
-      const marketData = response.data.market_data;
+      const data = response.data;
       
-      const currentPrice = marketData.current_price?.[vsCurrency];
-      if (!currentPrice) {
-        throw new Error(`No price for ${coinId} in ${vsCurrency}`);
-      }
-
-      const high24h = marketData.high_24h?.[vsCurrency];
-      const low24h = marketData.low_24h?.[vsCurrency];
-      const volume24h = marketData.total_volume?.[vsCurrency];
-      const marketCap = marketData.market_cap?.[vsCurrency];
-      const priceChange24h = marketData.price_change_24h_in_currency?.[vsCurrency];
-      const priceChangePercent24h = marketData.price_change_percentage_24h_in_currency?.[vsCurrency];
-
-      const price: CoinGeckoPrice = {
-        price: parseFloat(currentPrice.toFixed(6)),
+      const price: BinancePrice = {
+        price: parseFloat(parseFloat(data.lastPrice).toFixed(6)),
         timestamp: TimezoneUtil.getCurrentTimestamp(),
         datetime: TimezoneUtil.formatDateTime(),
-        volume24h: volume24h || 0,
-        change24h: priceChange24h || 0,
-        changePercent24h: priceChangePercent24h || 0,
-        high24h: high24h || currentPrice,
-        low24h: low24h || currentPrice,
-        marketCap: marketCap || 0,
+        volume24h: parseFloat(data.volume) || 0,
+        change24h: parseFloat(data.priceChange) || 0,
+        changePercent24h: parseFloat(data.priceChangePercent) || 0,
+        high24h: parseFloat(data.highPrice) || 0,
+        low24h: parseFloat(data.lowPrice) || 0,
       };
 
       // Cache for 60 seconds
@@ -267,7 +231,7 @@ export class CoinGeckoService {
     } catch (error) {
       this.errorCount++;
       
-      // ✅ BETTER error logging
+      // ✅ BETTER error handling
       if (error.response?.status === 429) {
         this.isRateLimited = true;
         this.rateLimitUntil = Date.now() + 60000;
@@ -281,19 +245,16 @@ export class CoinGeckoService {
           return staleCache;
         }
       } else if (error.response) {
-        // ✅ Log response error details
         this.logger.error(
-          `❌ API error for ${cacheKey}: ` +
+          `❌ API error for ${binanceSymbol}: ` +
           `${error.response.status} - ${error.response.statusText}`
         );
         if (error.response.data) {
           this.logger.error(`   Response: ${JSON.stringify(error.response.data)}`);
         }
       } else if (error.request) {
-        // ✅ Log request error
-        this.logger.error(`❌ No response for ${cacheKey}: ${error.message}`);
+        this.logger.error(`❌ No response for ${binanceSymbol}: ${error.message}`);
       } else {
-        // ✅ Log other errors
         this.logger.error(`❌ Error for ${cacheKey}: ${error.message}`);
       }
 
@@ -303,14 +264,15 @@ export class CoinGeckoService {
 
   async getMultiplePrices(
     assets: Asset[]
-  ): Promise<Map<string, CoinGeckoPrice | null>> {
-    const results = new Map<string, CoinGeckoPrice | null>();
+  ): Promise<Map<string, BinancePrice | null>> {
+    const results = new Map<string, BinancePrice | null>();
     
     this.logger.log(`📊 Fetching ${assets.length} crypto prices...`);
     
     // ✅ Use Promise.all for concurrent requests (deduplication handles duplicates)
     const promises = assets.map(async (asset) => {
       if (!asset.cryptoConfig) {
+        this.logger.warn(`Asset ${asset.symbol} missing cryptoConfig, skipping`);
         return { assetId: asset.id, price: null };
       }
       
@@ -318,7 +280,7 @@ export class CoinGeckoService {
         const price = await this.getCurrentPrice(asset);
         return { assetId: asset.id, price };
       } catch (error) {
-        this.logger.error(`Batch error for ${asset.symbol}: ${error.message}`);
+        this.logger.error(`Batch fetch error for ${asset.symbol}: ${error.message}`);
         return { assetId: asset.id, price: null };
       }
     });
@@ -337,6 +299,9 @@ export class CoinGeckoService {
     return results;
   }
 
+  /**
+   * ✅ VALIDATION: Check if crypto config is valid for Binance
+   */
   validateCryptoConfig(asset: Asset): { valid: boolean; error?: string } {
     if (!asset.cryptoConfig) {
       return { valid: false, error: 'Missing cryptoConfig' };
@@ -344,25 +309,29 @@ export class CoinGeckoService {
 
     const { baseCurrency, quoteCurrency } = asset.cryptoConfig;
 
-    if (!baseCurrency || baseCurrency.length < 2) {
+    if (!baseCurrency || baseCurrency.trim().length < 2) {
       return { valid: false, error: 'Invalid baseCurrency' };
     }
 
-    if (!quoteCurrency || quoteCurrency.length < 2) {
+    if (!quoteCurrency || quoteCurrency.trim().length < 2) {
       return { valid: false, error: 'Invalid quoteCurrency' };
     }
 
-    if (!this.getCoinId(baseCurrency)) {
+    // ✅ Map to Binance symbol
+    const binanceSymbol = this.getBinanceSymbol(baseCurrency);
+    if (!binanceSymbol) {
       return { 
         valid: false, 
-        error: `Unsupported: ${baseCurrency}` 
+        error: `Unsupported coin: ${baseCurrency}. Supported: ${Object.keys(this.BINANCE_SYMBOL_MAP).join(', ')}` 
       };
     }
 
-    if (!this.getVsCurrency(quoteCurrency)) {
+    // ✅ Note: Binance primarily uses USDT, BUSD, etc.
+    const validQuoteCurrencies = ['USD', 'USDT', 'BUSD', 'EUR', 'GBP'];
+    if (!validQuoteCurrencies.includes(quoteCurrency.toUpperCase())) {
       return { 
         valid: false, 
-        error: `Unsupported: ${quoteCurrency}` 
+        error: `Quote currency ${quoteCurrency} not recommended. Use: ${validQuoteCurrencies.join(', ')}` 
       };
     }
 
@@ -370,20 +339,39 @@ export class CoinGeckoService {
   }
 
   getAvailableSymbols(): string[] {
-    return Object.keys(this.COIN_ID_MAP);
+    return Object.keys(this.BINANCE_SYMBOL_MAP);
   }
 
-  private getCoinId(symbol: string): string | null {
-    return this.COIN_ID_MAP[symbol.toUpperCase()] || null;
+  /**
+   * ✅ Convert base currency to Binance symbol
+   */
+  private getBinanceSymbol(baseCurrency: string): string | null {
+    return this.BINANCE_SYMBOL_MAP[baseCurrency.toUpperCase()] || null;
   }
 
-  private getVsCurrency(currency: string): string | null {
-    return this.VS_CURRENCY_MAP[currency.toUpperCase()] || null;
+  /**
+   * ✅ Convert pair to Binance symbol (e.g., ETH/USD -> ETHUSDT)
+   */
+  private getBinanceTradingPair(baseCurrency: string, quoteCurrency: string): string {
+    const base = baseCurrency.toUpperCase();
+    const quote = quoteCurrency.toUpperCase();
+    
+    // If quote is USD, we map to USDT for Binance
+    const mappedQuote = quote === 'USD' ? 'USDT' : quote;
+    
+    // Check if we have direct mapping
+    const directSymbol = `${base}${mappedQuote}`;
+    if (this.BINANCE_SYMBOL_MAP[base]) {
+      return this.BINANCE_SYMBOL_MAP[base];
+    }
+    
+    // Return direct pair
+    return directSymbol;
   }
 
   private async writePriceToRealtimeDb(
     asset: Asset,
-    price: CoinGeckoPrice
+    price: BinancePrice
   ): Promise<void> {
     try {
       if (!asset.cryptoConfig) return;
@@ -401,8 +389,8 @@ export class CoinGeckoService {
         changePercent24h: price.changePercent24h || 0,
         high24h: price.high24h || 0,
         low24h: price.low24h || 0,
-        marketCap: price.marketCap || 0,
-        source: 'coingecko',
+        marketCap: 0, // Binance doesn't provide market cap in this endpoint
+        source: 'binance',
         pair: `${asset.cryptoConfig.baseCurrency}/${asset.cryptoConfig.quoteCurrency}`,
       };
 
@@ -415,8 +403,7 @@ export class CoinGeckoService {
       this.realtimeWriteCount++;
 
     } catch (error) {
-      // Suppress RT DB errors (non-critical)
-      this.logger.debug(`RT DB write failed: ${error.message}`);
+      this.logger.error(`❌ RT DB write failed: ${error.message}`);
     }
   }
 
@@ -432,10 +419,13 @@ export class CoinGeckoService {
     }
 
     const { baseCurrency, quoteCurrency } = asset.cryptoConfig;
-    return `/crypto/${baseCurrency.toLowerCase()}_${quoteCurrency.toLowerCase()}`;
+    
+    // ✅ FIXED: Generate proper path
+    const path = `/crypto/${baseCurrency.toLowerCase()}_${quoteCurrency.toLowerCase().replace('usd', 'usdt')}`;
+    return path;
   }
 
-  private getCachedPrice(key: string): CoinGeckoPrice | null {
+  private getCachedPrice(key: string): BinancePrice | null {
     const cached = this.priceCache.get(key);
     if (!cached) return null;
 
@@ -445,7 +435,7 @@ export class CoinGeckoService {
     return cached.price;
   }
 
-  private getStaleCache(key: string): CoinGeckoPrice | null {
+  private getStaleCache(key: string): BinancePrice | null {
     const cached = this.priceCache.get(key);
     if (!cached) return null;
 
@@ -474,28 +464,28 @@ export class CoinGeckoService {
     return {
       apiCalls: this.apiCallCount,
       cacheHits: this.cacheHitCount,
-      deduplicated: this.deduplicatedCount, // ✅ NEW
+      deduplicated: this.deduplicatedCount,
       cacheHitRate: `${cacheHitRate}%`,
       errors: this.errorCount,
       cacheSize: this.priceCache.size,
-      pendingRequests: this.pendingRequests.size, // ✅ NEW
+      pendingRequests: this.pendingRequests.size,
       realtimeWrites: this.realtimeWriteCount,
       lastCall: this.lastCallTime > 0
         ? `${Math.floor((Date.now() - this.lastCallTime) / 1000)}s ago`
         : 'Never',
-      supportedCoins: Object.keys(this.COIN_ID_MAP).length,
-      api: 'CoinGecko Free',
+      supportedCoins: Object.keys(this.BINANCE_SYMBOL_MAP).length,
+      api: 'Binance FREE',
       rateLimit: this.isRateLimited 
         ? `⏸️ Until ${new Date(this.rateLimitUntil).toLocaleTimeString()}` 
         : '✅ OK',
       cacheTTL: `${this.CACHE_TTL / 1000}s`,
-      minInterval: `${this.MIN_CALL_INTERVAL / 1000}s`,
+      minInterval: `${this.MIN_CALL_INTERVAL}ms`,
     };
   }
 
   clearCache(): void {
     this.priceCache.clear();
-    this.pendingRequests.clear(); // ✅ NEW
+    this.pendingRequests.clear();
     this.logger.log('🗑️ Cache cleared');
   }
 }

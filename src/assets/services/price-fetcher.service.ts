@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { FirebaseService } from '../../firebase/firebase.service';
-import { CoinGeckoService } from './coingecko.service';  // ✅ Changed
+import { BinanceService } from './binance.service';  // ✅ CHANGED
 import { Asset, RealtimePrice } from '../../common/interfaces';
 import { ASSET_CATEGORY, ASSET_DATA_SOURCE } from '../../common/constants';
 
@@ -27,7 +27,7 @@ export class PriceFetcherService {
 
   constructor(
     private firebaseService: FirebaseService,
-    private coinGeckoService: CoinGeckoService,  // ✅ Changed from cryptoCompareService
+    private binanceService: BinanceService,  // ✅ CHANGED
   ) {
     setInterval(() => this.cleanupStaleCache(), 5000);
   }
@@ -155,7 +155,7 @@ export class PriceFetcherService {
 
   private async fetchCryptoPrice(asset: Asset): Promise<RealtimePrice | null> {
     try {
-      const cryptoPrice = await this.coinGeckoService.getCurrentPrice(asset);  // ✅ Changed
+      const cryptoPrice = await this.binanceService.getCurrentPrice(asset);  // ✅ CHANGED
       
       if (!cryptoPrice) {
         return null;
@@ -327,7 +327,7 @@ export class PriceFetcherService {
     const normalAssets = assets.filter(a => a.category !== ASSET_CATEGORY.CRYPTO);
     
     if (cryptoAssets.length > 0) {
-      const cryptoPrices = await this.coinGeckoService.getMultiplePrices(cryptoAssets);  // ✅ Changed
+      const cryptoPrices = await this.binanceService.getMultiplePrices(cryptoAssets);  // ✅ CHANGED
       
       for (const asset of cryptoAssets) {
         const cryptoPrice = cryptoPrices.get(asset.id);
@@ -370,13 +370,13 @@ export class PriceFetcherService {
       cacheSize: this.priceCache.size,
       consecutiveFailures: this.consecutiveFailures,
       isHealthy: this.consecutiveFailures < this.MAX_CONSECUTIVE_FAILURES,
-      cryptoStats: this.coinGeckoService.getStats(),  // ✅ Changed
+      cryptoStats: this.binanceService.getStats(),  // ✅ CHANGED
     };
   }
 
   clearCache(): void {
     this.priceCache.clear();
-    this.coinGeckoService.clearCache();  // ✅ Changed
+    this.binanceService.clearCache();  // ✅ CHANGED
     this.logger.log('🗑️ Price cache cleared');
   }
 

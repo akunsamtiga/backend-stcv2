@@ -1,6 +1,10 @@
 // src/common/interfaces/index.ts
-// ✅ UPDATED: Added category and crypto-specific fields
 
+/**
+ * ============================================
+ * API RESPONSE INTERFACES
+ * ============================================
+ */
 export interface ApiResponse<T = any> {
   success: boolean;
   message?: string;
@@ -25,6 +29,11 @@ export interface PaginatedResponse<T> {
   totalPages: number;
 }
 
+/**
+ * ============================================
+ * USER & PROFILE INTERFACES
+ * ============================================
+ */
 export interface UserProfile {
   fullName?: string;
   phoneNumber?: string;
@@ -97,6 +106,11 @@ export interface User {
   loginCount?: number;
 }
 
+/**
+ * ============================================
+ * BALANCE & TRANSACTION INTERFACES
+ * ============================================
+ */
 export interface Balance {
   id: string;
   user_id: string;
@@ -107,6 +121,11 @@ export interface Balance {
   createdAt: string;
 }
 
+/**
+ * ============================================
+ * AFFILIATE INTERFACES
+ * ============================================
+ */
 export interface Affiliate {
   id: string;
   referrer_id: string;
@@ -118,23 +137,48 @@ export interface Affiliate {
   createdAt: string;
 }
 
-// ✅ UPDATED: Asset Interface with Category and Crypto Support
+export interface AffiliateStats {
+  totalReferrals: number;
+  completedReferrals: number;
+  pendingReferrals: number;
+  totalCommission: number;
+  referrals: Affiliate[];
+}
+
+/**
+ * ============================================
+ * ASSET INTERFACES
+ * ============================================
+ */
 export interface Asset {
   id: string;
   name: string;
   symbol: string;
+  
+  // Category to differentiate normal assets from crypto
   category: 'normal' | 'crypto';
+  
   profitRate: number;
   isActive: boolean;
-  dataSource: 'realtime_db' | 'api' | 'mock' | 'coingecko';
+  
+  // Data source: realtime_db, api, mock, or binance
+  dataSource: 'realtime_db' | 'api' | 'mock' | 'binance';
+  
+  // For realtime_db data source
   realtimeDbPath?: string;
+  
+  // For api data source
   apiEndpoint?: string;
+  
+  // For binance data source (crypto assets only)
   cryptoConfig?: {
-    baseCurrency: string;
-    quoteCurrency: string;
-    exchange?: string;
+    baseCurrency: string;    // e.g., "BTC", "ETH"
+    quoteCurrency: string;   // e.g., "USD", "USDT"
+    exchange?: string;       // Optional: specific exchange like "Binance"
   };
+  
   description?: string;
+  
   simulatorSettings?: {
     initialPrice: number;
     dailyVolatilityMin: number;
@@ -144,18 +188,23 @@ export interface Asset {
     minPrice?: number;
     maxPrice?: number;
   };
+  
   tradingSettings?: {
     minOrderAmount: number;
     maxOrderAmount: number;
     allowedDurations: number[];
   };
+  
   createdAt: string;
   updatedAt?: string;
   createdBy?: string;
 }
 
-
-
+/**
+ * ============================================
+ * TRADING ORDER INTERFACES
+ * ============================================
+ */
 export interface BinaryOrder {
   id: string;
   user_id: string;
@@ -184,7 +233,10 @@ export interface RealtimePrice {
   datetime: string;
 }
 
-// ✅ NEW: CryptoCompare Price Response
+/**
+ * ⚠️ DEPRECATED: Replaced by BinancePrice interface
+ * Kept for backward compatibility with existing data
+ */
 export interface CryptoComparePrice {
   price: number;
   timestamp: number;
@@ -197,8 +249,11 @@ export interface CryptoComparePrice {
   marketCap?: number;
 }
 
-export type CoinGeckoPrice = CryptoComparePrice;
-
+/**
+ * ============================================
+ * USER STATUS & BALANCE INTERFACES
+ * ============================================
+ */
 export interface BalanceSummary {
   realBalance: number;
   demoBalance: number;
@@ -215,14 +270,11 @@ export interface UserStatusInfo {
   progress?: number;
 }
 
-export interface AffiliateStats {
-  totalReferrals: number;
-  completedReferrals: number;
-  pendingReferrals: number;
-  totalCommission: number;
-  referrals: Affiliate[];
-}
-
+/**
+ * ============================================
+ * PROFILE UPDATE HISTORY
+ * ============================================
+ */
 export interface ProfileUpdateHistory {
   id: string;
   user_id: string;
