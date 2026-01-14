@@ -1,3 +1,4 @@
+// src/admin/dto/update-user.dto.ts
 import { IsBoolean, IsEnum, IsOptional } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { USER_ROLES } from '../../common/constants';

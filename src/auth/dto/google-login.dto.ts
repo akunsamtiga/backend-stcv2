@@ -1,5 +1,4 @@
 // src/auth/dto/google-login.dto.ts
-// ✅ Google Sign-In DTO
 
 import { IsString, IsNotEmpty, IsEmail, IsOptional } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';

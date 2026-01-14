@@ -1,3 +1,4 @@
+// src/balance/dto/query-balance.dto.ts
 import { IsOptional, IsInt, Min, Max } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';

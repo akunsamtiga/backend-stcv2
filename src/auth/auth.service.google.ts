@@ -1,13 +1,14 @@
 // src/auth/auth.service.google.ts
-// ✅ Google Authentication Service Extension
 
 import { Injectable, UnauthorizedException, Logger, BadRequestException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as admin from 'firebase-admin';
+import * as bcrypt from 'bcrypt';
+import * as crypto from 'crypto';
 import { FirebaseService } from '../firebase/firebase.service';
 import { GoogleLoginDto } from './dto/google-login.dto';
-import { COLLECTIONS, BALANCE_TYPES, BALANCE_ACCOUNT_TYPE, USER_ROLES, USER_STATUS, AFFILIATE_STATUS, AFFILIATE_CONFIG } from '../common/constants';
+import { COLLECTIONS, BALANCE_TYPES, BALANCE_ACCOUNT_TYPE, USER_ROLES, USER_STATUS, AFFILIATE_STATUS } from '../common/constants';
 import { User, UserProfile } from '../common/interfaces';
 
 @Injectable()
@@ -21,8 +22,19 @@ export class GoogleAuthService {
   ) {}
 
   /**
-   * ✅ GOOGLE SIGN-IN - Main Method
-   * Handles both login and registration via Google
+   * ✅ FIXED: Generate secure password untuk Google users
+   */
+  private async generateGoogleUserPassword(uid: string, email: string): Promise<string> {
+    // Generate deterministic but secure password dari UID + secret
+    const secret = this.configService.get('jwt.secret');
+    const rawPassword = `google_${uid}_${email}_${secret}`;
+    
+    // Hash dengan bcrypt (akan di-hash lagi saat save)
+    return rawPassword;
+  }
+
+  /**
+   * ✅ GOOGLE SIGN-IN - Main Method (FIXED)
    */
   async googleSignIn(googleLoginDto: GoogleLoginDto) {
     const startTime = Date.now();
@@ -61,7 +73,13 @@ export class GoogleAuthService {
       if (userSnapshot.empty) {
         // 3. CREATE NEW USER (First time Google Sign-In)
         this.logger.log(`🆕 Creating new user from Google: ${email}`);
-        user = await this.createGoogleUser(email, uid, displayName, photoURL, googleLoginDto.referralCode);
+        user = await this.createGoogleUser(
+          email, 
+          uid, 
+          displayName, 
+          photoURL, 
+          googleLoginDto.referralCode
+        );
         isNewUser = true;
 
       } else {
@@ -74,17 +92,27 @@ export class GoogleAuthService {
           throw new UnauthorizedException('Account is deactivated');
         }
 
-        // Update login stats
+        // ✅ FIXED: Update login stats + refresh password jika empty
         const loginCount = (user.loginCount || 0) + 1;
         const lastLoginAt = new Date().toISOString();
-
-        await db.collection(COLLECTIONS.USERS).doc(user.id).update({
+        
+        const updateData: any = {
           lastLoginAt,
           loginCount,
-          // Update profile picture if changed
           'profile.avatar.url': photoURL || user.profile?.avatar?.url,
           'profile.avatar.uploadedAt': photoURL ? new Date().toISOString() : user.profile?.avatar?.uploadedAt,
-        });
+        };
+
+        // ✅ CRITICAL FIX: Regenerate password jika kosong atau invalid
+        if (!user.password || user.password === '' || user.password.length < 10) {
+          const newPassword = await this.generateGoogleUserPassword(uid, email);
+          const hashedPassword = await bcrypt.hash(newPassword, 10);
+          updateData.password = hashedPassword;
+          
+          this.logger.warn(`⚠️ Fixed missing password for Google user: ${email}`);
+        }
+
+        await db.collection(COLLECTIONS.USERS).doc(user.id).update(updateData);
 
         user.loginCount = loginCount;
         user.lastLoginAt = lastLoginAt;
@@ -138,7 +166,6 @@ export class GoogleAuthService {
 
   /**
    * ✅ VERIFY GOOGLE ID TOKEN
-   * Uses Firebase Admin SDK to verify token
    */
   private async verifyGoogleIdToken(idToken: string): Promise<admin.auth.DecodedIdToken> {
     try {
@@ -151,8 +178,7 @@ export class GoogleAuthService {
   }
 
   /**
-   * ✅ CREATE NEW GOOGLE USER
-   * Creates user with initial balances and processes referral
+   * ✅ CREATE NEW GOOGLE USER (FIXED)
    */
   private async createGoogleUser(
     email: string,
@@ -178,6 +204,10 @@ export class GoogleAuthService {
         this.logger.warn(`⚠️ Invalid referral code provided: ${referralCode}`);
       }
     }
+
+    // ✅ CRITICAL FIX: Generate secure password untuk Google user
+    const googlePassword = await this.generateGoogleUserPassword(googleUid, email);
+    const hashedPassword = await bcrypt.hash(googlePassword, 10);
 
     // Generate user data
     const userId = await this.firebaseService.generateId(COLLECTIONS.USERS);
@@ -214,15 +244,15 @@ export class GoogleAuthService {
     const userData: User = {
       id: userId,
       email,
-      password: '', // No password for Google users
+      password: hashedPassword, // ✅ FIXED: Proper hashed password
       role: USER_ROLES.USER,
       status: USER_STATUS.STANDARD,
       isActive: true,
       profile: initialProfile,
       referralCode: newUserReferralCode,
       referredBy: referrerUser ? referrerUser.id : undefined,
-        isNewUser: true,        
-  tutorialCompleted: false,     
+      isNewUser: true,
+      tutorialCompleted: false,
       createdAt: timestamp,
       updatedAt: timestamp,
       loginCount: 1,
@@ -267,13 +297,12 @@ export class GoogleAuthService {
           referrer_id: referrerUser.id,
           referee_id: userId,
           status: AFFILIATE_STATUS.PENDING,
-          commission_amount: 0, // ✅ Will be set based on first deposit status
+          commission_amount: 0,
           createdAt: timestamp,
         });
 
         this.logger.log(
-          `🎁 Affiliate record created: ${referrerUser.email} referred ${email} ` +
-          `(Commission based on deposit status)`
+          `🎁 Affiliate record created: ${referrerUser.email} referred ${email}`
         );
       } catch (affiliateError) {
         this.logger.error(`⚠️ Failed to create affiliate record: ${affiliateError.message}`);

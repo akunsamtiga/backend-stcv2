@@ -250,51 +250,53 @@ export class AdminService {
   }
 
   async getUserBalance(userId: string) {
-    const user = await this.getUserById(userId);
-    const summary = await this.balanceService.getBothBalances(userId);
-    const statusInfo = await this.userStatusService.getUserStatusInfo(userId);
-    const history = await this.balanceService.getBalanceHistory(userId, { 
-      page: 1, 
-      limit: 20 
-    });
+  const user = await this.getUserById(userId);
+  const summary = await this.balanceService.getBothBalances(userId);
+  const statusInfo = await this.userStatusService.getUserStatusInfo(userId);
+  const history = await this.balanceService.getBalanceHistory(userId, { 
+    page: 1, 
+    limit: 20 
+  });
 
-    const realTransactions = history.transactions.filter(
-      t => t.accountType === BALANCE_ACCOUNT_TYPE.REAL
-    );
-    const demoTransactions = history.transactions.filter(
-      t => t.accountType === BALANCE_ACCOUNT_TYPE.DEMO
-    );
+  const transactions = history.transactions as Balance[];
+  
+  const realTransactions = transactions.filter(
+    t => t.accountType === BALANCE_ACCOUNT_TYPE.REAL
+  );
+  const demoTransactions = transactions.filter(
+    t => t.accountType === BALANCE_ACCOUNT_TYPE.DEMO
+  );
 
-    return {
-      user: {
-        id: user.id,
-        email: user.email,
-        role: user.role,
-        status: user.status,
+  return {
+    user: {
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      status: user.status,
+    },
+    statusInfo: {
+      current: statusInfo.status,
+      totalDeposit: statusInfo.totalDeposit,
+      profitBonus: statusInfo.profitBonus,
+      nextStatus: statusInfo.nextStatus,
+      progress: statusInfo.progress,
+    },
+    balances: {
+      real: {
+        current: summary.realBalance,
+        recentTransactions: realTransactions.slice(0, 10),
       },
-      statusInfo: {
-        current: statusInfo.status,
-        totalDeposit: statusInfo.totalDeposit,
-        profitBonus: statusInfo.profitBonus,
-        nextStatus: statusInfo.nextStatus,
-        progress: statusInfo.progress,
+      demo: {
+        current: summary.demoBalance,
+        recentTransactions: demoTransactions.slice(0, 10),
       },
-      balances: {
-        real: {
-          current: summary.realBalance,
-          recentTransactions: realTransactions.slice(0, 10),
-        },
-        demo: {
-          current: summary.demoBalance,
-          recentTransactions: demoTransactions.slice(0, 10),
-        },
-      },
-      summary: {
-        combinedBalance: summary.realBalance + summary.demoBalance,
-        totalTransactions: summary.realTransactions + summary.demoTransactions,
-      },
-    };
-  }
+    },
+    summary: {
+      combinedBalance: summary.realBalance + summary.demoBalance,
+      totalTransactions: summary.realTransactions + summary.demoTransactions,
+    },
+  };
+}
 
   async getAllUsersWithBalance() {
     const db = this.firebaseService.getFirestore();

@@ -1,5 +1,4 @@
 // src/auth/dto/register.dto.ts
-// ✅ FIXED: Make referralCode truly optional and relax some validations
 
 import { 
   IsEmail, IsString, MinLength, Matches, IsOptional, 

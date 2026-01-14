@@ -1,5 +1,4 @@
 // src/admin/dto/manage-balance.dto.ts
-// ✅ UPDATED: Added accountType field
 
 import { IsNumber, IsPositive, IsString, IsEnum } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';

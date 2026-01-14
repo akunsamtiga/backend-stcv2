@@ -1,5 +1,4 @@
 // src/balance/balance.controller.ts
-// ✅ UPDATED: Endpoints for Real and Demo balance
 
 import { Controller, Post, Get, Body, Query, Param, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiParam, ApiQuery } from '@nestjs/swagger';

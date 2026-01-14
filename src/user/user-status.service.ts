@@ -1,5 +1,4 @@
 // src/user/user-status.service.ts
-// ✅ FIXED: Better error handling
 
 import { Injectable, Logger } from '@nestjs/common';
 import { FirebaseService } from '../firebase/firebase.service';

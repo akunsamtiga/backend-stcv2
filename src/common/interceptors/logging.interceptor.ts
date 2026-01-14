@@ -1,3 +1,4 @@
+// src/common/interceptors/logging.interceptor.ts
 import {
   Injectable,
   NestInterceptor,

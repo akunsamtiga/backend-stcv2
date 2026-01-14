@@ -19,6 +19,10 @@ export class BalanceService {
   
   private userStatusService: any;
 
+  // ✅ NEW: Transaction locks untuk prevent race condition
+  private transactionLocks: Map<string, { promise: Promise<any>; startTime: number }> = new Map();
+  private readonly LOCK_TIMEOUT = 30000; // 30 seconds
+
   constructor(
     private firebaseService: FirebaseService,
   ) {
@@ -27,6 +31,55 @@ export class BalanceService {
 
   setUserStatusService(service: any) {
     this.userStatusService = service;
+  }
+
+  /**
+   * ✅ CRITICAL FIX: Acquire lock untuk prevent race condition
+   */
+  private async acquireTransactionLock(userId: string, accountType: string): Promise<void> {
+    const lockKey = `${userId}_${accountType}`;
+    
+    // Tunggu jika ada transaksi lain yang sedang berjalan
+    const existingLock = this.transactionLocks.get(lockKey);
+    if (existingLock) {
+      const age = Date.now() - existingLock.startTime;
+      
+      // Jika lock sudah terlalu lama, hapus (stale lock)
+      if (age > this.LOCK_TIMEOUT) {
+        this.logger.warn(`⚠️ Removing stale lock for ${lockKey} (age: ${age}ms)`);
+        this.transactionLocks.delete(lockKey);
+      } else {
+        // Tunggu lock yang ada selesai
+        this.logger.debug(`⏳ Waiting for lock: ${lockKey}`);
+        try {
+          await existingLock.promise;
+        } catch (error) {
+          // Lock selesai dengan error, kita tetap lanjut
+          this.logger.debug(`Lock ${lockKey} finished with error, continuing`);
+        }
+      }
+    }
+  }
+
+  /**
+   * ✅ CRITICAL FIX: Release lock
+   */
+  private releaseTransactionLock(userId: string, accountType: string): void {
+    const lockKey = `${userId}_${accountType}`;
+    this.transactionLocks.delete(lockKey);
+    this.logger.debug(`🔓 Released lock: ${lockKey}`);
+  }
+
+  /**
+   * ✅ CRITICAL FIX: Set lock promise
+   */
+  private setTransactionLock(userId: string, accountType: string, promise: Promise<any>): void {
+    const lockKey = `${userId}_${accountType}`;
+    this.transactionLocks.set(lockKey, {
+      promise,
+      startTime: Date.now(),
+    });
+    this.logger.debug(`🔒 Acquired lock: ${lockKey}`);
   }
 
   private async checkAndProcessAffiliate(userId: string, isFirstDeposit: boolean) {
@@ -82,8 +135,8 @@ export class BalanceService {
         .doc(affiliate.id)
         .update({
           status: AFFILIATE_STATUS.COMPLETED,
-          commission_amount: commissionAmount, // ✅ Update dengan komisi sesuai status
-          referee_status: userStatus, // ✅ Simpan status referee untuk tracking
+          commission_amount: commissionAmount,
+          referee_status: userStatus,
           completed_at: timestamp,
         });
 
@@ -281,92 +334,165 @@ export class BalanceService {
     }
   }
 
+  /**
+   * ✅ CRITICAL FIX: Atomic balance entry dengan transaction locking
+   */
   async createBalanceEntry(
     userId: string, 
     createBalanceDto: CreateBalanceDto, 
     critical = true
   ) {
+    const startTime = Date.now();
+    const { accountType, amount, type } = createBalanceDto;
+    const lockKey = `${userId}_${accountType}`;
+    
     try {
-      const db = this.firebaseService.getFirestore();
-      const { accountType } = createBalanceDto;
-
+      // ✅ Validate account type
       if (accountType !== BALANCE_ACCOUNT_TYPE.REAL && accountType !== BALANCE_ACCOUNT_TYPE.DEMO) {
         throw new BadRequestException('Invalid account type. Must be "real" or "demo"');
       }
 
-      await this.autoMigrateIfNeeded(userId);
+      // ✅ CRITICAL: Acquire lock untuk prevent concurrent transactions
+      await this.acquireTransactionLock(userId, accountType);
+      
+      // Create promise untuk operasi ini
+      const operationPromise = (async () => {
+        try {
+          await this.autoMigrateIfNeeded(userId);
 
-      if (createBalanceDto.type === BALANCE_TYPES.WITHDRAWAL) {
-        const currentBalance = await this.getCurrentBalanceStrict(userId, accountType);
-        
-        if (currentBalance < createBalanceDto.amount) {
-          throw new BadRequestException(
-            `Insufficient ${accountType} balance. Available: ${currentBalance}, Required: ${createBalanceDto.amount}`
-          );
-        }
-      }
+          const db = this.firebaseService.getFirestore();
+          let wasFirstDeposit = false;
+          
+          // ✅ CRITICAL FIX: Use Firestore Transaction untuk atomic operation
+          if (type === BALANCE_TYPES.WITHDRAWAL) {
+            // ✅ Withdrawal: Check + Debit must be atomic
+            await db.runTransaction(async (transaction) => {
+              // 1. Get current balance in transaction
+              const balanceSnapshot = await transaction.get(
+                db.collection(COLLECTIONS.BALANCE)
+                  .where('user_id', '==', userId)
+                  .where('accountType', '==', accountType)
+              );
 
-      const isFirstRealDeposit = accountType === BALANCE_ACCOUNT_TYPE.REAL && 
-                                  createBalanceDto.type === BALANCE_TYPES.DEPOSIT;
+              const transactions = balanceSnapshot.docs.map(doc => doc.data() as Balance);
+              const currentBalance = CalculationUtil.calculateBalance(transactions);
 
-      let wasFirstDeposit = false;
+              // 2. Check if sufficient balance
+              if (currentBalance < amount) {
+                throw new BadRequestException(
+                  `Insufficient ${accountType} balance. Available: ${currentBalance}, Required: ${amount}`
+                );
+              }
 
-      if (isFirstRealDeposit) {
-        const existingDeposits = await db.collection(COLLECTIONS.BALANCE)
-          .where('user_id', '==', userId)
-          .where('accountType', '==', BALANCE_ACCOUNT_TYPE.REAL)
-          .where('type', '==', BALANCE_TYPES.DEPOSIT)
-          .limit(1)
-          .get();
+              // 3. Create withdrawal entry (atomic)
+              const balanceId = db.collection(COLLECTIONS.BALANCE).doc().id;
+              const balanceData = {
+                id: balanceId,
+                user_id: userId,
+                accountType,
+                type: BALANCE_TYPES.WITHDRAWAL,
+                amount,
+                description: createBalanceDto.description || '',
+                createdAt: new Date().toISOString(),
+              };
 
-        wasFirstDeposit = existingDeposits.empty;
-      }
+              const balanceRef = db.collection(COLLECTIONS.BALANCE).doc(balanceId);
+              transaction.set(balanceRef, balanceData);
+            });
 
-      const balanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
-      const balanceData = {
-        id: balanceId,
-        user_id: userId,
-        accountType,
-        type: createBalanceDto.type,
-        amount: createBalanceDto.amount,
-        description: createBalanceDto.description || '',
-        createdAt: new Date().toISOString(),
-      };
+            this.logger.log(`✅ Withdrawal completed atomically: ${userId} - ${accountType} - ${amount}`);
 
-      await db.collection(COLLECTIONS.BALANCE).doc(balanceId).set(balanceData);
+          } else {
+            // ✅ Deposit/Other: Check for first deposit
+            if (accountType === BALANCE_ACCOUNT_TYPE.REAL && type === BALANCE_TYPES.DEPOSIT) {
+              const existingDeposits = await db.collection(COLLECTIONS.BALANCE)
+                .where('user_id', '==', userId)
+                .where('accountType', '==', BALANCE_ACCOUNT_TYPE.REAL)
+                .where('type', '==', BALANCE_TYPES.DEPOSIT)
+                .limit(1)
+                .get();
 
-      this.invalidateCache(userId, accountType);
+              wasFirstDeposit = existingDeposits.empty;
+            }
 
-      await new Promise(resolve => setTimeout(resolve, 100));
+            // Create deposit/other entry
+            const balanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
+            const balanceData = {
+              id: balanceId,
+              user_id: userId,
+              accountType,
+              type,
+              amount,
+              description: createBalanceDto.description || '',
+              createdAt: new Date().toISOString(),
+            };
 
-      const currentBalance = await this.getCurrentBalance(userId, accountType, true);
+            await db.collection(COLLECTIONS.BALANCE).doc(balanceId).set(balanceData);
 
-      if (accountType === BALANCE_ACCOUNT_TYPE.REAL && 
-          createBalanceDto.type === BALANCE_TYPES.DEPOSIT) {
-        
-        if (wasFirstDeposit) {
-          await this.checkAndProcessAffiliate(userId, true);
-        }
+            // Process affiliate if first deposit
+            if (wasFirstDeposit) {
+              await this.checkAndProcessAffiliate(userId, true);
+            }
 
-        if (this.userStatusService) {
-          try {
-            await this.userStatusService.updateUserStatus(userId);
-          } catch (error) {
-            this.logger.warn(`⚠️ Status update failed: ${error.message}`);
+            // Update user status if real deposit
+            if (accountType === BALANCE_ACCOUNT_TYPE.REAL && type === BALANCE_TYPES.DEPOSIT) {
+              if (this.userStatusService) {
+                try {
+                  await this.userStatusService.updateUserStatus(userId);
+                } catch (error) {
+                  this.logger.warn(`⚠️ Status update failed: ${error.message}`);
+                }
+              }
+            }
           }
-        }
-      }
 
-      return {
-        message: `${accountType} balance transaction recorded successfully`,
-        transaction: balanceData,
-        currentBalance,
-        accountType,
-        affiliateProcessed: wasFirstDeposit,
-      };
+          // ✅ Invalidate cache
+          this.invalidateCache(userId, accountType);
+
+          // ✅ Wait for eventual consistency
+          await new Promise(resolve => setTimeout(resolve, 100));
+
+          // ✅ Get updated balance
+          const currentBalance = await this.getCurrentBalance(userId, accountType, true);
+
+          const duration = Date.now() - startTime;
+          
+          this.logger.log(
+            `✅ Balance ${type} completed in ${duration}ms: ${userId} - ${accountType} - ${amount} (New: ${currentBalance})`
+          );
+
+          return {
+            message: `${accountType} balance ${type} recorded successfully`,
+            transaction: {
+              user_id: userId,
+              accountType,
+              type,
+              amount,
+            },
+            currentBalance,
+            accountType,
+            affiliateProcessed: wasFirstDeposit,
+            executionTime: duration,
+          };
+
+        } finally {
+          // ✅ CRITICAL: Always release lock
+          this.releaseTransactionLock(userId, accountType);
+        }
+      })();
+
+      // ✅ Store lock promise
+      this.setTransactionLock(userId, accountType, operationPromise);
+
+      // ✅ Wait for operation to complete
+      return await operationPromise;
 
     } catch (error) {
       this.logger.error(`❌ createBalanceEntry error: ${error.message}`);
+      
+      // Ensure lock is released on error
+      this.releaseTransactionLock(userId, accountType);
+      
       throw error;
     }
   }
@@ -584,6 +710,7 @@ export class BalanceService {
     const now = Date.now();
     const maxAge = this.BALANCE_CACHE_TTL * 10;
     
+    // Cleanup balance cache
     for (const [userId, cached] of this.realBalanceCache.entries()) {
       if (now - cached.timestamp > maxAge) {
         this.realBalanceCache.delete(userId);
@@ -593,6 +720,15 @@ export class BalanceService {
     for (const [userId, cached] of this.demoBalanceCache.entries()) {
       if (now - cached.timestamp > maxAge) {
         this.demoBalanceCache.delete(userId);
+      }
+    }
+
+    // ✅ NEW: Cleanup stale transaction locks
+    for (const [lockKey, lockData] of this.transactionLocks.entries()) {
+      const age = now - lockData.startTime;
+      if (age > this.LOCK_TIMEOUT) {
+        this.transactionLocks.delete(lockKey);
+        this.logger.warn(`⚠️ Cleaned up stale transaction lock: ${lockKey} (age: ${age}ms)`);
       }
     }
   }
@@ -607,6 +743,8 @@ export class BalanceService {
       realBalanceCacheSize: this.realBalanceCache.size,
       demoBalanceCacheSize: this.demoBalanceCache.size,
       balanceCacheTTL: this.BALANCE_CACHE_TTL,
+      activeLocks: this.transactionLocks.size, // ✅ NEW: Monitor active locks
+      lockTimeout: this.LOCK_TIMEOUT,
     };
   }
 }

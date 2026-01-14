@@ -1,5 +1,4 @@
 // src/user/user.service.ts
-// ✅ FIXED: Type-safe profile management with proper type casting
 
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
