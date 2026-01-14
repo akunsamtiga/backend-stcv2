@@ -1,5 +1,4 @@
 // src/assets/services/binance.service.ts
-// ✅ 1-SECOND MODE: Crypto sama seperti Normal Assets!
 
 import { Injectable, Logger } from '@nestjs/common';
 import axios, { AxiosInstance } from 'axios';
@@ -23,18 +22,15 @@ export class BinanceService {
   private readonly logger = new Logger(BinanceService.name);
   private readonly axios: AxiosInstance;
   
-  // Price cache
   private priceCache: Map<string, {
     price: BinancePrice;
     timestamp: number;
   }> = new Map();
   
-  // Request deduplication
   private pendingRequests: Map<string, Promise<BinancePrice | null>> = new Map();
   
-  // ✅ 1-SECOND MODE: Cache minimal untuk realtime 1s trading!
-  private readonly CACHE_TTL = 1000; // 1 second - SAMA SEPERTI NORMAL ASSETS!
-  private readonly STALE_CACHE_TTL = 5000; // 5 seconds fallback
+  private readonly CACHE_TTL = 1000;
+  private readonly STALE_CACHE_TTL = 5000;
   
   private apiCallCount = 0;
   private cacheHitCount = 0;
@@ -43,13 +39,11 @@ export class BinanceService {
   private lastCallTime = 0;
   private realtimeWriteCount = 0;
   
-  // Rate limiting (Binance: 1200 req/min = 72,000 req/hour)
   private lastApiCallTime = 0;
-  private readonly MIN_CALL_INTERVAL = 60; // 60ms between calls (safe for up to 20 assets)
+  private readonly MIN_CALL_INTERVAL = 60;
   private isRateLimited = false;
   private rateLimitUntil = 0;
   
-  // ✅ Binance symbol mapping
   private readonly BINANCE_SYMBOL_MAP: Record<string, string> = {
     'BTC': 'BTCUSDT',
     'ETH': 'ETHUSDT',
@@ -112,9 +106,6 @@ export class BinanceService {
     this.logger.log('');
   }
 
-  /**
-   * ✅ Main entry point - 1s cache for realtime!
-   */
   async getCurrentPrice(asset: Asset): Promise<BinancePrice | null> {
     if (!asset.cryptoConfig) {
       this.logger.error(`❌ Asset ${asset.symbol} missing cryptoConfig`);
@@ -124,7 +115,6 @@ export class BinanceService {
     const { baseCurrency } = asset.cryptoConfig;
     let { quoteCurrency } = asset.cryptoConfig;
     
-    // Auto-map USD to USDT
     if (quoteCurrency.toUpperCase() === 'USD') {
       quoteCurrency = 'USDT';
     }
@@ -137,14 +127,12 @@ export class BinanceService {
 
     const cacheKey = `${baseCurrency}/${quoteCurrency}`;
 
-    // 1. Check cache (1s TTL - expire VERY quickly!)
     const cached = this.getCachedPrice(cacheKey);
     if (cached) {
       this.cacheHitCount++;
       return cached;
     }
 
-    // 2. Check deduplication (prevent duplicate simultaneous requests)
     const pending = this.pendingRequests.get(cacheKey);
     if (pending) {
       this.deduplicatedCount++;
@@ -152,7 +140,6 @@ export class BinanceService {
       return await pending;
     }
 
-    // 3. Fetch fresh data (happens almost every call due to 1s cache!)
     const requestPromise = this.fetchPrice(cacheKey, binanceSymbol, asset);
     this.pendingRequests.set(cacheKey, requestPromise);
 
@@ -164,15 +151,11 @@ export class BinanceService {
     }
   }
 
-  /**
-   * ✅ Fetch with rate limiting protection
-   */
   private async fetchPrice(
     cacheKey: string,
     binanceSymbol: string,
     asset: Asset
   ): Promise<BinancePrice | null> {
-    // Check rate limit
     if (this.isRateLimited) {
       const now = Date.now();
       if (now < this.rateLimitUntil) {
@@ -188,7 +171,6 @@ export class BinanceService {
       }
     }
 
-    // Enforce minimum interval between API calls
     const now = Date.now();
     const timeSinceLastCall = now - this.lastApiCallTime;
     if (timeSinceLastCall < this.MIN_CALL_INTERVAL) {
@@ -201,7 +183,6 @@ export class BinanceService {
       this.lastCallTime = Date.now();
       this.lastApiCallTime = Date.now();
 
-      // Call Binance API
       const response = await this.axios.get('/ticker/24hr', {
         params: { symbol: binanceSymbol },
       });
@@ -223,18 +204,15 @@ export class BinanceService {
         low24h: parseFloat(data.lowPrice) || 0,
       };
 
-      // ✅ Cache for 1 second only (minimal cache for 1s trading!)
       this.priceCache.set(cacheKey, {
         price,
         timestamp: Date.now(),
       });
 
-      // Write to RT DB (async, non-blocking)
       this.writePriceToRealtimeDb(asset, price).catch(error => {
         this.logger.error(`❌ RT DB write failed: ${error.message}`);
       });
 
-      // Log every 60 API calls (roughly every minute)
       if (this.apiCallCount % 60 === 0) {
         this.logger.log(
           `⚡ ${cacheKey}: $${price.price} ` +
@@ -274,15 +252,11 @@ export class BinanceService {
     }
   }
 
-  /**
-   * ✅ Batch fetch multiple prices
-   */
   async getMultiplePrices(
     assets: Asset[]
   ): Promise<Map<string, BinancePrice | null>> {
     const results = new Map<string, BinancePrice | null>();
     
-    // Use Promise.all for concurrent requests (deduplication handles duplicates)
     const promises = assets.map(async (asset) => {
       if (!asset.cryptoConfig) {
         return { assetId: asset.id, price: null };
@@ -308,9 +282,6 @@ export class BinanceService {
     return results;
   }
 
-  /**
-   * Calculate current API call rate per minute
-   */
   private calculateAPIRate(): number {
     if (this.lastCallTime === 0) return 0;
     
@@ -320,9 +291,6 @@ export class BinanceService {
     return Math.round((this.apiCallCount / uptimeSeconds) * 60);
   }
 
-  /**
-   * ✅ Validation
-   */
   validateCryptoConfig(asset: Asset): { valid: boolean; error?: string } {
     if (!asset.cryptoConfig) {
       return { valid: false, error: 'Missing cryptoConfig' };
@@ -414,9 +382,6 @@ export class BinanceService {
     return `/crypto/${baseCurrency.toLowerCase()}_${normalizedQuote}`;
   }
 
-  /**
-   * Cache management
-   */
   private getCachedPrice(key: string): BinancePrice | null {
     const cached = this.priceCache.get(key);
     if (!cached) return null;
@@ -447,9 +412,6 @@ export class BinanceService {
     }
   }
 
-  /**
-   * ✅ Statistics with 1-second mode info
-   */
   getStats() {
     const totalCalls = this.apiCallCount + this.cacheHitCount + this.deduplicatedCount;
     const cacheHitRate = totalCalls > 0

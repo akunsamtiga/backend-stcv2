@@ -24,7 +24,6 @@ export class FirebaseService implements OnModuleInit {
   private realtimeDbAdmin: admin.database.Database | null = null;
   private realtimeDbRest: AxiosInstance | null = null;
   
-  // ✅ NEW: Connection status flag
   private isConnected = false;
   
   private useRestForRealtimeDb = false;
@@ -114,7 +113,6 @@ export class FirebaseService implements OnModuleInit {
 
       await this.initializeRealtimeDbWithPool();
       
-      // ✅ Set initial connection status
       this.isConnected = this.useRestForRealtimeDb || this.realtimeDbAdmin !== null;
       
       this.logger.log('✅ Firebase OPTIMIZED mode ready!');
@@ -129,7 +127,7 @@ export class FirebaseService implements OnModuleInit {
       
     } catch (error) {
       this.logger.error(`❌ Firebase initialization failed: ${error.message}`);
-      this.isConnected = false; // ✅ Set false on error
+      this.isConnected = false;
       throw error;
     }
   }
@@ -139,7 +137,7 @@ export class FirebaseService implements OnModuleInit {
     
     if (!realtimeDbUrl) {
       this.logger.warn('⚠️ Realtime DB URL not configured');
-      this.isConnected = false; // ✅ Set false jika tidak ada URL
+      this.isConnected = false;
       return;
     }
 
@@ -190,13 +188,13 @@ export class FirebaseService implements OnModuleInit {
       
       this.useRestForRealtimeDb = true;
       this.realtimeDbRest = this.restConnectionPool[0];
-      this.isConnected = true; // ✅ Set true jika sukses
+      this.isConnected = true;
       
       this.logger.log(`✅ Optimized REST pool created (${this.POOL_SIZE} connections)`);
       
     } catch (restError) {
       this.logger.warn(`⚠️ REST API failed: ${restError.message}`);
-      this.isConnected = false; // ✅ Set false jika gagal
+      this.isConnected = false;
       
       try {
         this.logger.log('⚡ Trying Admin SDK...');
@@ -204,7 +202,7 @@ export class FirebaseService implements OnModuleInit {
         this.realtimeDbAdmin.goOffline();
         this.realtimeDbAdmin.goOnline();
         this.useRestForRealtimeDb = false;
-        this.isConnected = true; // ✅ Set true jika Admin SDK berhasil
+        this.isConnected = true;
         this.logger.log('✅ Realtime DB via Admin SDK');
       } catch (sdkError) {
         this.logger.error('❌ Both methods failed');
@@ -241,7 +239,7 @@ export class FirebaseService implements OnModuleInit {
   }
 
   async getRealtimeDbValue(path: string, useCache = true): Promise<any> {
-    if (!this.isConnected) { // ✅ Use the isConnected property
+    if (!this.isConnected) {
       throw new Error('Firebase not connected');
     }
 
@@ -421,23 +419,19 @@ export class FirebaseService implements OnModuleInit {
     
     const now = Date.now();
     this.writeQueue = this.writeQueue.filter(item => {
-      // Keep items that are less than 5 minutes old
       return now - (item as any).addedAt < 300000;
     });
     
     this.isProcessingQueue = false;
   }
 
-  // ✅ FIXED: Delete method for Realtime Database
   async deleteRealtimeDbData(path: string): Promise<boolean> {
-    // ✅ Check connection status correctly
     if (!this.isConnected || (!this.useRestForRealtimeDb && !this.realtimeDbAdmin)) {
       this.logger.error('❌ Cannot delete: Realtime DB not available');
       return false;
     }
 
     try {
-      // Ensure path starts with /
       const cleanPath = path.startsWith('/') ? path : `/${path}`;
       
       this.logger.log(`🗑️ Deleting Realtime DB path: ${cleanPath}...`);
@@ -453,7 +447,6 @@ export class FirebaseService implements OnModuleInit {
       return true;
 
     } catch (error) {
-      // Jika path tidak ada, tetap anggap sukses (idempotent)
       if (error.response?.status === 404 || error.code === 'DATABASE_REFERENCE_NOT_FOUND') {
         this.logger.warn(`⚠️ Path not found (treating as success): ${path}`);
         return true;
@@ -694,7 +687,7 @@ export class FirebaseService implements OnModuleInit {
         consecutiveFailures: this.connectionHealth.consecutiveFailures,
         lastSuccessMs: timeSinceLastSuccess,
         isHealthy: this.connectionHealth.consecutiveFailures < this.MAX_CONSECUTIVE_FAILURES,
-        isConnected: this.isConnected, // ✅ Return connection status
+        isConnected: this.isConnected,
       },
     };
   }

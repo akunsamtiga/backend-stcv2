@@ -1,7 +1,7 @@
 // src/assets/services/price-fetcher.service.ts
 import { Injectable, Logger } from '@nestjs/common';
 import { FirebaseService } from '../../firebase/firebase.service';
-import { BinanceService } from './binance.service';  // ✅ CHANGED
+import { BinanceService } from './binance.service';
 import { Asset, RealtimePrice } from '../../common/interfaces';
 import { ASSET_CATEGORY, ASSET_DATA_SOURCE } from '../../common/constants';
 
@@ -28,7 +28,7 @@ export class PriceFetcherService {
 
   constructor(
     private firebaseService: FirebaseService,
-    private binanceService: BinanceService,  // ✅ CHANGED
+    private binanceService: BinanceService,
   ) {
     setInterval(() => this.cleanupStaleCache(), 5000);
   }
@@ -156,7 +156,7 @@ export class PriceFetcherService {
 
   private async fetchCryptoPrice(asset: Asset): Promise<RealtimePrice | null> {
     try {
-      const cryptoPrice = await this.binanceService.getCurrentPrice(asset);  // ✅ CHANGED
+      const cryptoPrice = await this.binanceService.getCurrentPrice(asset);
       
       if (!cryptoPrice) {
         return null;
@@ -328,7 +328,7 @@ export class PriceFetcherService {
     const normalAssets = assets.filter(a => a.category !== ASSET_CATEGORY.CRYPTO);
     
     if (cryptoAssets.length > 0) {
-      const cryptoPrices = await this.binanceService.getMultiplePrices(cryptoAssets);  // ✅ CHANGED
+      const cryptoPrices = await this.binanceService.getMultiplePrices(cryptoAssets);
       
       for (const asset of cryptoAssets) {
         const cryptoPrice = cryptoPrices.get(asset.id);
@@ -371,13 +371,13 @@ export class PriceFetcherService {
       cacheSize: this.priceCache.size,
       consecutiveFailures: this.consecutiveFailures,
       isHealthy: this.consecutiveFailures < this.MAX_CONSECUTIVE_FAILURES,
-      cryptoStats: this.binanceService.getStats(),  // ✅ CHANGED
+      cryptoStats: this.binanceService.getStats(),
     };
   }
 
   clearCache(): void {
     this.priceCache.clear();
-    this.binanceService.clearCache();  // ✅ CHANGED
+    this.binanceService.clearCache();
     this.logger.log('🗑️ Price cache cleared');
   }
 

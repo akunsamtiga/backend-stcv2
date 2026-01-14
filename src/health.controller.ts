@@ -73,7 +73,6 @@ export class HealthController {
         timestamp: TimezoneUtil.toISOString(),
         timestampWIB: TimezoneUtil.formatDateTime(),
         
-        // ✅ Timezone info
         timezone: {
           name: 'Asia/Jakarta',
           offset: 'UTC+7',
@@ -82,7 +81,6 @@ export class HealthController {
           syncedWithSimulator: true,
         },
         
-        // System metrics
         system: {
           uptime: this.formatUptime(uptime),
           memory: {
@@ -95,16 +93,12 @@ export class HealthController {
           },
         },
 
-        // Firebase performance
         firebase: firebaseStats,
 
-        // Binary orders performance
         binaryOrders: orderStats,
 
-        // Assets & pricing performance
         assets: assetStats,
 
-        // Health status
         health: {
           overall: 'healthy',
           checks: {
@@ -115,7 +109,6 @@ export class HealthController {
           },
         },
 
-        // Recommendations
         recommendations: this.getRecommendations(memory, orderStats, firebaseStats),
       };
     } catch (error) {
@@ -215,10 +208,6 @@ export class HealthController {
     };
   }
 
-  // ============================================
-  // HELPER METHODS
-  // ============================================
-
   private formatUptime(seconds: number): string {
     const days = Math.floor(seconds / 86400);
     const hours = Math.floor((seconds % 86400) / 3600);
@@ -241,7 +230,6 @@ export class HealthController {
   ): string[] {
     const recommendations: string[] = [];
 
-    // Memory recommendations
     const memoryPercent = (memory.heapUsed / memory.heapTotal) * 100;
     if (memoryPercent > 80) {
       recommendations.push('⚠️ High memory usage (>80%). Consider restarting or scaling.');
@@ -249,7 +237,6 @@ export class HealthController {
       recommendations.push('💡 Memory usage moderate (>60%). Monitor closely.');
     }
 
-    // Order performance recommendations
     if (orderStats.avgCreateTime > 1000) {
       recommendations.push('⚠️ Order creation slow (>1s). Check Firebase connection.');
     } else if (orderStats.avgCreateTime > 500) {
@@ -260,17 +247,14 @@ export class HealthController {
       recommendations.push('⚠️ Settlement slow (>500ms). Optimize price fetching.');
     }
 
-    // Firebase recommendations
     if (firebaseStats.avgResponseTime > 200) {
       recommendations.push('💡 Firebase response time high. Consider caching optimization.');
     }
 
-    // Cache recommendations
     if (orderStats.cacheSize.orders > 1000) {
       recommendations.push('💡 Large order cache. Consider periodic cleanup.');
     }
 
-    // Timezone check
     if (!orderStats.timezone) {
       recommendations.push('⚠️ Timezone information missing. Check configuration.');
     }

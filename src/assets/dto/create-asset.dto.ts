@@ -8,7 +8,6 @@ import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { ASSET_CATEGORY, ASSET_DATA_SOURCE } from '../../common/constants';
 
-// Simulator Settings DTO
 export class SimulatorSettingsDto {
   @ApiProperty({ 
     example: 40.022, 
@@ -73,7 +72,6 @@ export class SimulatorSettingsDto {
   maxPrice?: number;
 }
 
-// Trading Settings DTO
 export class TradingSettingsDto {
   @ApiProperty({ 
     example: 1000, 
@@ -102,7 +100,6 @@ export class TradingSettingsDto {
   allowedDurations: number[];
 }
 
-// ✅ Crypto Configuration DTO
 export class CryptoConfigDto {
   @ApiProperty({ 
     example: 'BTC',
@@ -127,7 +124,6 @@ export class CryptoConfigDto {
   exchange?: string;
 }
 
-// ✅ MAIN: Create Asset DTO
 export class CreateAssetDto {
   @ApiProperty({ 
     example: 'Bitcoin',
@@ -143,7 +139,6 @@ export class CreateAssetDto {
   @IsString()
   symbol: string;
 
-  // ✅ Category field
   @ApiProperty({ 
     enum: ASSET_CATEGORY,
     example: 'crypto',
@@ -168,22 +163,17 @@ export class CreateAssetDto {
   @IsBoolean()
   isActive: boolean;
 
-// ✅ BENAR
-@ApiProperty({ 
-  enum: ASSET_DATA_SOURCE,
-  example: 'binance',  // ✅ FIXED
-  description: 'Data source: realtime_db, api, mock, or binance (for crypto)'  // ✅ FIXED
-})
-@IsEnum(ASSET_DATA_SOURCE)
-dataSource: string;
+  @ApiProperty({ 
+    enum: ASSET_DATA_SOURCE,
+    example: 'binance',
+    description: 'Data source: realtime_db, api, mock, or binance (for crypto)'
+  })
+  @IsEnum(ASSET_DATA_SOURCE)
+  dataSource: string;
 
-  // ✅ UPDATED: Now optional for both normal and crypto assets
   @ApiPropertyOptional({ 
     example: '/crypto/btc_usd',
-    description: `Firebase Realtime DB path. 
-    - For normal assets with realtime_db source: REQUIRED (e.g., /idx_stc)
-    - For crypto assets: OPTIONAL (auto-generated if not provided, e.g., /crypto/btc_usd)
-    - Must start with /`,
+    description: 'Firebase Realtime DB path. For normal assets with realtime_db source: REQUIRED (e.g., /idx_stc). For crypto assets: OPTIONAL (auto-generated if not provided, e.g., /crypto/btc_usd). Must start with /'
   })
   @IsOptional()
   @IsString()
@@ -197,7 +187,6 @@ dataSource: string;
   @IsString()
   apiEndpoint?: string;
 
-  // ✅ Crypto configuration
   @ApiPropertyOptional({ 
     type: CryptoConfigDto,
     description: 'Crypto configuration (required for crypto category with cryptocompare data source)'
@@ -215,7 +204,6 @@ dataSource: string;
   @IsString()
   description?: string;
 
-  // ✅ Simulator settings (for normal assets only)
   @ApiPropertyOptional({ 
     type: SimulatorSettingsDto,
     description: 'Simulator settings (for normal assets only, NOT for crypto)'
@@ -225,7 +213,6 @@ dataSource: string;
   @Type(() => SimulatorSettingsDto)
   simulatorSettings?: SimulatorSettingsDto;
 
-  // ✅ Trading settings (for both normal and crypto)
   @ApiPropertyOptional({ 
     type: TradingSettingsDto,
     description: 'Trading constraints and allowed durations (for both normal and crypto assets)'

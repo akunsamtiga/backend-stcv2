@@ -61,7 +61,6 @@ export class BinaryOrdersController {
     @CurrentUser('sub') userId: string,
     @Query() queryDto: QueryBinaryOrderDto,
   ) {
-    // ✅ Pass entire DTO directly to service
     return this.ordersService.getOrders(userId, queryDto);
   }
 

@@ -34,10 +34,7 @@ export class CryptoTimeframeManager {
     { timeframe: '1d', seconds: 86400 },
   ];
   
-  // Track current bars for each timeframe
   private currentBars: Map<string, Map<string, CryptoBar>> = new Map();
-  
-  // Track bars created count
   private barsCreated: Map<string, number> = new Map();
   
   constructor() {
@@ -47,16 +44,10 @@ export class CryptoTimeframeManager {
     });
   }
   
-  /**
-   * Calculate bar timestamp for a given timeframe
-   */
   private getBarTimestamp(timestamp: number, seconds: number): number {
     return Math.floor(timestamp / seconds) * seconds;
   }
   
-  /**
-   * Format datetime in WIB timezone
-   */
   private formatDateTime(timestamp: number): string {
     const date = new Date(timestamp * 1000);
     const year = date.getFullYear();
@@ -68,10 +59,6 @@ export class CryptoTimeframeManager {
     return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
   }
   
-  /**
-   * Update OHLC bars for all timeframes
-   * Returns { completedBars, currentBars } for writing to DB
-   */
   updateBars(
     assetId: string,
     timestamp: number,
@@ -91,16 +78,13 @@ export class CryptoTimeframeManager {
       const tfBars = this.currentBars.get(timeframe)!;
       const existingBar = tfBars.get(barKey);
       
-      // Check if we need to complete the previous bar and start a new one
       if (existingBar && existingBar.timestamp !== barTimestamp) {
-        // Complete the previous bar
         const completedBar: CryptoBar = {
           ...existingBar,
           isCompleted: true,
         };
         completedBars.set(timeframe, completedBar);
         
-        // Increment bars created count
         const count = this.barsCreated.get(timeframe) || 0;
         this.barsCreated.set(timeframe, count + 1);
         
@@ -109,11 +93,9 @@ export class CryptoTimeframeManager {
         );
       }
       
-      // Create or update current bar
       let currentBar: CryptoBar;
       
       if (!existingBar || existingBar.timestamp !== barTimestamp) {
-        // New bar
         currentBar = {
           timestamp: barTimestamp,
           datetime: this.formatDateTime(barTimestamp),
@@ -131,18 +113,16 @@ export class CryptoTimeframeManager {
           `🆕 New ${timeframe} bar for ${assetId} @ ${currentBar.datetime}`
         );
       } else {
-        // Update existing bar
         currentBar = {
           ...existingBar,
           high: Math.max(existingBar.high, price),
           low: Math.min(existingBar.low, price),
           close: price,
-          volume: volume, // Use latest volume (24h volume from API)
+          volume: volume,
           isCompleted: false,
         };
       }
       
-      // Store current bar
       tfBars.set(barKey, currentBar);
       currentBars.set(timeframe, currentBar);
     }
@@ -150,9 +130,6 @@ export class CryptoTimeframeManager {
     return { completedBars, currentBars };
   }
   
-  /**
-   * Get statistics for monitoring
-   */
   getStats(assetId: string): any {
     const stats: any = {
       assetId,
@@ -169,9 +146,6 @@ export class CryptoTimeframeManager {
     return stats;
   }
   
-  /**
-   * Reset bars for a specific asset (useful for testing)
-   */
   reset(assetId: string): void {
     for (const { timeframe } of this.timeframes) {
       const tfBars = this.currentBars.get(timeframe)!;
@@ -182,12 +156,9 @@ export class CryptoTimeframeManager {
     this.logger.log(`🔄 Reset OHLC bars for ${assetId}`);
   }
   
-  /**
-   * Get retention days for each timeframe
-   */
   getRetentionDays(): Record<string, number> {
     return {
-      '1s': 0.0833,  // 2 hours
+      '1s': 0.0833,
       '1m': 2,
       '5m': 2,
       '15m': 3,

@@ -13,7 +13,6 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 import { TimezoneUtil } from './common/utils';
 
-// ✅ CRITICAL: Set timezone globally BEFORE anything else
 process.env.TZ = 'Asia/Jakarta';
 
 async function bootstrap() {
@@ -26,7 +25,6 @@ async function bootstrap() {
   const configService = app.get(ConfigService);
   const logger = new Logger('Bootstrap');
 
-  // ✅ Log timezone configuration
   const timezone = configService.get('timezone') || 'Asia/Jakarta';
   logger.log('');
   logger.log('🌍 ================================================');
@@ -40,9 +38,6 @@ async function bootstrap() {
   logger.log('🌍 ================================================');
   logger.log('');
 
-  // ============================================
-  // TIMEOUT CONFIGURATION
-  // ============================================
   app.use((req: Request, res: Response, next: NextFunction) => {
     const path = req.path;
     
@@ -69,8 +64,8 @@ async function bootstrap() {
           error: 'Request timeout',
           timeout: `${timeout}ms`,
           statusCode: 408,
-          timestamp: TimezoneUtil.toISOString(), // ✅ Use TimezoneUtil
-          timestampWIB: TimezoneUtil.formatDateTime(), // ✅ Add WIB time
+          timestamp: TimezoneUtil.toISOString(),
+          timestampWIB: TimezoneUtil.formatDateTime(),
           path: req.url,
         });
       }
@@ -79,14 +74,12 @@ async function bootstrap() {
     next();
   });
 
-  // Keep-alive
   app.use((req: Request, res: Response, next: NextFunction) => {
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('Keep-Alive', 'timeout=60, max=1000');
     next();
   });
 
-  // Preflight
   app.use((req: Request, res: Response, next: NextFunction) => {
     if (req.method === 'OPTIONS') {
       res.status(200).end();
@@ -95,9 +88,6 @@ async function bootstrap() {
     next();
   });
 
-  // ============================================
-  // SECURITY & COMPRESSION
-  // ============================================
   app.use(helmet({
     contentSecurityPolicy: false,
     crossOriginEmbedderPolicy: false,
@@ -114,9 +104,6 @@ async function bootstrap() {
     },
   }));
 
-  // ============================================
-  // VALIDATION
-  // ============================================
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -132,9 +119,6 @@ async function bootstrap() {
     }),
   );
 
-  // ============================================
-  // INTERCEPTORS
-  // ============================================
   const nodeEnv = configService.get('nodeEnv');
   
   if (nodeEnv === 'development') {
@@ -144,9 +128,6 @@ async function bootstrap() {
   app.useGlobalInterceptors(new ResponseInterceptor());
   app.useGlobalFilters(new AllExceptionsFilter());
 
-  // ============================================
-  // CORS
-  // ============================================
   const corsOrigin = configService.get('cors.origin');
   app.enableCors({
     origin: corsOrigin,
@@ -159,16 +140,10 @@ async function bootstrap() {
     optionsSuccessStatus: 204,
   });
 
-  // ============================================
-  // API PREFIX
-  // ============================================
   const apiPrefix = configService.get('apiPrefix');
   const apiVersion = configService.get('apiVersion');
   app.setGlobalPrefix(`${apiPrefix}/${apiVersion}`);
 
-  // ============================================
-  // SWAGGER
-  // ============================================
   if (nodeEnv !== 'production') {
     const config = new DocumentBuilder()
       .setTitle('Binary Option Trading API')
@@ -194,9 +169,6 @@ async function bootstrap() {
     });
   }
 
-  // ============================================
-  // SERVER STARTUP
-  // ============================================
   const port = configService.get('port');
   
   await app.listen(port, '0.0.0.0', () => {
@@ -233,7 +205,6 @@ async function bootstrap() {
     logger.log('');
   });
 
-  // ✅ GRACEFUL SHUTDOWN
   process.on('SIGTERM', async () => {
     logger.log('⚠️ SIGTERM received, shutting down gracefully...');
     await app.close();

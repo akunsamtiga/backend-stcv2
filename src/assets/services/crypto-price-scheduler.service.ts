@@ -1,5 +1,4 @@
 // src/assets/services/crypto-price-scheduler.service.ts
-// ✅ VERIFIED: Works with 1s cache from BinanceService
 
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron, SchedulerRegistry } from '@nestjs/schedule';
@@ -22,17 +21,14 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
   
   private timeframeManagers: Map<string, CryptoTimeframeManager> = new Map();
   
-  // ✅ Update every 1 second (will leverage 1s cache from BinanceService)
-  private readonly UPDATE_INTERVAL = 1000; // 1s
-  private readonly REFRESH_INTERVAL = 600000; // 10min
-  private readonly CLEANUP_INTERVAL = 7200000; // 2h
+  private readonly UPDATE_INTERVAL = 1000;
+  private readonly REFRESH_INTERVAL = 600000;
+  private readonly CLEANUP_INTERVAL = 7200000;
   private lastCleanupTime = 0;
   
-  // ✅ Track if scheduler should be active
   private schedulerActive = false;
   private updateIntervalHandle: any = null;
   
-  // ✅ Track initialization attempts
   private initAttempts = 0;
   private readonly MAX_INIT_ATTEMPTS = 10;
 
@@ -44,12 +40,10 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
-    // ✅ Start initialization after short delay
     setTimeout(async () => {
       await this.initializeScheduler();
     }, 3000);
     
-    // ✅ Keep trying to initialize if no assets found
     const retryInterval = setInterval(async () => {
       if (!this.schedulerActive && this.initAttempts < this.MAX_INIT_ATTEMPTS) {
         this.logger.log(`🔄 Retry attempt ${this.initAttempts + 1}/${this.MAX_INIT_ATTEMPTS} to find crypto assets...`);
@@ -71,7 +65,6 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       await this.firebaseService.waitForFirestore(10000);
       await this.loadCryptoAssets();
       
-      // ✅ Only start if there are crypto assets
       if (this.cryptoAssets.length > 0) {
         await this.startScheduler();
       } else {
@@ -96,7 +89,6 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
         return;
       }
       
-      // Initialize managers for each crypto asset
       this.cryptoAssets.forEach(asset => {
         if (!this.timeframeManagers.has(asset.id)) {
           this.timeframeManagers.set(asset.id, new CryptoTimeframeManager());
@@ -130,7 +122,6 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
   }
 
   private async startScheduler(): Promise<void> {
-    // ✅ Safety check
     if (this.cryptoAssets.length === 0) {
       this.logger.warn('⚠️ Cannot start scheduler: no crypto assets');
       return;
@@ -144,11 +135,9 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     this.isRunning = true;
     this.schedulerActive = true;
     
-    // ✅ Initial update immediately
     this.logger.log('🚀 Starting initial crypto price fetch...');
     await this.updateAllPrices();
     
-    // ✅ Start interval - runs every 1s
     this.updateIntervalHandle = setInterval(async () => {
       if (this.isRunning && this.schedulerActive) {
         await this.updateAllPrices();
@@ -161,10 +150,10 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     this.logger.log('   Every second: Fetch from Binance (1s cache)');
     this.logger.log('   Cache ensures: Fresh data every update');
     this.logger.log('   Deduplication: Prevents parallel requests');
+    this.logger.log('   ✅ ALL TIMEFRAMES: Written on every update');
     this.logger.log('');
   }
 
-  // ✅ Refresh assets every 10 minutes
   @Cron('*/10 * * * *')
   async refreshCryptoAssets() {
     this.logger.debug('🔄 Refreshing crypto assets list...');
@@ -173,7 +162,6 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     await this.loadCryptoAssets();
     const currentCount = this.cryptoAssets.length;
     
-    // ✅ Handle state changes
     if (previousCount === 0 && currentCount > 0) {
       this.logger.log('✅ Crypto assets detected! Starting scheduler...');
       await this.startScheduler();
@@ -185,12 +173,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     }
   }
 
-  /**
-   * ✅ Update all crypto prices
-   * Runs every 1s with 1s cache
-   */
   private async updateAllPrices(): Promise<void> {
-    // ✅ Safety check
     if (this.cryptoAssets.length === 0) {
       this.logger.debug('⏭️ No crypto assets to update, skipping');
       return;
@@ -199,7 +182,6 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     const startTime = Date.now();
     
     try {
-      // ✅ This will use 1s cache from BinanceService
       const priceMap = await this.binanceService.getMultiplePrices(this.cryptoAssets);
       
       let successCount = 0;
@@ -222,14 +204,12 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       
       const duration = Date.now() - startTime;
       
-      // ✅ Log every 30 updates (every 30 seconds)
       if (this.updateCount % 30 === 0) {
         this.logger.log(
           `💎 Update #${this.updateCount}: ${successCount}/${this.cryptoAssets.length} prices + OHLC updated in ${duration}ms ` +
           `(Success: ${successCount}, Failed: ${failCount})`
         );
         
-        // Show cache stats
         const binanceStats = this.binanceService.getStats();
         const perfStats = binanceStats.performance || {};
         
@@ -239,7 +219,6 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
         );
       }
       
-      // Cleanup old data
       const now = Date.now();
       if (now - this.lastCleanupTime > this.CLEANUP_INTERVAL) {
         await this.cleanupOldData();
@@ -273,32 +252,31 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       
       const path = this.getAssetPath(asset);
       
-      // ✅ Write completed bars
+      // ✅ ALWAYS write ALL current bars (not conditional)
+      // This ensures all timeframes are visible immediately
+      for (const [timeframe, bar] of currentBars.entries()) {
+        const barPath = `${path}/ohlc_${timeframe}/${bar.timestamp}`;
+        
+        await this.firebaseService.setRealtimeDbValue(
+          barPath,
+          this.cleanBarData(bar),
+          false // async write for current bars
+        );
+      }
+      
+      // Write completed bars with higher priority
       for (const [timeframe, bar] of completedBars.entries()) {
         const barPath = `${path}/ohlc_${timeframe}/${bar.timestamp}`;
         
         await this.firebaseService.setRealtimeDbValue(
           barPath,
           this.cleanBarData(bar),
-          false
+          true // critical write for completed bars
         );
         
         this.logger.debug(
           `📊 Completed ${timeframe} bar: ${asset.symbol} @ ${bar.datetime}`
         );
-      }
-      
-      // ✅ Write current bars every 5 updates (every 5 seconds)
-      if (this.updateCount % 5 === 0) {
-        for (const [timeframe, bar] of currentBars.entries()) {
-          const barPath = `${path}/ohlc_${timeframe}/${bar.timestamp}`;
-          
-          await this.firebaseService.setRealtimeDbValue(
-            barPath,
-            this.cleanBarData(bar),
-            false
-          );
-        }
       }
       
     } catch (error) {
@@ -398,7 +376,6 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
 
   @Cron('*/2 * * * *')
   async logStats() {
-    // ✅ Only log if scheduler is active
     if (!this.schedulerActive || this.cryptoAssets.length === 0) {
       this.logger.debug('⏭️ Crypto scheduler inactive, skipping stats');
       return;
@@ -476,6 +453,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       updateInterval: `${this.UPDATE_INTERVAL}ms`,
       api: 'Binance FREE',
       cacheStrategy: '1s cache (realtime)',
+      writeStrategy: 'ALL timeframes EVERY update ✅',
       assets: this.cryptoAssets.map(a => ({
         symbol: a.symbol,
         pair: `${a.cryptoConfig?.baseCurrency}/${a.cryptoConfig?.quoteCurrency}`,
@@ -486,7 +464,6 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     };
   }
 
-  // ✅ Stop scheduler gracefully
   private async stopScheduler(): Promise<void> {
     this.logger.log('🛑 Stopping crypto price scheduler...');
     

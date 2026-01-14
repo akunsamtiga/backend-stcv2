@@ -2,7 +2,7 @@
 import { Injectable, NotFoundException, ConflictException, Logger, RequestTimeoutException, BadRequestException } from '@nestjs/common';
 import { FirebaseService } from '../firebase/firebase.service';
 import { PriceFetcherService } from './services/price-fetcher.service';
-import { BinanceService } from './services/binance.service';  // ✅ CHANGED
+import { BinanceService } from './services/binance.service';
 import { CreateAssetDto } from './dto/create-asset.dto';
 import { UpdateAssetDto } from './dto/update-asset.dto';
 import { COLLECTIONS, ALL_DURATIONS, ASSET_CATEGORY, ASSET_DATA_SOURCE } from '../common/constants';
@@ -40,7 +40,7 @@ export class AssetsService {
   constructor(
     private firebaseService: FirebaseService,
     private priceFetcherService: PriceFetcherService,
-    private binanceService: BinanceService,  // ✅ CHANGED
+    private binanceService: BinanceService,
   ) {
     setTimeout(async () => {
       try {
@@ -149,7 +149,7 @@ export class AssetsService {
           category: 'crypto',
           profitRate: createAssetDto.profitRate,
           isActive: createAssetDto.isActive,
-          dataSource: 'binance',  // ✅ CHANGED
+          dataSource: 'binance',
           realtimeDbPath: realtimeDbPath,
           cryptoConfig: {
             baseCurrency: plainCryptoConfig.baseCurrency.toUpperCase(),
@@ -237,10 +237,10 @@ export class AssetsService {
           this.logger.log(`   💎 Exchange: ${createAssetDto.cryptoConfig.exchange}`);
         }
         this.logger.log(`   🔗 RT DB Path: ${plainAssetData.realtimeDbPath}`);
-        this.logger.log(`   ⚡ Price Source: Binance API (FREE)`);  // ✅ CHANGED
-        this.logger.log(`   ⚡ Price Flow: Binance API → Backend → Realtime DB`);  // ✅ CHANGED
+        this.logger.log(`   ⚡ Price Source: Binance API (FREE)`);
+        this.logger.log(`   ⚡ Price Flow: Binance API → Backend → Realtime DB`);
         this.logger.log(`   ⚡ Simulator: NOT USED (real-time API data)`);
-        this.logger.log(`   ⚡ API Key: Not required`);  // ✅ NEW
+        this.logger.log(`   ⚡ API Key: Not required`);
       } else {
         this.logger.log(`   🔗 RT DB Path: ${createAssetDto.realtimeDbPath || 'N/A'}`);
         this.logger.log(`   ⚡ Simulator: WILL BE SIMULATED`);
@@ -260,12 +260,12 @@ export class AssetsService {
         storageInfo: createAssetDto.category === 'crypto' 
           ? {
               type: 'crypto',
-              description: '💎 Crypto prices fetched from Binance API and stored to Realtime Database',  // ✅ CHANGED
-              priceFlow: 'Binance API → Backend → Realtime Database',  // ✅ CHANGED
+              description: '💎 Crypto prices fetched from Binance API and stored to Realtime Database',
+              priceFlow: 'Binance API → Backend → Realtime Database',
               realtimeDbPath: plainAssetData.realtimeDbPath,
-              updateFrequency: 'Every price fetch (cached 60s)',  // ✅ CHANGED cache duration
+              updateFrequency: 'Every price fetch (cached 60s)',
               simulatorUsed: false,
-              apiInfo: 'Binance FREE - No API key needed',  // ✅ NEW
+              apiInfo: 'Binance FREE - No API key needed',
             }
           : {
               type: 'normal',
@@ -292,24 +292,15 @@ export class AssetsService {
     }
   }
 
-  /**
-   * ✅ UPDATED: Changed from CoinGecko to Binance validation
-   */
   private async validateCryptoAsset(dto: CreateAssetDto): Promise<void> {
     this.logger.log('🔍 Validating crypto asset configuration...');
 
-    // ============================================
-    // VALIDATION 1: Data Source
-    // ============================================
-    if (dto.dataSource !== ASSET_DATA_SOURCE.BINANCE) {  // ✅ CHANGED
+    if (dto.dataSource !== ASSET_DATA_SOURCE.BINANCE) {
       throw new BadRequestException(
-        'Crypto assets must use "binance" as data source'  // ✅ CHANGED
+        'Crypto assets must use "binance" as data source'
       );
     }
 
-    // ============================================
-    // VALIDATION 2: Crypto Config Exists
-    // ============================================
     if (!dto.cryptoConfig) {
       throw new BadRequestException(
         'cryptoConfig is required for crypto assets'
@@ -318,49 +309,34 @@ export class AssetsService {
 
     const { baseCurrency, quoteCurrency } = dto.cryptoConfig;
 
-    // ============================================
-    // VALIDATION 3: Base Currency
-    // ============================================
     if (!baseCurrency || baseCurrency.trim().length < 2) {
       throw new BadRequestException(
         'baseCurrency is required and must be at least 2 characters (e.g., BTC, ETH)'
       );
     }
 
-    // ============================================
-    // VALIDATION 4: Quote Currency
-    // ============================================
     if (!quoteCurrency || quoteCurrency.trim().length < 2) {
       throw new BadRequestException(
         'quoteCurrency is required and must be at least 2 characters (e.g., USD, USDT)'
       );
     }
 
-    // ============================================
-    // VALIDATION 5: No Simulator Settings
-    // ============================================
     if (dto.simulatorSettings) {
       throw new BadRequestException(
         'Crypto assets should NOT have simulatorSettings (they use real-time API)'
       );
     }
 
-    // ============================================
-    // VALIDATION 6: No API Endpoint
-    // ============================================
     if (dto.apiEndpoint) {
       throw new BadRequestException(
-        'Crypto assets should NOT have apiEndpoint (they use Binance API)'  // ✅ CHANGED
+        'Crypto assets should NOT have apiEndpoint (they use Binance API)'
       );
     }
 
-    // ============================================
-    // VALIDATION 7: Realtime DB Path (Optional but Validated)
-    // ============================================
     if (dto.realtimeDbPath) {
       if (!dto.realtimeDbPath.startsWith('/')) {
         throw new BadRequestException(
-          'realtimeDbPath must start with / (e.g., /crypto/btc_usdt)'  // ✅ CHANGED example
+          'realtimeDbPath must start with / (e.g., /crypto/btc_usdt)'
         );
       }
 
@@ -393,15 +369,12 @@ export class AssetsService {
         `🔍 Custom Realtime DB path provided: ${dto.realtimeDbPath}`
       );
     } else {
-      const defaultPath = `/crypto/${baseCurrency.toLowerCase()}_${quoteCurrency.toLowerCase().replace('usd', 'usdt')}`;  // ✅ CHANGED
+      const defaultPath = `/crypto/${baseCurrency.toLowerCase()}_${quoteCurrency.toLowerCase().replace('usd', 'usdt')}`;
       this.logger.log(
         `🔍 No path provided, will use default: ${defaultPath}`
       );
     }
 
-    // ============================================
-    // VALIDATION 8: Currency Format
-    // ============================================
     const currencyRegex = /^[A-Z]{2,10}$/;
     
     if (!currencyRegex.test(baseCurrency.toUpperCase())) {
@@ -418,11 +391,8 @@ export class AssetsService {
 
     this.logger.log(`✅ Basic validation passed: ${baseCurrency}/${quoteCurrency}`);
 
-    // ============================================
-    // VALIDATION 9: Test Binance API Connection
-    // ============================================
     try {
-      this.logger.log(`🔌 Testing Binance API for ${baseCurrency}/${quoteCurrency}...`);  // ✅ CHANGED
+      this.logger.log(`🔌 Testing Binance API for ${baseCurrency}/${quoteCurrency}...`);
       
       const testAsset: Asset = {
         id: 'test',
@@ -431,7 +401,7 @@ export class AssetsService {
         category: 'crypto',
         profitRate: dto.profitRate,
         isActive: true,
-        dataSource: 'binance',  // ✅ CHANGED
+        dataSource: 'binance',
         cryptoConfig: {
           baseCurrency: baseCurrency.toUpperCase(),
           quoteCurrency: quoteCurrency.toUpperCase(),
@@ -440,9 +410,9 @@ export class AssetsService {
         createdAt: new Date().toISOString(),
       };
 
-      const pricePromise = this.binanceService.getCurrentPrice(testAsset);  // ✅ CHANGED
+      const pricePromise = this.binanceService.getCurrentPrice(testAsset);
       const timeoutPromise = new Promise<never>((_, reject) => 
-        setTimeout(() => reject(new Error('Binance API timeout (5s)')), 5000)  // ✅ CHANGED
+        setTimeout(() => reject(new Error('Binance API timeout (5s)')), 5000)
       );
 
       const price = await Promise.race([pricePromise, timeoutPromise]);
@@ -452,7 +422,7 @@ export class AssetsService {
           `⚠️ Could not fetch price for ${baseCurrency}/${quoteCurrency}, but continuing with creation`
         );
         this.logger.warn(
-          `⚠️ This might mean the currency pair is not available on Binance`  // ✅ CHANGED
+          `⚠️ This might mean the currency pair is not available on Binance`
         );
         this.logger.warn(
           `⚠️ The asset will be created, but price fetching may fail at runtime`
@@ -476,24 +446,21 @@ export class AssetsService {
       
       if (error.message.includes('timeout')) {
         this.logger.warn(
-          `⚠️ Binance API timeout - the API might be slow or unreachable`  // ✅ CHANGED
+          `⚠️ Binance API timeout - the API might be slow or unreachable`
         );
-      } else if (error.message.includes('No data') || error.message.includes('Unsupported')) {  // ✅ Updated error check
+      } else if (error.message.includes('No data') || error.message.includes('Unsupported')) {
         this.logger.warn(
-          `⚠️ Currency pair ${baseCurrency}/${quoteCurrency} might not be available on Binance`  // ✅ CHANGED
+          `⚠️ Currency pair ${baseCurrency}/${quoteCurrency} might not be available on Binance`
         );
       }
       
       this.logger.warn(
-        `⚠️ Continuing with asset creation anyway - verify the currency pair exists on Binance`  // ✅ CHANGED
+        `⚠️ Continuing with asset creation anyway - verify the currency pair exists on Binance`
       );
     }
 
-    // ============================================
-    // VALIDATION 10: Check for Common Mistakes
-    // ============================================
     const commonMistakes: Record<string, string> = {
-      'USDT': 'Use USD instead of USDT for better Binance compatibility',  // ✅ CHANGED recommendation
+      'USDT': 'Use USD instead of USDT for better Binance compatibility',
       'BUSD': 'BUSD is being phased out, use USD or USDT',
     };
 
@@ -503,9 +470,6 @@ export class AssetsService {
       );
     }
 
-    // ============================================
-    // VALIDATION 11: Exchange Validation (Optional)
-    // ============================================
     if (dto.cryptoConfig.exchange) {
       const validExchanges = [
         'Binance', 'Coinbase', 'Kraken', 'Bitfinex', 'Bitstamp',
@@ -524,29 +488,26 @@ export class AssetsService {
       }
     }
 
-    // ============================================
-    // FINAL VALIDATION SUMMARY
-    // ============================================
     this.logger.log('');
     this.logger.log('✅ ================================================');
-    this.logger.log('✅ CRYPTO ASSET VALIDATION COMPLETE (BINANCE)');  // ✅ CHANGED
+    this.logger.log('✅ CRYPTO ASSET VALIDATION COMPLETE (BINANCE)');
     this.logger.log('✅ ================================================');
     this.logger.log(`   Pair: ${baseCurrency}/${quoteCurrency}`);
-    this.logger.log(`   Data Source: Binance API (FREE)`);  // ✅ CHANGED
+    this.logger.log(`   Data Source: Binance API (FREE)`);
     this.logger.log(`   RT DB Path: ${dto.realtimeDbPath || 'Auto-generated'}`);
     if (dto.cryptoConfig.exchange) {
       this.logger.log(`   Exchange: ${dto.cryptoConfig.exchange}`);
     }
-    this.logger.log(`   Rate Limit: 1200 req/min`);  // ✅ NEW
-    this.logger.log(`   API Key: Not required`);  // ✅ NEW
+    this.logger.log(`   Rate Limit: 1200 req/min`);
+    this.logger.log(`   API Key: Not required`);
     this.logger.log('✅ ================================================');
     this.logger.log('');
   }
 
   private validateNormalAsset(dto: CreateAssetDto): void {
-    if (dto.dataSource === ASSET_DATA_SOURCE.BINANCE) {  // ✅ CHANGED
+    if (dto.dataSource === ASSET_DATA_SOURCE.BINANCE) {
       throw new BadRequestException(
-        'Normal assets cannot use "binance" data source'  // ✅ CHANGED
+        'Normal assets cannot use "binance" data source'
       );
     }
 
@@ -648,82 +609,73 @@ export class AssetsService {
   }
 
   async deleteAsset(assetId: string) {
-  const db = this.firebaseService.getFirestore();
+    const db = this.firebaseService.getFirestore();
 
-  // 1. Get asset data first to know the Realtime DB path
-  const assetDoc = await db.collection(COLLECTIONS.ASSETS).doc(assetId).get();
-  
-  if (!assetDoc.exists) {
-    throw new NotFoundException('Asset not found');
-  }
-
-  const asset = assetDoc.data() as Asset;
-  const assetPath = asset.realtimeDbPath || this.generateAssetPath(asset);
-
-  this.logger.log('');
-  this.logger.log('🗑️ ================================================');
-  this.logger.log('🗑️ DELETING ASSET WITH REALTIME DB CLEANUP');
-  this.logger.log('🗑️ ================================================');
-  this.logger.log(`   Asset: ${asset.symbol} (${assetId})`);
-  this.logger.log(`   Category: ${asset.category}`);
-  this.logger.log(`   RT DB Path: ${assetPath}`);
-  this.logger.log('🗑️ ================================================');
-
-  // 2. DELETE from Realtime Database FIRST
-  let realtimeDeleteSuccess = false;
-  try {
-    realtimeDeleteSuccess = await this.firebaseService.deleteRealtimeDbData(assetPath);
+    const assetDoc = await db.collection(COLLECTIONS.ASSETS).doc(assetId).get();
     
-    if (realtimeDeleteSuccess) {
-      this.logger.log(`✅ Realtime DB cleanup successful for ${asset.symbol}`);
-    } else {
-      this.logger.warn(`⚠️ Realtime DB cleanup may have failed for ${asset.symbol}`);
+    if (!assetDoc.exists) {
+      throw new NotFoundException('Asset not found');
     }
-  } catch (error) {
-    this.logger.error(`❌ Realtime DB cleanup error: ${error.message}`);
-    // Continue with Firestore deletion even if RT DB fails
+
+    const asset = assetDoc.data() as Asset;
+    const assetPath = asset.realtimeDbPath || this.generateAssetPath(asset);
+
+    this.logger.log('');
+    this.logger.log('🗑️ ================================================');
+    this.logger.log('🗑️ DELETING ASSET WITH REALTIME DB CLEANUP');
+    this.logger.log('🗑️ ================================================');
+    this.logger.log(`   Asset: ${asset.symbol} (${assetId})`);
+    this.logger.log(`   Category: ${asset.category}`);
+    this.logger.log(`   RT DB Path: ${assetPath}`);
+    this.logger.log('🗑️ ================================================');
+
+    let realtimeDeleteSuccess = false;
+    try {
+      realtimeDeleteSuccess = await this.firebaseService.deleteRealtimeDbData(assetPath);
+      
+      if (realtimeDeleteSuccess) {
+        this.logger.log(`✅ Realtime DB cleanup successful for ${asset.symbol}`);
+      } else {
+        this.logger.warn(`⚠️ Realtime DB cleanup may have failed for ${asset.symbol}`);
+      }
+    } catch (error) {
+      this.logger.error(`❌ Realtime DB cleanup error: ${error.message}`);
+    }
+
+    await db.collection(COLLECTIONS.ASSETS).doc(assetId).delete();
+
+    this.invalidateCache();
+
+    this.logger.log('');
+    this.logger.log('✅ Asset deletion complete');
+    this.logger.log(`   Symbol: ${asset.symbol}`);
+    this.logger.log(`   RT DB: ${realtimeDeleteSuccess ? 'Cleaned' : 'Failed'}`);
+    this.logger.log(`   Firestore: Deleted`);
+    this.logger.log('🗑️ ================================================');
+    this.logger.log('');
+
+    return {
+      message: 'Asset deleted successfully',
+      details: {
+        symbol: asset.symbol,
+        realtimeDbCleaned: realtimeDeleteSuccess,
+        firestoreDeleted: true,
+      },
+    };
   }
 
-  // 3. DELETE from Firestore
-  await db.collection(COLLECTIONS.ASSETS).doc(assetId).delete();
+  private generateAssetPath(asset: Asset): string {
+    if (asset.realtimeDbPath) {
+      return asset.realtimeDbPath;
+    }
 
-  // 4. Clear cache
-  this.invalidateCache();
+    if (asset.category === 'crypto' && asset.cryptoConfig) {
+      const { baseCurrency, quoteCurrency } = asset.cryptoConfig;
+      return `/crypto/${baseCurrency.toLowerCase()}_${quoteCurrency.toLowerCase().replace('usd', 'usdt')}`;
+    }
 
-  this.logger.log('');
-  this.logger.log('✅ Asset deletion complete');
-  this.logger.log(`   Symbol: ${asset.symbol}`);
-  this.logger.log(`   RT DB: ${realtimeDeleteSuccess ? 'Cleaned' : 'Failed'}`);
-  this.logger.log(`   Firestore: Deleted`);
-  this.logger.log('🗑️ ================================================');
-  this.logger.log('');
-
-  return {
-    message: 'Asset deleted successfully',
-    details: {
-      symbol: asset.symbol,
-      realtimeDbCleaned: realtimeDeleteSuccess,
-      firestoreDeleted: true,
-    },
-  };
-}
-
-// Helper method to generate path if not stored in asset
-private generateAssetPath(asset: Asset): string {
-  if (asset.realtimeDbPath) {
-    return asset.realtimeDbPath;
+    return `/${asset.symbol.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
   }
-
-  // For crypto assets
-  if (asset.category === 'crypto' && asset.cryptoConfig) {
-    const { baseCurrency, quoteCurrency } = asset.cryptoConfig;
-    return `/crypto/${baseCurrency.toLowerCase()}_${quoteCurrency.toLowerCase().replace('usd', 'usdt')}`;
-  }
-
-  // For normal assets
-  return `/${asset.symbol.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
-}
-
 
   async getAllAssets(activeOnly: boolean = false) {
     const startTime = Date.now();
@@ -913,7 +865,7 @@ private generateAssetPath(asset: Asset): string {
       const cryptoAssets = assets.filter(a => a.category === ASSET_CATEGORY.CRYPTO);
       
       if (cryptoAssets.length > 0) {
-        this.logger.log(`💎 ${cryptoAssets.length} crypto assets ready (Binance)`);  // ✅ CHANGED
+        this.logger.log(`💎 ${cryptoAssets.length} crypto assets ready (Binance)`);
       }
       
     } catch (error) {
@@ -991,7 +943,7 @@ private generateAssetPath(asset: Asset): string {
       cryptoAssets: cryptoAssets.length,
       allAssetsCached: !!this.allAssetsCache,
       priceStats: this.priceFetcherService.getPerformanceStats(),
-      cryptoApi: 'Binance FREE',  // ✅ NEW
+      cryptoApi: 'Binance FREE',
     };
   }
 }

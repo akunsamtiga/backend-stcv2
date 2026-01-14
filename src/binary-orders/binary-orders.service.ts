@@ -53,20 +53,13 @@ export class BinaryOrdersService {
     this.logger.log(`⚡ NEW: 1 Second Trading Support Enabled`);
   }
 
-  /**
-   * ✅ UPDATED: Validate duration with support for 1 second (0.0167 minutes)
-   */
   private isValidDuration(duration: number): duration is ValidDuration {
-    // Check with small tolerance for floating point comparison
     const tolerance = 0.0001;
     return (ALL_DURATIONS as readonly number[]).some(allowed => 
       Math.abs(allowed - duration) < tolerance
     );
   }
 
-  /**
-   * ✅ NEW: Get duration display format
-   */
   private getDurationDisplay(durationMinutes: number): string {
     return CalculationUtil.formatDurationDisplay(durationMinutes);
   }
@@ -135,9 +128,6 @@ export class BinaryOrdersService {
     return null;
   }
 
-  /**
-   * ✅ UPDATED: Create order with 1 second support
-   */
   async createOrder(userId: string, createOrderDto: CreateBinaryOrderDto) {
     const startTime = Date.now();
     const { accountType, amount, duration } = createOrderDto;
@@ -147,7 +137,6 @@ export class BinaryOrdersService {
         throw new BadRequestException('Invalid account type. Must be "real" or "demo"');
       }
 
-      // ✅ Validate duration (including 1 second = 0.0167 minutes)
       if (!this.isValidDuration(duration)) {
         throw new BadRequestException(
           `Invalid duration. Allowed: 1s (0.0167), ${ALL_DURATIONS.filter(d => d >= 1).join(', ')} minutes`
@@ -165,7 +154,6 @@ export class BinaryOrdersService {
         throw new BadRequestException('Asset not active');
       }
 
-      // ✅ Validate duration against asset's allowed durations
       if (asset.tradingSettings?.allowedDurations) {
         if (!CalculationUtil.isValidDuration(duration, asset.tradingSettings.allowedDurations)) {
           const allowedDisplay = asset.tradingSettings.allowedDurations
@@ -233,7 +221,6 @@ export class BinaryOrdersService {
 
       const orderId = await this.firebaseService.generateId(COLLECTIONS.ORDERS);
       
-      // ✅ UPDATED: Calculate expiry with precise second support
       const entryTimestamp = TimezoneUtil.getCurrentTimestamp();
       const expiryTimestamp = CalculationUtil.calculateExpiryTimestamp(entryTimestamp, duration);
       
@@ -343,10 +330,7 @@ export class BinaryOrdersService {
     }
   }
 
-  /**
-   * ✅ UPDATED: Process expired orders every 1 second to handle 1s orders
-   */
-  @Cron('*/1 * * * * *') // ✅ Changed from 5s to 1s for precise 1-second order settlement
+  @Cron('*/1 * * * * *')
   async processExpiredOrders() {
     if (this.processingLock) return;
 
@@ -363,7 +347,6 @@ export class BinaryOrdersService {
         this.getCachedActiveOrders(BALANCE_ACCOUNT_TYPE.DEMO),
       ]);
 
-      // ✅ More precise expiry check for 1 second orders
       const expiredRealOrders = realOrders.filter(order => {
         const exitTimestamp = TimezoneUtil.toTimestamp(new Date(order.exit_time!));
         return currentTimestamp >= exitTimestamp;
@@ -377,7 +360,6 @@ export class BinaryOrdersService {
       const totalExpired = expiredRealOrders.length + expiredDemoOrders.length;
 
       if (totalExpired === 0) {
-        // Only log every 60 checks (once per minute) to avoid spam
         if (this.settlementRunCount % 60 === 0) {
           this.logger.debug(
             `⏰ Settlement check #${this.settlementRunCount}: No expired orders (${realOrders.length + demoOrders.length} active)`
@@ -546,7 +528,6 @@ export class BinaryOrdersService {
 
         const allOrders = snapshot.docs.map(doc => {
           const order = doc.data() as BinaryOrder;
-          // ✅ Add duration display to each order
           return {
             ...order,
             durationDisplay: this.getDurationDisplay(order.duration),
@@ -743,11 +724,11 @@ export class BinaryOrdersService {
         settleTimeStatus: this.avgSettleTime < 200 ? 'EXCELLENT' : 'NEEDS_IMPROVEMENT',
       },
       optimization: {
-        settlementInterval: '1 second', // ✅ Updated
-        estimatedDailyChecks: 86400, // ✅ 24h * 3600s
+        settlementInterval: '1 second',
+        estimatedDailyChecks: 86400,
         cacheTTL: `${this.ACTIVE_ORDERS_CACHE_TTL}ms`,
         savingsVsOld: '60% fewer Firestore reads',
-        oneSecondSupport: true, // ✅ NEW
+        oneSecondSupport: true,
       },
       timezone: {
         name: 'Asia/Jakarta',

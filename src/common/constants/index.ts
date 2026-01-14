@@ -1,10 +1,5 @@
 // src/common/constants/index.ts
 
-/**
- * ============================================
- * BALANCE & TRANSACTION CONSTANTS
- * ============================================
- */
 export const BALANCE_TYPES = {
   DEPOSIT: 'deposit',
   WITHDRAWAL: 'withdrawal',
@@ -20,11 +15,6 @@ export const BALANCE_ACCOUNT_TYPE = {
   DEMO: 'demo',
 } as const;
 
-/**
- * ============================================
- * ORDER CONSTANTS
- * ============================================
- */
 export const ORDER_STATUS = {
   PENDING: 'PENDING',
   ACTIVE: 'ACTIVE',
@@ -38,11 +28,6 @@ export const ORDER_DIRECTION = {
   PUT: 'PUT',
 } as const;
 
-/**
- * ============================================
- * USER & ROLE CONSTANTS
- * ============================================
- */
 export const USER_ROLES = {
   SUPER_ADMIN: 'super_admin',
   ADMIN: 'admin',
@@ -79,11 +64,6 @@ export const STATUS_REQUIREMENTS = {
   },
 } as const;
 
-/**
- * ============================================
- * AFFILIATE CONSTANTS
- * ============================================
- */
 export const AFFILIATE_STATUS = {
   PENDING: 'pending',
   COMPLETED: 'completed',
@@ -99,11 +79,6 @@ export const AFFILIATE_CONFIG = {
   },
 } as const;
 
-/**
- * ============================================
- * FIRESTORE COLLECTION NAMES
- * ============================================
- */
 export const COLLECTIONS = {
   USERS: 'users',
   BALANCE: 'balance',
@@ -112,11 +87,6 @@ export const COLLECTIONS = {
   AFFILIATES: 'affiliates',
 } as const;
 
-/**
- * ============================================
- * ASSET CONSTANTS
- * ============================================
- */
 export const ASSET_CATEGORY = {
   NORMAL: 'normal',
   CRYPTO: 'crypto',
@@ -126,28 +96,18 @@ export const ASSET_DATA_SOURCE = {
   REALTIME_DB: 'realtime_db',
   API: 'api',
   MOCK: 'mock',
-  BINANCE: 'binance',  // ✅ CHANGED from coingecko
+  BINANCE: 'binance',  
 } as const;
 
-/**
- * ============================================
- * BINANCE API CONFIGURATION
- * ============================================
- */
 export const BINANCE_CONFIG = {
   BASE_URL: 'https://api.binance.com/api/v3',
-  CACHE_TTL: 60000,        // 60 seconds
-  STALE_CACHE_TTL: 300000, // 5 minutes for fallback
-  TIMEOUT: 10000,          // 10 seconds timeout
-  RATE_LIMIT_DELAY: 100,   // 100ms between batch calls
-  MIN_CALL_INTERVAL: 50,   // 50ms minimum between any calls
+  CACHE_TTL: 60000,       
+  STALE_CACHE_TTL: 300000, 
+  TIMEOUT: 10000,          
+  RATE_LIMIT_DELAY: 100,   
+  MIN_CALL_INTERVAL: 50,   
 } as const;
 
-/**
- * ============================================
- * CRYPTO SYMBOL MAPPINGS
- * ============================================
- */
 export const CRYPTO_SYMBOLS = {
   BITCOIN: 'BTC',
   ETHEREUM: 'ETH',
@@ -161,11 +121,6 @@ export const CRYPTO_SYMBOLS = {
   LITECOIN: 'LTC',
 } as const;
 
-/**
- * ============================================
- * DURATION CONFIGURATIONS
- * ============================================
- */
 export const DURATIONS = {
   ULTRA_SHORT: [0.0167],
   SHORT: [1, 2, 3, 4, 5],
@@ -197,11 +152,6 @@ export const DURATION_CONFIG = {
   60: { display: '60m', seconds: 3600, minutes: 60, type: 'medium' },
 } as const;
 
-/**
- * ============================================
- * TYPE DEFINITIONS
- * ============================================
- */
 export type ValidDuration = typeof ALL_DURATIONS[number];
 export type BalanceAccountType = typeof BALANCE_ACCOUNT_TYPE[keyof typeof BALANCE_ACCOUNT_TYPE];
 export type UserStatus = typeof USER_STATUS[keyof typeof USER_STATUS];

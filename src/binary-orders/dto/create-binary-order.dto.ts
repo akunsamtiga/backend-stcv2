@@ -31,6 +31,6 @@ export class CreateBinaryOrderDto {
     description: 'Duration in minutes. Use 0.0167 for 1 second, or standard values: 1,2,3,4,5,15,30,45,60 minutes. Frontend will display 0.0167 as "1s"' 
   })
   @IsNumber()
-  @Min(0.0167) // ✅ Allow 1 second = 0.0167 minutes
+  @Min(0.0167) 
   duration: number;
 }

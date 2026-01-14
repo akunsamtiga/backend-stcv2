@@ -14,7 +14,6 @@ export class QueryBinaryOrderDto {
   @IsEnum(ORDER_STATUS)
   status?: string;
 
-  // ✅ NEW: Account type filter
   @ApiPropertyOptional({ 
     enum: BALANCE_ACCOUNT_TYPE,
     description: 'Filter by account type (real or demo)',

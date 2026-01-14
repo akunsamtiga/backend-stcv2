@@ -17,13 +17,10 @@ import { CryptoPriceSchedulerService } from './services/crypto-price-scheduler.s
 @UseGuards(JwtAuthGuard)
 @ApiBearerAuth()
 export class AssetsController {
- constructor(
+  constructor(
     private assetsService: AssetsService,
-    private cryptoScheduler: CryptoPriceSchedulerService, // ✅ INJECT
+    private cryptoScheduler: CryptoPriceSchedulerService,
   ) {}
-  // ============================================
-  // SUPER ADMIN ONLY - FULL CONTROL
-  // ============================================
 
   @Post()
   @UseGuards(RolesGuard)
@@ -93,33 +90,33 @@ export class AssetsController {
     return this.assetsService.updateAsset(assetId, updateAssetDto);
   }
 
-@Delete(':id')
-@UseGuards(RolesGuard)
-@Roles(USER_ROLES.SUPER_ADMIN)
-@ApiOperation({ 
-  summary: 'Delete asset (Super Admin only)',
-  description: 'Permanently delete an asset and clean up associated Realtime Database data'
-})
-@ApiParam({ name: 'id', description: 'Asset ID' })
-@ApiResponse({ 
-  status: 200, 
-  description: 'Asset deleted successfully with cleanup',
-  schema: {
-    example: {
-      success: true,
-      message: 'Asset deleted successfully',
-      data: {
-        symbol: 'BTC/USD',
-        realtimeDbCleaned: true,
-        firestoreDeleted: true,
-        path: '/crypto/btc_usdt'
+  @Delete(':id')
+  @UseGuards(RolesGuard)
+  @Roles(USER_ROLES.SUPER_ADMIN)
+  @ApiOperation({ 
+    summary: 'Delete asset (Super Admin only)',
+    description: 'Permanently delete an asset and clean up associated Realtime Database data'
+  })
+  @ApiParam({ name: 'id', description: 'Asset ID' })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Asset deleted successfully with cleanup',
+    schema: {
+      example: {
+        success: true,
+        message: 'Asset deleted successfully',
+        data: {
+          symbol: 'BTC/USD',
+          realtimeDbCleaned: true,
+          firestoreDeleted: true,
+          path: '/crypto/btc_usdt'
+        }
       }
     }
+  })
+  async deleteAsset(@Param('id') assetId: string) {
+    return this.assetsService.deleteAsset(assetId);
   }
-})
-async deleteAsset(@Param('id') assetId: string) {
-  return this.assetsService.deleteAsset(assetId);
-}
 
   @Get(':id/settings')
   @UseGuards(RolesGuard)
@@ -169,10 +166,6 @@ async deleteAsset(@Param('id') assetId: string) {
     return this.assetsService.getAssetSettings(assetId);
   }
 
-  // ============================================
-  // PUBLIC ENDPOINTS (All authenticated users)
-  // ============================================
-
   @Get('crypto/scheduler/status')
   @UseGuards(RolesGuard)
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
@@ -186,7 +179,6 @@ async deleteAsset(@Param('id') assetId: string) {
     };
   }
 
-  // ✅ NEW: Trigger manual update
   @Post('crypto/scheduler/trigger')
   @UseGuards(RolesGuard)
   @Roles(USER_ROLES.SUPER_ADMIN)
