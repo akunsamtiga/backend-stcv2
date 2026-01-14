@@ -1,5 +1,4 @@
 // src/auth/auth.service.ts
-// ✅ ENHANCED: Registration with optional profile fields
 
 import { Injectable, UnauthorizedException, ConflictException, Logger, OnModuleInit, BadRequestException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';

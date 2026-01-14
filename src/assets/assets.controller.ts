@@ -1,5 +1,4 @@
 // src/assets/assets.controller.ts
-// ✅ UPDATED: Endpoint untuk full asset control
 
 import { Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiParam, ApiQuery, ApiResponse } from '@nestjs/swagger';

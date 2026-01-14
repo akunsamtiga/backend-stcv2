@@ -1,5 +1,4 @@
 // src/balance/balance.service.ts
-// ✅ FIXED: Better error handling & fallback queries
 
 import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import { FirebaseService } from '../firebase/firebase.service';

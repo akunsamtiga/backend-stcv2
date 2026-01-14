@@ -1,3 +1,4 @@
+// src/assets/services/price-fetcher.service.ts
 import { Injectable, Logger } from '@nestjs/common';
 import { FirebaseService } from '../../firebase/firebase.service';
 import { BinanceService } from './binance.service';  // ✅ CHANGED

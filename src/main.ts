@@ -1,5 +1,4 @@
 // src/main.ts
-// ✅ UPDATED: Set timezone globally for consistency with simulator
 
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';

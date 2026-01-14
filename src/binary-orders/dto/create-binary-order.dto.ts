@@ -1,5 +1,4 @@
 // src/binary-orders/dto/create-binary-order.dto.ts
-// ✅ UPDATED: Support for 1 second (0.0167 minutes)
 
 import { IsString, IsEnum, IsNumber, IsPositive, Min } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';

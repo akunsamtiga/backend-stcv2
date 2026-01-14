@@ -1,5 +1,4 @@
 // src/binary-orders/binary-orders.service.ts
-// ✅ UPDATED: Support for 1 second duration with precise timestamp handling
 
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';

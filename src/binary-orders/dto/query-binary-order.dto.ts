@@ -1,5 +1,4 @@
 // src/binary-orders/dto/query-binary-order.dto.ts
-// ✅ FIXED: Added accountType parameter
 
 import { IsOptional, IsEnum, IsInt, Min, Max } from 'class-validator';
 import { Type } from 'class-transformer';

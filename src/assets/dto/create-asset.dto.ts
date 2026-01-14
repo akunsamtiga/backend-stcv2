@@ -1,5 +1,4 @@
 // src/assets/dto/create-asset.dto.ts
-// ✅ COMPLETE: Support for both normal and crypto assets with Realtime DB storage
 
 import { 
   IsString, IsNumber, IsBoolean, IsEnum, IsOptional, 
@@ -169,13 +168,14 @@ export class CreateAssetDto {
   @IsBoolean()
   isActive: boolean;
 
-  @ApiProperty({ 
-   enum: ASSET_DATA_SOURCE,
-  example: 'coingecko',  // ✅ Changed from 'cryptocompare'
-  description: 'Data source: realtime_db, api, mock, or coingecko (for crypto)'  // ✅ Changed
+// ✅ BENAR
+@ApiProperty({ 
+  enum: ASSET_DATA_SOURCE,
+  example: 'binance',  // ✅ FIXED
+  description: 'Data source: realtime_db, api, mock, or binance (for crypto)'  // ✅ FIXED
 })
-  @IsEnum(ASSET_DATA_SOURCE)
-  dataSource: string;
+@IsEnum(ASSET_DATA_SOURCE)
+dataSource: string;
 
   // ✅ UPDATED: Now optional for both normal and crypto assets
   @ApiPropertyOptional({ 

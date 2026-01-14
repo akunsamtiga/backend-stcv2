@@ -1,5 +1,4 @@
 // src/assets/services/crypto-timeframe-manager.ts
-// ✅ OHLC Bar Manager for Crypto Assets
 
 import { Logger } from '@nestjs/common';
 

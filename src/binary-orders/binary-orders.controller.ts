@@ -1,5 +1,4 @@
 // src/binary-orders/binary-orders.controller.ts
-// ✅ UPDATED: Simplified to pass QueryBinaryOrderDto directly
 
 import { Controller, Post, Get, Body, Param, Query, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiParam, ApiQuery } from '@nestjs/swagger';

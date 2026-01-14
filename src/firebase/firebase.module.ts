@@ -1,3 +1,4 @@
+// src/firebase/firebase.module.ts
 import { Module, Global } from '@nestjs/common';
 import { FirebaseService } from './firebase.service';
 

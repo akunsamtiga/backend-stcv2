@@ -1,5 +1,4 @@
 // src/health.controller.ts
-// ✅ UPDATED: Added timezone information
 
 import { Controller, Get } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
