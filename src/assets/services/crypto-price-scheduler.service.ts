@@ -1,5 +1,5 @@
 // src/assets/services/crypto-price-scheduler.service.ts
-// ✅ VERIFIED: Works with 5s cache from BinanceService
+// ✅ VERIFIED: Works with 1s cache from BinanceService
 
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron, SchedulerRegistry } from '@nestjs/schedule';
@@ -22,7 +22,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
   
   private timeframeManagers: Map<string, CryptoTimeframeManager> = new Map();
   
-  // ✅ Update every 1 second (will leverage 5s cache from BinanceService)
+  // ✅ Update every 1 second (will leverage 1s cache from BinanceService)
   private readonly UPDATE_INTERVAL = 1000; // 1s
   private readonly REFRESH_INTERVAL = 600000; // 10min
   private readonly CLEANUP_INTERVAL = 7200000; // 2h
@@ -106,7 +106,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       
       this.logger.log('');
       this.logger.log('💎 ================================================');
-      this.logger.log('💎 CRYPTO PRICE SCHEDULER - BINANCE (5s Cache)');
+      this.logger.log('💎 CRYPTO PRICE SCHEDULER - BINANCE (1s Cache)');
       this.logger.log('💎 ================================================');
       this.logger.log(`💎 Active Crypto Assets: ${this.cryptoAssets.length}`);
       this.cryptoAssets.forEach(asset => {
@@ -116,7 +116,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
         this.logger.log(`   • ${asset.symbol} (${pair}) → ${path}`);
       });
       this.logger.log(`⚡ Scheduler: Every 1 second`);
-      this.logger.log(`💰 Cache Strategy: 5s (12× more API calls vs 60s)`);
+      this.logger.log(`💰 Cache Strategy: 1s (realtime)`);
       this.logger.log(`📊 OHLC Timeframes: 1s, 1m, 5m, 15m, 30m, 1h, 4h, 1d`);
       this.logger.log(`🔄 Asset Refresh: ${this.REFRESH_INTERVAL / 60000}m`);
       this.logger.log(`🗑️ Cleanup: Every ${this.CLEANUP_INTERVAL / 3600000}h`);
@@ -148,21 +148,19 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     this.logger.log('🚀 Starting initial crypto price fetch...');
     await this.updateAllPrices();
     
-    // ✅ Start interval - runs every 1s, but BinanceService has 5s cache
+    // ✅ Start interval - runs every 1s
     this.updateIntervalHandle = setInterval(async () => {
       if (this.isRunning && this.schedulerActive) {
         await this.updateAllPrices();
       }
     }, this.UPDATE_INTERVAL);
     
-    this.logger.log('✅ Crypto price scheduler started (Binance 5s cache)');
+    this.logger.log('✅ Crypto price scheduler started (Binance 1s cache)');
     this.logger.log('');
     this.logger.log('📊 Expected Behavior:');
-    this.logger.log('   Second 0-4:  Return from cache (fast)');
-    this.logger.log('   Second 5:    Fetch from Binance API');
-    this.logger.log('   Second 6-9:  Return from cache (fast)');
-    this.logger.log('   Second 10:   Fetch from Binance API');
-    this.logger.log('   ...');
+    this.logger.log('   Every second: Fetch from Binance (1s cache)');
+    this.logger.log('   Cache ensures: Fresh data every update');
+    this.logger.log('   Deduplication: Prevents parallel requests');
     this.logger.log('');
   }
 
@@ -189,7 +187,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
 
   /**
    * ✅ Update all crypto prices
-   * Runs every 1s, but benefits from 5s cache in BinanceService
+   * Runs every 1s with 1s cache
    */
   private async updateAllPrices(): Promise<void> {
     // ✅ Safety check
@@ -201,7 +199,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     const startTime = Date.now();
     
     try {
-      // ✅ This will use cache if < 5s old, or fetch new data if >= 5s
+      // ✅ This will use 1s cache from BinanceService
       const priceMap = await this.binanceService.getMultiplePrices(this.cryptoAssets);
       
       let successCount = 0;
@@ -233,9 +231,11 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
         
         // Show cache stats
         const binanceStats = this.binanceService.getStats();
+        const perfStats = binanceStats.performance || {};
+        
         this.logger.log(
           `   📊 Binance: API=${binanceStats.apiCalls} Cache=${binanceStats.cacheHits} ` +
-          `Rate=${binanceStats.cacheHitRate} Est=${binanceStats.estimatedCallsPerHour}/h`
+          `Rate=${binanceStats.cacheHitRate} Est=${perfStats.estimatedCallsPerHour || 'N/A'}/h`
         );
       }
       
@@ -405,11 +405,12 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     }
     
     const stats = this.binanceService.getStats();
+    const perfStats = stats.performance || {};
     const uptime = Date.now() - this.lastUpdateTime;
     
     this.logger.log('');
     this.logger.log('📊 ================================================');
-    this.logger.log('📊 CRYPTO SCHEDULER STATS (BINANCE 5s CACHE)');
+    this.logger.log('📊 CRYPTO SCHEDULER STATS (BINANCE 1s CACHE)');
     this.logger.log('📊 ================================================');
     this.logger.log(`   Assets: ${this.cryptoAssets.length}`);
     this.logger.log(`   Running: ${this.isRunning ? '✅' : '❌'}`);
@@ -437,7 +438,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     this.logger.log(`     Hit Rate: ${stats.cacheHitRate}`);
     this.logger.log(`     Errors: ${stats.errors}`);
     this.logger.log(`     RT Writes: ${stats.realtimeWrites}`);
-    this.logger.log(`     Est. Calls/Hour: ${stats.estimatedCallsPerHour}`);
+    this.logger.log(`     Est. Calls/Hour: ${perfStats.estimatedCallsPerHour || 'N/A'}`);
     this.logger.log(`     Cache TTL: ${stats.cacheTTL}`);
     this.logger.log('📊 ================================================');
     this.logger.log('');
@@ -474,7 +475,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
         : 'Never',
       updateInterval: `${this.UPDATE_INTERVAL}ms`,
       api: 'Binance FREE',
-      cacheStrategy: '5s cache (balanced)',
+      cacheStrategy: '1s cache (realtime)',
       assets: this.cryptoAssets.map(a => ({
         symbol: a.symbol,
         pair: `${a.cryptoConfig?.baseCurrency}/${a.cryptoConfig?.quoteCurrency}`,
