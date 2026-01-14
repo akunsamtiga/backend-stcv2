@@ -29,7 +29,8 @@ export class BinanceService {
   
   private pendingRequests: Map<string, Promise<BinancePrice | null>> = new Map();
   
-  private readonly CACHE_TTL = 1000;
+  // ✅ REDUCED CACHE for true 1-second updates
+  private readonly CACHE_TTL = 500;  // 500ms instead of 1000ms
   private readonly STALE_CACHE_TTL = 5000;
   
   private apiCallCount = 0;
@@ -40,7 +41,7 @@ export class BinanceService {
   private realtimeWriteCount = 0;
   
   private lastApiCallTime = 0;
-  private readonly MIN_CALL_INTERVAL = 60;
+  private readonly MIN_CALL_INTERVAL = 50;  // 50ms instead of 60ms
   private isRateLimited = false;
   private rateLimitUntil = 0;
   
@@ -88,25 +89,25 @@ export class BinanceService {
     
     this.logger.log('');
     this.logger.log('⚡ ================================================');
-    this.logger.log('⚡ BINANCE SERVICE - 1-SECOND MODE');
+    this.logger.log('⚡ BINANCE SERVICE - TRUE 1-SECOND MODE');
     this.logger.log('⚡ ================================================');
-    this.logger.log('⚡ Cache TTL: 1 second ← REALTIME!');
-    this.logger.log('⚡ Update Frequency: Every 1 second');
-    this.logger.log('⚡ API Calls: ~3,600/hour per asset (60× vs 60s cache)');
-    this.logger.log('⚡ Safe For: Up to 20 crypto assets');
+    this.logger.log('⚡ Cache TTL: 500ms → TRUE REALTIME! ✅');
+    this.logger.log('⚡ Update Frequency: Every 1 second (actual)');
+    this.logger.log('⚡ API Calls: ~7,200/hour per asset (2× vs old)');
+    this.logger.log('⚡ Safe For: Up to 10 crypto assets');
     this.logger.log('⚡ Rate Limit: 1200 req/min (Binance FREE)');
     this.logger.log('⚡ Deduplication: ENABLED');
     this.logger.log('⚡ Auto USD→USDT: ENABLED');
     this.logger.log('⚡ 1s Trading: FULLY SUPPORTED ✅');
     this.logger.log('⚡ ================================================');
     this.logger.log('');
-    this.logger.warn('⚠️  WARNING: High API usage mode!');
-    this.logger.warn('⚠️  Recommended: Max 10-15 crypto assets');
+    this.logger.warn('⚠️  WARNING: Higher API usage for true 1s updates!');
+    this.logger.warn('⚠️  Recommended: Max 8-10 crypto assets');
     this.logger.warn('⚠️  Monitor rate limits closely!');
     this.logger.log('');
   }
 
-  async getCurrentPrice(asset: Asset): Promise<BinancePrice | null> {
+  async getCurrentPrice(asset: Asset, forceFresh = false): Promise<BinancePrice | null> {
     if (!asset.cryptoConfig) {
       this.logger.error(`❌ Asset ${asset.symbol} missing cryptoConfig`);
       return null;
@@ -127,10 +128,13 @@ export class BinanceService {
 
     const cacheKey = `${baseCurrency}/${quoteCurrency}`;
 
-    const cached = this.getCachedPrice(cacheKey);
-    if (cached) {
-      this.cacheHitCount++;
-      return cached;
+    // ✅ FORCE FRESH: Skip cache if requested
+    if (!forceFresh) {
+      const cached = this.getCachedPrice(cacheKey);
+      if (cached) {
+        this.cacheHitCount++;
+        return cached;
+      }
     }
 
     const pending = this.pendingRequests.get(cacheKey);
@@ -231,7 +235,7 @@ export class BinanceService {
         this.rateLimitUntil = Date.now() + 60000;
         
         this.logger.error(`🚨 RATE LIMIT HIT (429) for ${cacheKey}!`);
-        this.logger.error(`⏸️  Paused for 60 seconds`);
+        this.logger.error(`⏸️ Paused for 60 seconds`);
         this.logger.error(`📊 Total API calls: ${this.apiCallCount}`);
         this.logger.error(`📊 Consider reducing crypto assets or increasing cache!`);
         
@@ -253,7 +257,8 @@ export class BinanceService {
   }
 
   async getMultiplePrices(
-    assets: Asset[]
+    assets: Asset[],
+    forceFresh = true  // ✅ Default to fresh for scheduler
   ): Promise<Map<string, BinancePrice | null>> {
     const results = new Map<string, BinancePrice | null>();
     
@@ -263,7 +268,7 @@ export class BinanceService {
       }
       
       try {
-        const price = await this.getCurrentPrice(asset);
+        const price = await this.getCurrentPrice(asset, forceFresh);
         return { assetId: asset.id, price };
       } catch (error) {
         this.logger.error(`Batch fetch error for ${asset.symbol}: ${error.message}`);
@@ -427,7 +432,7 @@ export class BinanceService {
     const currentRatePerMin = this.calculateAPIRate();
 
     return {
-      mode: '⚡ 1-SECOND MODE (Same as Normal Assets)',
+      mode: '⚡ TRUE 1-SECOND MODE (500ms cache)',
       apiCalls: this.apiCallCount,
       cacheHits: this.cacheHitCount,
       deduplicated: this.deduplicatedCount,
@@ -437,27 +442,27 @@ export class BinanceService {
       rateLimit: this.isRateLimited 
         ? `🚨 RATE LIMITED until ${new Date(this.rateLimitUntil).toLocaleTimeString()}` 
         : '✅ OK',
-      cacheTTL: '1s ⚡ REALTIME!',
+      cacheTTL: '500ms ⚡ TRUE REALTIME!',
       performance: {
         currentRatePerMin: `${currentRatePerMin} calls/min`,
         estimatedCallsPerHour: estimatedCallsPerHour,
         binanceLimit: '1200 calls/min',
         utilizationPercent: Math.round((currentRatePerMin / 1200) * 100),
-        avgCacheAge: '~0.5s',
-        updateFrequency: 'Every ~1s',
+        avgCacheAge: '~0.25s',
+        updateFrequency: 'Every ~1s (actual)',
       },
       capacity: {
         currentAssets: this.priceCache.size,
-        maxRecommended: 15,
-        maxTheoretical: 20,
+        maxRecommended: 10,
+        maxTheoretical: 15,
         warning: estimatedCallsPerHour > 60000 
-          ? '⚠️  HIGH API USAGE - Consider reducing assets!' 
+          ? '⚠️ HIGH API USAGE - Consider reducing assets!' 
           : '✅ Usage normal',
       },
       comparison: {
-        vs60sCache: '60× more API calls',
-        vs5sCache: '12× more API calls',
-        benefit: 'True 1-second trading support',
+        vsOldCache: '2× more API calls (better realtime)',
+        benefit: 'True 1-second updates ✅',
+        tradeoff: 'Higher API usage for better UX',
       }
     };
   }

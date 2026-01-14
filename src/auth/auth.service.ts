@@ -271,6 +271,8 @@ export class AuthService implements OnModuleInit {
         profile: initialProfile,
         referralCode: newUserReferralCode,
         referredBy: referrerUser ? referrerUser.id : undefined,
+        isNewUser: true,  
+        tutorialCompleted: false,  
         createdAt: timestamp,
         updatedAt: timestamp,
         loginCount: 0,
@@ -418,6 +420,16 @@ export class AuthService implements OnModuleInit {
     const loginCount = (user.loginCount || 0) + 1;
     const lastLoginAt = new Date().toISOString();
 
+  const updates: any = {
+    lastLoginAt,
+    loginCount,
+  }
+
+    if (loginCount >= 3 && user.tutorialCompleted === false) {
+    updates.tutorialCompleted = true
+    updates.isNewUser = false
+  }
+
     await db.collection(COLLECTIONS.USERS).doc(user.id).update({
       lastLoginAt,
       loginCount,
@@ -438,6 +450,8 @@ export class AuthService implements OnModuleInit {
         email: user.email,
         role: user.role,
         status: user.status || USER_STATUS.STANDARD,
+        isNewUser: user.isNewUser !== false, 
+        tutorialCompleted: user.tutorialCompleted || false,  
         loginCount,
         lastLoginAt,
       },

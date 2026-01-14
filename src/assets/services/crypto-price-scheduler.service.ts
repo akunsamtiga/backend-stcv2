@@ -21,9 +21,10 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
   
   private timeframeManagers: Map<string, CryptoTimeframeManager> = new Map();
   
-  private readonly UPDATE_INTERVAL = 1000;
-  private readonly REFRESH_INTERVAL = 600000;
-  private readonly CLEANUP_INTERVAL = 7200000;
+  // ✅ TRUE 1-SECOND MODE
+  private readonly UPDATE_INTERVAL = 1000;  // 1 second
+  private readonly REFRESH_INTERVAL = 600000;  // 10 minutes
+  private readonly CLEANUP_INTERVAL = 7200000;  // 2 hours
   private lastCleanupTime = 0;
   
   private schedulerActive = false;
@@ -40,10 +41,12 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
+    // Initial delay untuk tunggu Firestore ready
     setTimeout(async () => {
       await this.initializeScheduler();
     }, 3000);
     
+    // Retry mechanism jika belum ada crypto assets
     const retryInterval = setInterval(async () => {
       if (!this.schedulerActive && this.initAttempts < this.MAX_INIT_ATTEMPTS) {
         this.logger.log(`🔄 Retry attempt ${this.initAttempts + 1}/${this.MAX_INIT_ATTEMPTS} to find crypto assets...`);
@@ -89,6 +92,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
         return;
       }
       
+      // Initialize timeframe managers untuk setiap crypto asset
       this.cryptoAssets.forEach(asset => {
         if (!this.timeframeManagers.has(asset.id)) {
           this.timeframeManagers.set(asset.id, new CryptoTimeframeManager());
@@ -98,7 +102,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       
       this.logger.log('');
       this.logger.log('💎 ================================================');
-      this.logger.log('💎 CRYPTO PRICE SCHEDULER - BINANCE (1s Cache)');
+      this.logger.log('💎 CRYPTO PRICE SCHEDULER - TRUE 1-SECOND MODE');
       this.logger.log('💎 ================================================');
       this.logger.log(`💎 Active Crypto Assets: ${this.cryptoAssets.length}`);
       this.cryptoAssets.forEach(asset => {
@@ -107,12 +111,13 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
           `/crypto/${asset.cryptoConfig?.baseCurrency.toLowerCase()}_${asset.cryptoConfig?.quoteCurrency.toLowerCase().replace('usd', 'usdt')}`;
         this.logger.log(`   • ${asset.symbol} (${pair}) → ${path}`);
       });
-      this.logger.log(`⚡ Scheduler: Every 1 second`);
-      this.logger.log(`💰 Cache Strategy: 1s (realtime)`);
+      this.logger.log(`⚡ Scheduler: Every 1 second (REAL)`);
+      this.logger.log(`💰 Cache Strategy: 500ms (true realtime)`);
       this.logger.log(`📊 OHLC Timeframes: 1s, 1m, 5m, 15m, 30m, 1h, 4h, 1d`);
       this.logger.log(`🔄 Asset Refresh: ${this.REFRESH_INTERVAL / 60000}m`);
       this.logger.log(`🗑️ Cleanup: Every ${this.CLEANUP_INTERVAL / 3600000}h`);
       this.logger.log('💎 API: Binance FREE (No API key needed)');
+      this.logger.log('💎 Write Strategy: ALL timeframes EVERY update');
       this.logger.log('💎 ================================================');
       this.logger.log('');
       
@@ -138,19 +143,21 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     this.logger.log('🚀 Starting initial crypto price fetch...');
     await this.updateAllPrices();
     
+    // ✅ Update setiap 1 detik
     this.updateIntervalHandle = setInterval(async () => {
       if (this.isRunning && this.schedulerActive) {
         await this.updateAllPrices();
       }
     }, this.UPDATE_INTERVAL);
     
-    this.logger.log('✅ Crypto price scheduler started (Binance 1s cache)');
+    this.logger.log('✅ Crypto price scheduler started (TRUE 1-SECOND MODE)');
     this.logger.log('');
     this.logger.log('📊 Expected Behavior:');
-    this.logger.log('   Every second: Fetch from Binance (1s cache)');
-    this.logger.log('   Cache ensures: Fresh data every update');
-    this.logger.log('   Deduplication: Prevents parallel requests');
-    this.logger.log('   ✅ ALL TIMEFRAMES: Written on every update');
+    this.logger.log('   Every second: Fetch FRESH price from Binance');
+    this.logger.log('   Cache: 500ms only for deduplication');
+    this.logger.log('   Force Fresh: ALWAYS for scheduler');
+    this.logger.log('   Write: ALL timeframes on EVERY update');
+    this.logger.log('   Result: True 1-second updates ✅');
     this.logger.log('');
   }
 
@@ -182,7 +189,11 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     const startTime = Date.now();
     
     try {
-      const priceMap = await this.binanceService.getMultiplePrices(this.cryptoAssets);
+      // ✅ FORCE FRESH PRICE - Always get latest from Binance
+      const priceMap = await this.binanceService.getMultiplePrices(
+        this.cryptoAssets,
+        true  // forceFresh = true untuk true 1-second updates
+      );
       
       let successCount = 0;
       let failCount = 0;
@@ -204,9 +215,11 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       
       const duration = Date.now() - startTime;
       
+      // Log setiap 30 detik
       if (this.updateCount % 30 === 0) {
         this.logger.log(
-          `💎 Update #${this.updateCount}: ${successCount}/${this.cryptoAssets.length} prices + OHLC updated in ${duration}ms ` +
+          `💎 Update #${this.updateCount}: ${successCount}/${this.cryptoAssets.length} ` +
+          `FRESH prices + OHLC in ${duration}ms ` +
           `(Success: ${successCount}, Failed: ${failCount})`
         );
         
@@ -215,10 +228,12 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
         
         this.logger.log(
           `   📊 Binance: API=${binanceStats.apiCalls} Cache=${binanceStats.cacheHits} ` +
-          `Rate=${binanceStats.cacheHitRate} Est=${perfStats.estimatedCallsPerHour || 'N/A'}/h`
+          `Rate=${binanceStats.cacheHitRate} Est=${perfStats.estimatedCallsPerHour || 'N/A'}/h ` +
+          `Util=${perfStats.utilizationPercent || 0}%`
         );
       }
       
+      // Cleanup check
       const now = Date.now();
       if (now - this.lastCleanupTime > this.CLEANUP_INTERVAL) {
         await this.cleanupOldData();
@@ -243,6 +258,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       const price = cryptoPrice.price;
       const volume = cryptoPrice.volume24h || 0;
       
+      // Update all OHLC bars
       const { completedBars, currentBars } = manager.updateBars(
         asset.id,
         timestamp,
@@ -252,7 +268,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       
       const path = this.getAssetPath(asset);
       
-      // ✅ ALWAYS write ALL current bars (not conditional)
+      // ✅ WRITE ALL CURRENT BARS - EVERY UPDATE
       // This ensures all timeframes are visible immediately
       for (const [timeframe, bar] of currentBars.entries()) {
         const barPath = `${path}/ohlc_${timeframe}/${bar.timestamp}`;
@@ -264,7 +280,8 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
         );
       }
       
-      // Write completed bars with higher priority
+      // ✅ WRITE COMPLETED BARS - CRITICAL
+      // These are finalized bars with isCompleted = true
       for (const [timeframe, bar] of completedBars.entries()) {
         const barPath = `${path}/ohlc_${timeframe}/${bar.timestamp}`;
         
@@ -352,6 +369,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
                   `  🗑️ Deleting ${oldKeys.length} old ${timeframe} bars for ${asset.symbol}`
                 );
                 
+                // Delete old bars
                 const updates: any = {};
                 oldKeys.forEach(key => {
                   updates[`${ohlcPath}/${key}`] = null;
@@ -387,7 +405,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     
     this.logger.log('');
     this.logger.log('📊 ================================================');
-    this.logger.log('📊 CRYPTO SCHEDULER STATS (BINANCE 1s CACHE)');
+    this.logger.log('📊 CRYPTO SCHEDULER STATS (TRUE 1-SECOND MODE)');
     this.logger.log('📊 ================================================');
     this.logger.log(`   Assets: ${this.cryptoAssets.length}`);
     this.logger.log(`   Running: ${this.isRunning ? '✅' : '❌'}`);
@@ -410,13 +428,19 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     this.logger.log('');
     
     this.logger.log('   Binance API Stats:');
+    this.logger.log(`     Mode: ${stats.mode}`);
     this.logger.log(`     API Calls: ${stats.apiCalls}`);
     this.logger.log(`     Cache Hits: ${stats.cacheHits}`);
     this.logger.log(`     Hit Rate: ${stats.cacheHitRate}`);
     this.logger.log(`     Errors: ${stats.errors}`);
     this.logger.log(`     RT Writes: ${stats.realtimeWrites}`);
-    this.logger.log(`     Est. Calls/Hour: ${perfStats.estimatedCallsPerHour || 'N/A'}`);
     this.logger.log(`     Cache TTL: ${stats.cacheTTL}`);
+    this.logger.log('');
+    this.logger.log('   Performance:');
+    this.logger.log(`     Current Rate: ${perfStats.currentRatePerMin || 'N/A'}`);
+    this.logger.log(`     Est. Hourly: ${perfStats.estimatedCallsPerHour || 'N/A'}`);
+    this.logger.log(`     Utilization: ${perfStats.utilizationPercent || 0}%`);
+    this.logger.log(`     Update Freq: ${perfStats.updateFrequency || 'N/A'}`);
     this.logger.log('📊 ================================================');
     this.logger.log('');
   }
@@ -452,8 +476,10 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
         : 'Never',
       updateInterval: `${this.UPDATE_INTERVAL}ms`,
       api: 'Binance FREE',
-      cacheStrategy: '1s cache (realtime)',
+      cacheStrategy: '500ms (true realtime)',
+      forceFresh: true,
       writeStrategy: 'ALL timeframes EVERY update ✅',
+      mode: '⚡ TRUE 1-SECOND MODE',
       assets: this.cryptoAssets.map(a => ({
         symbol: a.symbol,
         pair: `${a.cryptoConfig?.baseCurrency}/${a.cryptoConfig?.quoteCurrency}`,

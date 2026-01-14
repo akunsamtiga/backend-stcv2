@@ -89,6 +89,8 @@ export interface User {
   profile?: UserProfile;
   referralCode: string;
   referredBy?: string;
+  isNewUser: boolean  
+  tutorialCompleted: boolean  
   createdAt: string;
   updatedAt?: string;
   createdBy?: string;

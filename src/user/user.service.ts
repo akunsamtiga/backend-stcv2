@@ -23,6 +23,140 @@ export class UserService {
   ) {}
 
   // ============================================
+// TUTORIAL MANAGEMENT METHODS
+// ============================================
+
+async completeTutorial(userId: string) {
+  try {
+    const db = this.firebaseService.getFirestore()
+    
+    const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get()
+    
+    if (!userDoc.exists) {
+      throw new NotFoundException('User not found')
+    }
+
+    await db.collection(COLLECTIONS.USERS).doc(userId).update({
+      tutorialCompleted: true,
+      isNewUser: false,
+      updatedAt: new Date().toISOString(),
+    })
+
+    this.logger.log(`✅ Tutorial completed for user ${userId}`)
+
+    return {
+      message: 'Tutorial completed successfully',
+      tutorialCompleted: true,
+      isNewUser: false,
+    }
+  } catch (error) {
+    this.logger.error(`completeTutorial error: ${error.message}`)
+    throw error
+  }
+}
+
+async resetTutorial(userId: string) {
+  try {
+    const db = this.firebaseService.getFirestore()
+    
+    const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get()
+    
+    if (!userDoc.exists) {
+      throw new NotFoundException('User not found')
+    }
+
+    await db.collection(COLLECTIONS.USERS).doc(userId).update({
+      tutorialCompleted: false,
+      isNewUser: true,
+      updatedAt: new Date().toISOString(),
+    })
+
+    this.logger.log(`🔄 Tutorial reset for user ${userId}`)
+
+    return {
+      message: 'Tutorial reset successfully. Reload the page to see tutorial again.',
+      tutorialCompleted: false,
+      isNewUser: true,
+    }
+  } catch (error) {
+    this.logger.error(`resetTutorial error: ${error.message}`)
+    throw error
+  }
+}
+
+// ============================================
+// USER PREFERENCES METHODS
+// ============================================
+
+async getUserPreferences(userId: string) {
+  try {
+    const db = this.firebaseService.getFirestore()
+    
+    const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get()
+    
+    if (!userDoc.exists) {
+      throw new NotFoundException('User not found')
+    }
+
+    const user = userDoc.data() as User
+
+    return {
+      preferences: user.profile?.settings || this.getDefaultSettings(),
+      notifications: {
+        email: user.profile?.settings?.emailNotifications ?? true,
+        sms: user.profile?.settings?.smsNotifications ?? true,
+        trading: user.profile?.settings?.tradingAlerts ?? true,
+      },
+      display: {
+        language: user.profile?.settings?.language || 'id',
+        timezone: user.profile?.settings?.timezone || 'Asia/Jakarta',
+      }
+    }
+  } catch (error) {
+    this.logger.error(`getUserPreferences error: ${error.message}`)
+    throw error
+  }
+}
+
+async updateUserPreferences(userId: string, preferences: any) {
+  try {
+    const db = this.firebaseService.getFirestore()
+    
+    const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get()
+    
+    if (!userDoc.exists) {
+      throw new NotFoundException('User not found')
+    }
+
+    const user = userDoc.data() as User
+    const currentProfile = user.profile || {}
+
+    const updatedProfile: UserProfile = {
+      ...currentProfile,
+      settings: {
+        ...currentProfile.settings,
+        ...preferences,
+      }
+    }
+
+    await db.collection(COLLECTIONS.USERS).doc(userId).update({
+      profile: updatedProfile,
+      updatedAt: new Date().toISOString(),
+    })
+
+    this.logger.log(`✅ Preferences updated for user ${userId}`)
+
+    return {
+      message: 'Preferences updated successfully',
+      preferences: updatedProfile.settings,
+    }
+  } catch (error) {
+    this.logger.error(`updateUserPreferences error: ${error.message}`)
+    throw error
+  }
+}
+
+  // ============================================
   // PROFILE RETRIEVAL
   // ============================================
 

@@ -1,8 +1,7 @@
 // src/user/user.controller.ts
-// ✅ ENHANCED: Complete Profile Management Endpoints
 
 import { 
-  Controller, Get, Put, Post, Body, UseGuards, Param 
+  Controller, Get, Post, Put, Body, UseGuards, Param 
 } from '@nestjs/common';
 import { 
   ApiTags, ApiOperation, ApiBearerAuth, ApiResponse, ApiBody 
@@ -44,6 +43,8 @@ export class UserController {
             status: 'standard',
             isActive: true,
             referralCode: 'ABC123',
+            isNewUser: false,
+            tutorialCompleted: true,
             createdAt: '2024-01-01T00:00:00.000Z'
           },
           profileInfo: {
@@ -127,7 +128,7 @@ export class UserController {
     }
   })
   getProfile(@CurrentUser('sub') userId: string) {
-    return this.userService.getProfile(userId);
+    return this.userService.getProfile(userId)
   }
 
   @Put('profile')
@@ -167,7 +168,7 @@ export class UserController {
     @CurrentUser('sub') userId: string,
     @Body() updateProfileDto: UpdateProfileDto,
   ) {
-    return this.userService.updateProfile(userId, updateProfileDto);
+    return this.userService.updateProfile(userId, updateProfileDto)
   }
 
   // ============================================
@@ -192,7 +193,7 @@ export class UserController {
     @CurrentUser('sub') userId: string,
     @Body() changePasswordDto: ChangePasswordDto,
   ) {
-    return this.userService.changePassword(userId, changePasswordDto);
+    return this.userService.changePassword(userId, changePasswordDto)
   }
 
   // ============================================
@@ -225,7 +226,7 @@ export class UserController {
     @CurrentUser('sub') userId: string,
     @Body() uploadAvatarDto: UploadAvatarDto,
   ) {
-    return this.userService.uploadAvatar(userId, uploadAvatarDto);
+    return this.userService.uploadAvatar(userId, uploadAvatarDto)
   }
 
   // ============================================
@@ -250,7 +251,57 @@ export class UserController {
     @CurrentUser('sub') userId: string,
     @Body() verifyPhoneDto: VerifyPhoneDto,
   ) {
-    return this.userService.verifyPhone(userId, verifyPhoneDto);
+    return this.userService.verifyPhone(userId, verifyPhoneDto)
+  }
+
+  // ============================================
+  // TUTORIAL MANAGEMENT
+  // ============================================
+
+  @Post('complete-tutorial')
+  @ApiOperation({ 
+    summary: 'Mark tutorial as completed',
+    description: 'Mark user tutorial as completed and set isNewUser to false'
+  })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Tutorial completed successfully',
+    schema: {
+      example: {
+        success: true,
+        data: {
+          message: 'Tutorial completed successfully',
+          tutorialCompleted: true,
+          isNewUser: false
+        }
+      }
+    }
+  })
+  completeTutorial(@CurrentUser('sub') userId: string) {
+    return this.userService.completeTutorial(userId)
+  }
+
+  @Post('reset-tutorial')
+  @ApiOperation({ 
+    summary: 'Reset tutorial status',
+    description: 'Reset tutorial status to allow user to see tutorial again'
+  })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Tutorial reset successfully',
+    schema: {
+      example: {
+        success: true,
+        data: {
+          message: 'Tutorial reset successfully. Reload the page to see tutorial again.',
+          tutorialCompleted: false,
+          isNewUser: true
+        }
+      }
+    }
+  })
+  resetTutorial(@CurrentUser('sub') userId: string) {
+    return this.userService.resetTutorial(userId)
   }
 
   // ============================================
@@ -273,7 +324,12 @@ export class UserController {
             totalReferrals: 5,
             completedReferrals: 3,
             pendingReferrals: 2,
-            totalCommission: 75000
+            totalCommission: 75000,
+            commissionBreakdown: {
+              fromStandard: 25000,
+              fromGold: 50000,
+              fromVIP: 0
+            }
           },
           referrals: [
             {
@@ -292,13 +348,17 @@ export class UserController {
             howToEarn: [
               'Share your referral code with friends',
               'Friend registers using your code',
-              'Friend makes their first deposit (any amount)',
-              'You receive Rp 25,000 commission instantly!'
+              'Friend makes their first deposit',
+              'You receive commission based on their status:',
+              '  • Standard: Rp 25,000',
+              '  • Gold: Rp 100,000',
+              '  • VIP: Rp 400,000',
             ],
             tips: [
               'No limit on referrals',
+              'Higher commission for higher status friends',
               'Commission paid immediately after first deposit',
-              'Track all referrals in real-time'
+              'Track all referrals in real-time',
             ]
           }
         }
@@ -306,6 +366,39 @@ export class UserController {
     }
   })
   getAffiliateStats(@CurrentUser('sub') userId: string) {
-    return this.userService.getDetailedAffiliateStats(userId);
+    return this.userService.getDetailedAffiliateStats(userId)
+  }
+
+  // ============================================
+  // USER PREFERENCES
+  // ============================================
+
+  @Get('preferences')
+  @ApiOperation({ 
+    summary: 'Get user preferences',
+    description: 'Get user settings and preferences'
+  })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Preferences retrieved successfully'
+  })
+  getPreferences(@CurrentUser('sub') userId: string) {
+    return this.userService.getUserPreferences(userId)
+  }
+
+  @Put('preferences')
+  @ApiOperation({ 
+    summary: 'Update user preferences',
+    description: 'Update user settings and preferences'
+  })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Preferences updated successfully'
+  })
+  updatePreferences(
+    @CurrentUser('sub') userId: string,
+    @Body() preferences: any,
+  ) {
+    return this.userService.updateUserPreferences(userId, preferences)
   }
 }
