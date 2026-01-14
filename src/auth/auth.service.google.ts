@@ -221,6 +221,8 @@ export class GoogleAuthService {
       profile: initialProfile,
       referralCode: newUserReferralCode,
       referredBy: referrerUser ? referrerUser.id : undefined,
+        isNewUser: true,        
+  tutorialCompleted: false,     
       createdAt: timestamp,
       updatedAt: timestamp,
       loginCount: 1,
