@@ -7,7 +7,7 @@ import * as bcrypt from 'bcrypt';
 import { FirebaseService } from '../firebase/firebase.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
-import { COLLECTIONS, BALANCE_TYPES, BALANCE_ACCOUNT_TYPE, USER_ROLES, USER_STATUS, AFFILIATE_STATUS, AFFILIATE_CONFIG } from '../common/constants';
+import { COLLECTIONS, BALANCE_TYPES, BALANCE_ACCOUNT_TYPE, USER_ROLES, USER_STATUS, AFFILIATE_STATUS } from '../common/constants';
 import { User, UserProfile } from '../common/interfaces';
 
 @Injectable()
@@ -216,7 +216,10 @@ export class AuthService implements OnModuleInit {
         throw new ConflictException('Email already registered');
       }
 
-      let referrerUser = null;
+      // ✅ FIXED: Better referral validation with proper null handling
+      let referrerUser: any = null;
+      let referrerUserId: string | undefined = undefined;
+      
       if (referralCode && referralCode.trim() !== '') {
         const referrerSnapshot = await db.collection(COLLECTIONS.USERS)
           .where('referralCode', '==', referralCode.trim())
@@ -224,10 +227,12 @@ export class AuthService implements OnModuleInit {
           .get();
 
         if (referrerSnapshot.empty) {
-          this.logger.warn(`Invalid referral code provided: ${referralCode}`);
+          this.logger.warn(`⚠️ Invalid referral code provided: ${referralCode}`);
+          // ✅ Don't fail registration, just log warning
         } else {
           referrerUser = referrerSnapshot.docs[0].data();
-          this.logger.log(`✅ Valid referral code: ${referralCode} from user ${referrerUser.id}`);
+          referrerUserId = referrerUser.id;
+          this.logger.log(`✅ Valid referral code: ${referralCode} from user ${referrerUserId}`);
         }
       }
 
@@ -270,9 +275,9 @@ export class AuthService implements OnModuleInit {
         isActive: true,
         profile: initialProfile,
         referralCode: newUserReferralCode,
-        referredBy: referrerUser ? referrerUser.id : undefined,
-        isNewUser: true,  
-        tutorialCompleted: false,  
+        referredBy: referrerUserId || undefined,
+        isNewUser: true,
+        tutorialCompleted: false,
         createdAt: timestamp,
         updatedAt: timestamp,
         loginCount: 0,
@@ -304,26 +309,30 @@ export class AuthService implements OnModuleInit {
         }),
       ]);
 
-      if (referrerUser) {
+      // ✅ CRITICAL FIX: Always create affiliate record if referral code exists
+      if (referrerUserId && referrerUser) {
         try {
           const affiliateId = await this.firebaseService.generateId(COLLECTIONS.AFFILIATES);
           
-          // ✅ Komisi akan ditentukan saat first deposit berdasarkan status user
+          // ✅ Create affiliate record immediately
           await db.collection(COLLECTIONS.AFFILIATES).doc(affiliateId).set({
             id: affiliateId,
-            referrer_id: referrerUser.id,
+            referrer_id: referrerUserId,
             referee_id: userId,
             status: AFFILIATE_STATUS.PENDING,
-            commission_amount: 0, // ✅ Will be set when first deposit based on status
+            commission_amount: 0,
             createdAt: timestamp,
+            updatedAt: timestamp,
           });
 
           this.logger.log(
             `🎁 Affiliate record created: ${referrerUser.email} referred ${email} ` +
-            `(Commission will be based on first deposit status)`
+            `(Commission pending first deposit)`
           );
         } catch (affiliateError) {
+          // ✅ Log error but don't fail registration
           this.logger.error(`⚠️ Failed to create affiliate record: ${affiliateError.message}`);
+          this.logger.error(affiliateError.stack);
         }
       }
       
@@ -337,8 +346,8 @@ export class AuthService implements OnModuleInit {
         `✅ User registered: ${email} (Status: STANDARD, Profile: ${profileCompletion}%, Real: Rp 0, Demo: Rp 10,000,000)`
       );
 
-      if (referrerUser) {
-        this.logger.log(`   Referred by: ${referrerUser.email}`);
+      if (referrerUserId && referrerUser) {
+        this.logger.log(`   Referred by: ${referrerUser.email} (ID: ${referrerUserId})`);
       }
 
       const token = this.generateToken(userId, email, USER_ROLES.USER);
@@ -361,9 +370,11 @@ export class AuthService implements OnModuleInit {
           real: 0,
           demo: 10000000,
         },
-        affiliate: referrerUser ? {
+        affiliate: referrerUserId && referrerUser ? {
           referredBy: referrerUser.email,
-          commissionPending: AFFILIATE_CONFIG.COMMISSION_AMOUNT,
+          referrerId: referrerUserId,
+          commissionPending: true,
+          message: 'Commission will be calculated on first deposit',
         } : null,
         token,
       };
@@ -420,15 +431,15 @@ export class AuthService implements OnModuleInit {
     const loginCount = (user.loginCount || 0) + 1;
     const lastLoginAt = new Date().toISOString();
 
-  const updates: any = {
-    lastLoginAt,
-    loginCount,
-  }
+    const updates: any = {
+      lastLoginAt,
+      loginCount,
+    }
 
     if (loginCount >= 3 && user.tutorialCompleted === false) {
-    updates.tutorialCompleted = true
-    updates.isNewUser = false
-  }
+      updates.tutorialCompleted = true
+      updates.isNewUser = false
+    }
 
     await db.collection(COLLECTIONS.USERS).doc(user.id).update({
       lastLoginAt,
