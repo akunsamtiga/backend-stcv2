@@ -22,6 +22,17 @@ export class BalanceService {
   private transactionLocks: Map<string, { promise: Promise<any>; startTime: number }> = new Map();
   private readonly LOCK_TIMEOUT = 30000;
 
+  private writeStats = { 
+    success: 0, 
+    failed: 0, 
+    queued: 0,
+    lastSuccessTime: Date.now() 
+  };
+  
+  private readonly MAX_RETRIES = 2;
+  private readonly RETRY_DELAY_MS = 200;
+  private readonly MAX_CONSECUTIVE_FAILURES = 5;
+
   constructor(
     private firebaseService: FirebaseService,
   ) {
@@ -68,43 +79,35 @@ export class BalanceService {
     this.logger.debug(`🔒 Acquired lock: ${lockKey}`);
   }
 
-  // ✅ CRITICAL FIX: Method untuk check apakah ini first deposit
-    private async isFirstRealDeposit(userId: string): Promise<boolean> {
+  // ✅ NEW: Check if user has PENDING affiliate record
+  private async hasPendingAffiliate(userId: string): Promise<boolean> {
     try {
       const db = this.firebaseService.getFirestore();
       
-      // Check apakah ada deposit REAL sebelumnya
-      const existingDeposits = await db.collection(COLLECTIONS.BALANCE)
-        .where('user_id', '==', userId)
-        .where('accountType', '==', BALANCE_ACCOUNT_TYPE.REAL)
-        .where('type', '==', BALANCE_TYPES.DEPOSIT)
+      const affiliateSnapshot = await db.collection(COLLECTIONS.AFFILIATES)
+        .where('referee_id', '==', userId)
+        .where('status', '==', AFFILIATE_STATUS.PENDING)
         .limit(1)
         .get();
 
-      const isFirst = existingDeposits.empty;
+      const hasPending = !affiliateSnapshot.empty;
       
-      if (isFirst) {
-        this.logger.log(`🎯 FIRST DEPOSIT detected for user ${userId}`);
+      if (hasPending) {
+        this.logger.log(`✅ Found PENDING affiliate for user ${userId}`);
       } else {
-        this.logger.log(`ℹ️ Not first deposit for user ${userId}`);
+        this.logger.log(`ℹ️ No pending affiliate for user ${userId}`);
       }
       
-      return isFirst;
+      return hasPending;
 
     } catch (error) {
-      this.logger.error(`❌ isFirstRealDeposit error: ${error.message}`);
+      this.logger.error(`❌ hasPendingAffiliate error: ${error.message}`);
       return false;
     }
   }
 
-
   // ✅ FIXED: Better affiliate processing with detailed logging
-    private async checkAndProcessAffiliate(userId: string, isFirstDeposit: boolean) {
-    if (!isFirstDeposit) {
-      this.logger.debug(`ℹ️ Not first deposit for ${userId}, skipping affiliate check`);
-      return;
-    }
-
+  private async checkAndProcessAffiliate(userId: string) {
     const db = this.firebaseService.getFirestore();
 
     try {
@@ -204,7 +207,6 @@ export class BalanceService {
       this.logger.error(error.stack);
     }
   }
-
 
   private async autoMigrateIfNeeded(userId: string): Promise<void> {
     try {
@@ -366,7 +368,7 @@ export class BalanceService {
   /**
    * ✅ CRITICAL FIX: Atomic balance entry dengan proper affiliate processing
    */
-    async createBalanceEntry(
+  async createBalanceEntry(
     userId: string, 
     createBalanceDto: CreateBalanceDto, 
     critical = true
@@ -388,18 +390,17 @@ export class BalanceService {
 
           const db = this.firebaseService.getFirestore();
           
-          // ✅ CRITICAL FIX: Check first deposit SEBELUM create entry
-          let isFirstDeposit = false;
+          // ✅ CRITICAL FIX: Check pending affiliate INSTEAD of first deposit
+          let shouldProcessAffiliate = false;
           
           if (accountType === BALANCE_ACCOUNT_TYPE.REAL && type === BALANCE_TYPES.DEPOSIT) {
-            isFirstDeposit = await this.isFirstRealDeposit(userId);
+            shouldProcessAffiliate = await this.hasPendingAffiliate(userId);
             
-            if (isFirstDeposit) {
-              this.logger.log(`🎯 THIS IS FIRST REAL DEPOSIT for user ${userId}!`);
+            if (shouldProcessAffiliate) {
+              this.logger.log(`🎯 REAL DEPOSIT + PENDING AFFILIATE detected for user ${userId}!`);
             }
           }
           
-          // Handle withdrawal with transaction
           if (type === BALANCE_TYPES.WITHDRAWAL) {
             await db.runTransaction(async (transaction) => {
               const balanceSnapshot = await transaction.get(
@@ -432,10 +433,10 @@ export class BalanceService {
               transaction.set(balanceRef, balanceData);
             });
 
-            this.logger.log(`✅ Withdrawal completed: ${userId} - ${accountType} - ${amount}`);
+            this.logger.log(`✅ Withdrawal completed atomically: ${userId} - ${accountType} - ${amount}`);
 
           } else {
-            // ✅ CREATE DEPOSIT ENTRY
+            // Create deposit/other entry
             const balanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
             const balanceData = {
               id: balanceId,
@@ -447,19 +448,14 @@ export class BalanceService {
               createdAt: new Date().toISOString(),
             };
 
-            // ✅ SAVE DEPOSIT FIRST
             await db.collection(COLLECTIONS.BALANCE).doc(balanceId).set(balanceData);
 
             this.logger.log(`✅ Balance entry created: ${balanceId}`);
 
-            // ✅ CRITICAL FIX: Process affiliate AFTER entry created
-            if (isFirstDeposit) {
-              this.logger.log(`🎁 Processing affiliate commission for first deposit...`);
-              
-              // ✅ ADD DELAY to ensure database consistency
-              await new Promise(resolve => setTimeout(resolve, 500));
-              
-              await this.checkAndProcessAffiliate(userId, true);
+            // ✅ CRITICAL FIX: Process affiliate SETELAH entry created
+            if (shouldProcessAffiliate) {
+              this.logger.log(`🎁 Processing affiliate commission...`);
+              await this.checkAndProcessAffiliate(userId);
             }
 
             // Update user status if real deposit
@@ -474,13 +470,10 @@ export class BalanceService {
             }
           }
 
-          // Invalidate cache
           this.invalidateCache(userId, accountType);
 
-          // Wait for cache to clear
           await new Promise(resolve => setTimeout(resolve, 100));
 
-          // Get updated balance
           const currentBalance = await this.getCurrentBalance(userId, accountType, true);
 
           const duration = Date.now() - startTime;
@@ -499,7 +492,7 @@ export class BalanceService {
             },
             currentBalance,
             accountType,
-            affiliateProcessed: isFirstDeposit,
+            affiliateProcessed: shouldProcessAffiliate,
             executionTime: duration,
           };
 
@@ -520,7 +513,6 @@ export class BalanceService {
       throw error;
     }
   }
-
 
   async getBalanceHistory(
     userId: string, 
