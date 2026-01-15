@@ -1,4 +1,4 @@
-// src/balance/balance.service.ts - ✅ COMPLETE FIXED VERSION
+// src/balance/balance.service.ts
 
 import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import { FirebaseService } from '../firebase/firebase.service';
@@ -14,7 +14,6 @@ export class BalanceService {
   
   private realBalanceCache: Map<string, { balance: number; timestamp: number }> = new Map();
   private demoBalanceCache: Map<string, { balance: number; timestamp: number }> = new Map();
-  
   private readonly BALANCE_CACHE_TTL = 500;
   
   private userStatusService: any;
@@ -79,10 +78,10 @@ export class BalanceService {
     this.logger.debug(`🔒 Acquired lock: ${lockKey}`);
   }
 
-  // ✅ FIXED: Check pending affiliate + calculate total deposit SEBELUM status update
-  // ⚠️ IMPORTANT: This only processes PENDING affiliates (first deposit only!)
-  // After payment, status becomes COMPLETED and won't trigger again
-  private async hasPendingAffiliateAndCalculateCommission(userId: string): Promise<{
+  private async hasPendingAffiliateAndCalculateCommission(
+    userId: string, 
+    depositAmount: number
+  ): Promise<{
     hasPending: boolean;
     affiliateId?: string;
     referrerId?: string;
@@ -94,8 +93,6 @@ export class BalanceService {
     try {
       const db = this.firebaseService.getFirestore();
       
-      // 1. ✅ CRITICAL: Only check PENDING affiliates (not COMPLETED)
-      // This ensures commission is paid ONCE only per referred user
       const affiliateSnapshot = await db.collection(COLLECTIONS.AFFILIATES)
         .where('referee_id', '==', userId)
         .where('status', '==', AFFILIATE_STATUS.PENDING)
@@ -103,7 +100,6 @@ export class BalanceService {
         .get();
 
       if (affiliateSnapshot.empty) {
-        // Check if there's already a COMPLETED affiliate (already paid before)
         const completedSnapshot = await db.collection(COLLECTIONS.AFFILIATES)
           .where('referee_id', '==', userId)
           .where('status', '==', AFFILIATE_STATUS.COMPLETED)
@@ -111,7 +107,7 @@ export class BalanceService {
           .get();
 
         if (!completedSnapshot.empty) {
-          this.logger.log(`ℹ️ User ${userId} already has COMPLETED affiliate - no new commission`);
+          this.logger.log(`ℹ️ User ${userId} already has COMPLETED affiliate`);
         } else {
           this.logger.log(`ℹ️ No affiliate record for user ${userId}`);
         }
@@ -131,9 +127,7 @@ export class BalanceService {
       this.logger.log(`✅ Found PENDING affiliate for user ${userId}`);
       this.logger.log(`   Affiliate ID: ${affiliate.id}`);
       this.logger.log(`   Referrer: ${affiliate.referrer_id}`);
-      this.logger.log(`   ⚠️ This is FIRST DEPOSIT - commission will be paid!`);
 
-      // 2. Calculate CURRENT total deposit (before this transaction)
       const balanceSnapshot = await db.collection(COLLECTIONS.BALANCE)
         .where('user_id', '==', userId)
         .where('accountType', '==', BALANCE_ACCOUNT_TYPE.REAL)
@@ -146,22 +140,22 @@ export class BalanceService {
         currentTotalDeposit += data.amount;
       });
 
-      // ✅ Verify this is truly first deposit
       const isFirstDeposit = currentTotalDeposit === 0;
       
       if (!isFirstDeposit) {
         this.logger.warn(`⚠️ WARNING: Found PENDING affiliate but user already has deposits!`);
         this.logger.warn(`   Current deposits: Rp ${currentTotalDeposit.toLocaleString()}`);
-        this.logger.warn(`   This might be a data inconsistency!`);
       }
 
       this.logger.log(`   Current total deposit: Rp ${currentTotalDeposit.toLocaleString()}`);
+      this.logger.log(`   This deposit amount: Rp ${depositAmount.toLocaleString()}`);
       this.logger.log(`   Is first deposit: ${isFirstDeposit ? 'YES ✅' : 'NO ⚠️'}`);
 
-      // 3. Determine future status AFTER this deposit
-      const futureStatus = this.determineFutureStatus(currentTotalDeposit);
+      const totalAfterDeposit = currentTotalDeposit + depositAmount;
+      const futureStatus = this.determineFutureStatus(totalAfterDeposit);
       
-      // 4. Get commission for that status
+      this.logger.log(`   Total AFTER deposit: Rp ${totalAfterDeposit.toLocaleString()}`);
+      
       let commissionAmount: number;
       switch (futureStatus.toUpperCase()) {
         case USER_STATUS.VIP.toUpperCase():
@@ -202,15 +196,12 @@ export class BalanceService {
     }
   }
 
-  // ✅ NEW: Helper to determine future status
   private determineFutureStatus(totalDeposit: number): string {
     if (totalDeposit >= 1600000) return USER_STATUS.VIP;
     if (totalDeposit >= 160000) return USER_STATUS.GOLD;
     return USER_STATUS.STANDARD;
   }
 
-  // ✅ FIXED: Process affiliate dengan commission yang SUDAH DIHITUNG
-  // ⚠️ CRITICAL: After this, status becomes COMPLETED - no more commission!
   private async processAffiliate(
     userId: string,
     affiliateId: string,
@@ -230,7 +221,6 @@ export class BalanceService {
 
       const timestamp = new Date().toISOString();
 
-      // ✅ SAFEGUARD: Double-check affiliate is still PENDING
       const affiliateDoc = await db.collection(COLLECTIONS.AFFILIATES).doc(affiliateId).get();
       
       if (!affiliateDoc.exists) {
@@ -246,7 +236,6 @@ export class BalanceService {
         return;
       }
 
-      // 1. ✅ Update affiliate record to COMPLETED
       await db.collection(COLLECTIONS.AFFILIATES)
         .doc(affiliateId)
         .update({
@@ -260,7 +249,6 @@ export class BalanceService {
       this.logger.log(`✅ Affiliate record updated: PENDING → COMPLETED`);
       this.logger.log(`   📌 This user will NOT trigger commission again!`);
 
-      // 2. Create commission balance entry
       const commissionBalanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
       
       await db.collection(COLLECTIONS.BALANCE).doc(commissionBalanceId).set({
@@ -275,7 +263,6 @@ export class BalanceService {
 
       this.logger.log(`✅ Commission balance entry created: ${commissionBalanceId}`);
 
-      // 3. Clear cache
       this.realBalanceCache.delete(referrerId);
 
       this.logger.log(
@@ -471,7 +458,6 @@ export class BalanceService {
 
           const db = this.firebaseService.getFirestore();
           
-          // ✅ STEP 1: Check affiliate + calculate commission SEBELUM deposit
           let affiliateInfo: {
             hasPending: boolean;
             affiliateId?: string;
@@ -491,7 +477,7 @@ export class BalanceService {
           };
           
           if (accountType === BALANCE_ACCOUNT_TYPE.REAL && type === BALANCE_TYPES.DEPOSIT) {
-            affiliateInfo = await this.hasPendingAffiliateAndCalculateCommission(userId);
+            affiliateInfo = await this.hasPendingAffiliateAndCalculateCommission(userId, amount);
             
             if (affiliateInfo.hasPending) {
               this.logger.log(`🎯 REAL DEPOSIT + PENDING AFFILIATE detected!`);
@@ -511,7 +497,6 @@ export class BalanceService {
             }
           }
           
-          // ✅ STEP 2: Handle deposit/withdrawal
           if (type === BALANCE_TYPES.WITHDRAWAL) {
             await db.runTransaction(async (transaction) => {
               const balanceSnapshot = await transaction.get(
@@ -547,7 +532,6 @@ export class BalanceService {
             this.logger.log(`✅ Withdrawal completed: ${userId} - ${accountType} - ${amount}`);
 
           } else {
-            // ✅ STEP 2b: Create deposit entry
             const balanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
             const balanceData = {
               id: balanceId,
@@ -563,7 +547,6 @@ export class BalanceService {
 
             this.logger.log(`✅ Balance entry created: ${balanceId}`);
 
-            // ✅ STEP 3: Update user status
             if (accountType === BALANCE_ACCOUNT_TYPE.REAL && type === BALANCE_TYPES.DEPOSIT) {
               if (this.userStatusService) {
                 try {
@@ -580,7 +563,6 @@ export class BalanceService {
               }
             }
 
-            // ✅ STEP 4: Process affiliate SETELAH status update
             if (affiliateInfo.hasPending && affiliateInfo.affiliateId && affiliateInfo.referrerId) {
               await this.processAffiliate(
                 userId,
@@ -857,7 +839,7 @@ export class BalanceService {
       }
     }
 
-          for (const [lockKey, lockData] of this.transactionLocks.entries()) {
+    for (const [lockKey, lockData] of this.transactionLocks.entries()) {
       const age = now - lockData.startTime;
       if (age > this.LOCK_TIMEOUT) {
         this.transactionLocks.delete(lockKey);
