@@ -1,4 +1,4 @@
-// src/balance/balance.service.ts
+// src/balance/balance.service.ts - ✅ COMPLETE FIXED VERSION
 
 import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import { FirebaseService } from '../firebase/firebase.service';
@@ -448,7 +448,15 @@ export class BalanceService {
             // ✅ CRITICAL FIX: Process affiliate SETELAH entry created
             if (isFirstDeposit) {
               this.logger.log(`🎁 Processing affiliate commission for first deposit...`);
-              await this.checkAndProcessAffiliate(userId, true);
+              
+              try {
+                await this.checkAndProcessAffiliate(userId, true);
+                this.logger.log(`✅ Affiliate check completed successfully`);
+              } catch (affiliateError) {
+                // ⚠️ Log error tapi jangan fail depositnya
+                this.logger.error(`⚠️ Affiliate processing failed (deposit still successful): ${affiliateError.message}`);
+                this.logger.error(affiliateError.stack);
+              }
             }
 
             // Update user status if real deposit
