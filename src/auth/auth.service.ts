@@ -34,11 +34,57 @@ export class AuthService implements OnModuleInit {
     setTimeout(async () => {
       try {
         await this.firebaseService.waitForFirestore(10000);
+        await this.initializeCollections();
         await this.createSuperAdminIfNotExists();
       } catch (error) {
-        this.logger.error(`❌ Super admin creation failed: ${error.message}`);
+        this.logger.error(`❌ Initialization failed: ${error.message}`);
       }
     }, 2000);
+  }
+
+  /**
+   * ✅ Initialize all collections with placeholder documents
+   * This ensures all collections appear in Firestore Console
+   */
+  private async initializeCollections() {
+    try {
+      const db = this.firebaseService.getFirestore();
+      
+      // Check if affiliates collection exists
+      const affiliatesSnapshot = await db.collection(COLLECTIONS.AFFILIATES)
+        .limit(1)
+        .get();
+
+      if (affiliatesSnapshot.empty) {
+        // Create placeholder document in affiliates collection
+        const placeholderId = '_placeholder';
+        
+        await db.collection(COLLECTIONS.AFFILIATES).doc(placeholderId).set({
+          id: placeholderId,
+          _placeholder: true,
+          _note: 'This is a placeholder document to initialize the collection. It will be deleted automatically.',
+          createdAt: new Date().toISOString(),
+        });
+
+        this.logger.log('✅ Affiliates collection initialized with placeholder');
+
+        // Delete placeholder after 5 seconds (optional)
+        setTimeout(async () => {
+          try {
+            await db.collection(COLLECTIONS.AFFILIATES).doc(placeholderId).delete();
+            this.logger.log('🗑️ Placeholder document removed from affiliates collection');
+          } catch (error) {
+            // Ignore error if already deleted
+          }
+        }, 5000);
+      } else {
+        this.logger.log('ℹ️ Affiliates collection already exists');
+      }
+
+    } catch (error) {
+      this.logger.warn(`⚠️ Failed to initialize collections: ${error.message}`);
+      // Don't throw - this is not critical
+    }
   }
 
   private async createDefaultAssetIfNotExists() {
