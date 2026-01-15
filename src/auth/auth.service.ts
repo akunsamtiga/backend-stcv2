@@ -403,27 +403,33 @@ export class AuthService implements OnModuleInit {
       this.logger.log(`✅ Registration completed in ${duration}ms`);
 
       return {
-        message: 'Registration successful with real and demo accounts',
-        user: {
-          id: userId,
-          email,
-          role: USER_ROLES.USER,
-          status: USER_STATUS.STANDARD,
-          referralCode: newUserReferralCode,
-          profileCompletion,
-        },
-        initialBalances: {
-          real: 0,
-          demo: 10000000,
-        },
-        affiliate: referrerUserId && referrerUser ? {
-          referredBy: referrerUser.email,
-          referrerId: referrerUserId,
-          commissionPending: true,
-          message: 'Commission will be calculated on first deposit',
-        } : null,
-        token,
-      };
+  message: 'Registration successful with real and demo accounts',
+  user: {
+    id: userId,
+    email,
+    role: USER_ROLES.USER,
+    status: USER_STATUS.STANDARD,
+    referralCode: newUserReferralCode,
+    profileCompletion,
+    
+    // ✅ TAMBAHKAN INI:
+    isNewUser: true,              // User baru = true
+    tutorialCompleted: false,     // Belum selesai tutorial
+    loginCount: 0,                // Belum pernah login
+  },
+  initialBalances: {
+    real: 0,
+    demo: 10000000,
+  },
+  affiliate: referrerUserId && referrerUser ? {
+    referredBy: referrerUser.email,
+    referrerId: referrerUserId,
+    commissionPending: true,
+    message: 'Commission will be calculated on first deposit',
+  } : null,
+  token,
+};
+
 
     } catch (error) {
       const duration = Date.now() - startTime;
