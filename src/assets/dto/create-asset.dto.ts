@@ -141,11 +141,11 @@ export class CreateAssetDto {
 
   // ✅ TAMBAHKAN ICON
   @ApiPropertyOptional({ 
-    example: 'https://example.com/icons/btc.png',
-    description: 'URL to asset icon/logo image' 
+    example: 'https://example.com/icons/btc.png OR data:image/png;base64,...',
+    description: 'Asset icon - URL or base64 image (max 2MB)' 
   })
   @IsOptional()
-  @IsUrl()
+  @IsString()
   icon?: string;
 
   @ApiProperty({ 

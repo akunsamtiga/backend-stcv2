@@ -103,6 +103,42 @@ export class AssetsService {
         throw new ConflictException(`Asset with symbol ${createAssetDto.symbol} already exists`);
       }
 
+      // Di dalam createAsset method, sebelum save ke Firestore:
+
+// ✅ Validate icon if provided
+if (createAssetDto.icon) {
+  const isBase64 = createAssetDto.icon.startsWith('data:image/');
+  const isURL = createAssetDto.icon.startsWith('http://') || 
+                createAssetDto.icon.startsWith('https://');
+  
+  if (!isBase64 && !isURL) {
+    throw new BadRequestException(
+      'Icon must be a valid URL or base64 encoded image'
+    );
+  }
+  
+  // Check base64 size (max 2MB ≈ 2.7MB in base64)
+  if (isBase64 && createAssetDto.icon.length > 2800000) {
+    throw new BadRequestException(
+      'Icon file too large. Maximum size is 2MB'
+    );
+  }
+  
+  // Validate base64 format
+  if (isBase64) {
+    const validFormats = ['data:image/png', 'data:image/jpeg', 'data:image/jpg', 'data:image/svg+xml'];
+    const hasValidFormat = validFormats.some(format => 
+      createAssetDto.icon!.startsWith(format)
+    );
+    
+    if (!hasValidFormat) {
+      throw new BadRequestException(
+        'Icon must be PNG, JPEG, JPG, or SVG format'
+      );
+    }
+  }
+}
+
       if (!createAssetDto.category) {
         throw new BadRequestException('Category is required (normal or crypto)');
       }
