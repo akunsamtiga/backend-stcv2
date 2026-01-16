@@ -2,7 +2,7 @@
 
 import { 
   IsString, IsNumber, IsBoolean, IsEnum, IsOptional, 
-  Min, Max, IsArray, ValidateNested, IsInt 
+  Min, Max, IsArray, ValidateNested, IsInt, IsUrl 
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
@@ -139,6 +139,15 @@ export class CreateAssetDto {
   @IsString()
   symbol: string;
 
+  // ✅ TAMBAHKAN ICON
+  @ApiPropertyOptional({ 
+    example: 'https://example.com/icons/btc.png',
+    description: 'URL to asset icon/logo image' 
+  })
+  @IsOptional()
+  @IsUrl()
+  icon?: string;
+
   @ApiProperty({ 
     enum: ASSET_CATEGORY,
     example: 'crypto',
@@ -173,7 +182,7 @@ export class CreateAssetDto {
 
   @ApiPropertyOptional({ 
     example: '/crypto/btc_usd',
-    description: 'Firebase Realtime DB path. For normal assets with realtime_db source: REQUIRED (e.g., /idx_stc). For crypto assets: OPTIONAL (auto-generated if not provided, e.g., /crypto/btc_usd). Must start with /'
+    description: 'Firebase Realtime DB path'
   })
   @IsOptional()
   @IsString()
@@ -189,7 +198,7 @@ export class CreateAssetDto {
 
   @ApiPropertyOptional({ 
     type: CryptoConfigDto,
-    description: 'Crypto configuration (required for crypto category with cryptocompare data source)'
+    description: 'Crypto configuration (required for crypto category)'
   })
   @IsOptional()
   @ValidateNested()
@@ -206,7 +215,7 @@ export class CreateAssetDto {
 
   @ApiPropertyOptional({ 
     type: SimulatorSettingsDto,
-    description: 'Simulator settings (for normal assets only, NOT for crypto)'
+    description: 'Simulator settings (for normal assets only)'
   })
   @IsOptional()
   @ValidateNested()
@@ -215,7 +224,7 @@ export class CreateAssetDto {
 
   @ApiPropertyOptional({ 
     type: TradingSettingsDto,
-    description: 'Trading constraints and allowed durations (for both normal and crypto assets)'
+    description: 'Trading constraints and allowed durations'
   })
   @IsOptional()
   @ValidateNested()

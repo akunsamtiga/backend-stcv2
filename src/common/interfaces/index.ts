@@ -132,6 +132,7 @@ export interface Asset {
   name: string;
   symbol: string;
   
+  icon?: string;
   category: 'normal' | 'crypto';
   
   profitRate: number;

@@ -226,6 +226,22 @@ export class AssetsController {
     return this.assetsService.getAssetById(assetId);
   }
 
+  @Post(':id/icon')
+@UseGuards(RolesGuard)
+@Roles(USER_ROLES.SUPER_ADMIN)
+@ApiOperation({ 
+  summary: 'Upload asset icon (Super Admin only)',
+  description: 'Upload icon/logo for asset'
+})
+@ApiParam({ name: 'id', description: 'Asset ID' })
+@ApiResponse({ status: 200, description: 'Icon uploaded successfully' })
+async uploadIcon(
+  @Param('id') assetId: string,
+  @Body() body: { iconUrl: string },
+) {
+  return this.assetsService.updateAssetIcon(assetId, body.iconUrl);
+}
+
   @Post('crypto/scheduler/cleanup')
 @UseGuards(RolesGuard)
 @Roles(USER_ROLES.SUPER_ADMIN)

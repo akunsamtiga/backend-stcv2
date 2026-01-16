@@ -22,71 +22,72 @@ export class AdminService {
   ) {}
 
   async createUser(createUserDto: CreateUserDto, createdBy: string) {
-    const db = this.firebaseService.getFirestore();
+  const db = this.firebaseService.getFirestore();
 
-    const existingSnapshot = await db.collection(COLLECTIONS.USERS)
-      .where('email', '==', createUserDto.email)
-      .limit(1)
-      .get();
+  const existingSnapshot = await db.collection(COLLECTIONS.USERS)
+    .where('email', '==', createUserDto.email)
+    .limit(1)
+    .get();
 
-    if (!existingSnapshot.empty) {
-      throw new ConflictException('Email already registered');
-    }
-
-    const hashedPassword = await bcrypt.hash(createUserDto.password, 10);
-    const userId = await this.firebaseService.generateId(COLLECTIONS.USERS);
-    const timestamp = new Date().toISOString();
-
-    const userData = {
-      id: userId,
-      email: createUserDto.email,
-      password: hashedPassword,
-      role: createUserDto.role,
-      status: USER_STATUS.STANDARD,
-      isActive: true,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      createdBy,
-    };
-
-    await db.collection(COLLECTIONS.USERS).doc(userId).set(userData);
-
-    const balanceId1 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
-    const balanceId2 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
-
-    await Promise.all([
-      db.collection(COLLECTIONS.BALANCE).doc(balanceId1).set({
-        id: balanceId1,
-        user_id: userId,
-        accountType: BALANCE_ACCOUNT_TYPE.REAL,
-        type: BALANCE_TYPES.DEPOSIT,
-        amount: 0,
-        description: 'Initial real balance',
-        createdAt: timestamp,
-      }),
-      db.collection(COLLECTIONS.BALANCE).doc(balanceId2).set({
-        id: balanceId2,
-        user_id: userId,
-        accountType: BALANCE_ACCOUNT_TYPE.DEMO,
-        type: BALANCE_TYPES.DEPOSIT,
-        amount: 10000000,
-        description: 'Initial demo balance - 10 million',
-        createdAt: timestamp,
-      }),
-    ]);
-
-    this.logger.log(`✅ User created by admin: ${createUserDto.email} (Status: STANDARD, Real: Rp 0, Demo: Rp 10,000,000)`);
-
-    const { password, ...userWithoutPassword } = userData;
-    return {
-      message: 'User created successfully with real and demo accounts',
-      user: userWithoutPassword,
-      initialBalances: {
-        real: 0,
-        demo: 10000000,
-      },
-    };
+  if (!existingSnapshot.empty) {
+    throw new ConflictException('Email already registered');
   }
+
+  const hashedPassword = await bcrypt.hash(createUserDto.password, 10);
+  const userId = await this.firebaseService.generateId(COLLECTIONS.USERS);
+  const timestamp = new Date().toISOString();
+
+  const userData = {
+    id: userId,
+    email: createUserDto.email,
+    password: hashedPassword,
+    role: createUserDto.role,
+    status: USER_STATUS.STANDARD,
+    isActive: true,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    createdBy,
+  };
+
+  await db.collection(COLLECTIONS.USERS).doc(userId).set(userData);
+
+  const balanceId1 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
+  const balanceId2 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
+
+  await Promise.all([
+    db.collection(COLLECTIONS.BALANCE).doc(balanceId1).set({
+      id: balanceId1,
+      user_id: userId,
+      accountType: BALANCE_ACCOUNT_TYPE.REAL,
+      type: BALANCE_TYPES.DEPOSIT,
+      amount: 0,
+      description: 'Initial real balance',
+      createdAt: timestamp,
+    }),
+    db.collection(COLLECTIONS.BALANCE).doc(balanceId2).set({
+      id: balanceId2,
+      user_id: userId,
+      accountType: BALANCE_ACCOUNT_TYPE.DEMO,
+      type: BALANCE_TYPES.DEPOSIT,
+      amount: 10000000,
+      description: 'Initial demo balance - 10 million',
+      createdAt: timestamp,
+    }),
+  ]);
+
+  this.logger.log(`✅ User created by admin: ${createUserDto.email}`);
+
+  const { password, ...userWithoutPassword } = userData;
+  return {
+    message: 'User created successfully',
+    user: userWithoutPassword,
+    initialBalances: {
+      real: 0,
+      demo: 10000000,
+    },
+  };
+}
+
 
   async updateUser(userId: string, updateUserDto: UpdateUserDto) {
     const db = this.firebaseService.getFirestore();

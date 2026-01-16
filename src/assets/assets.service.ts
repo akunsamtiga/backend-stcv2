@@ -146,6 +146,7 @@ export class AssetsService {
           id: assetId,
           name: createAssetDto.name,
           symbol: createAssetDto.symbol,
+        icon: createAssetDto.icon || this.getDefaultCryptoIcon(plainCryptoConfig.baseCurrency), 
           category: 'crypto',
           profitRate: createAssetDto.profitRate,
           isActive: createAssetDto.isActive,
@@ -196,6 +197,7 @@ export class AssetsService {
           id: assetId,
           name: createAssetDto.name,
           symbol: createAssetDto.symbol,
+        icon: createAssetDto.icon || this.getDefaultNormalIcon(), 
           category: 'normal',
           profitRate: createAssetDto.profitRate,
           isActive: createAssetDto.isActive,
@@ -228,6 +230,7 @@ export class AssetsService {
       this.logger.log(`🎉 NEW ${createAssetDto.category.toUpperCase()} ASSET: ${createAssetDto.symbol}`);
       this.logger.log('🎉 ================================================');
       this.logger.log(`   Name: ${createAssetDto.name}`);
+    this.logger.log(`   Icon: ${plainAssetData.icon}`);
       this.logger.log(`   Category: ${createAssetDto.category.toUpperCase()}`);
       this.logger.log(`   Data Source: ${createAssetDto.dataSource}`);
       
@@ -265,6 +268,7 @@ export class AssetsService {
               realtimeDbPath: plainAssetData.realtimeDbPath,
               updateFrequency: 'Every price fetch (cached 60s)',
               simulatorUsed: false,
+            icon: plainAssetData.icon,
               apiInfo: 'Binance FREE - No API key needed',
             }
           : {
@@ -273,6 +277,7 @@ export class AssetsService {
               priceFlow: 'Simulator → Realtime Database',
               realtimeDbPath: plainAssetData.realtimeDbPath,
               updateFrequency: '1 second',
+            icon: plainAssetData.icon,
               simulatorUsed: true,
             },
       };
@@ -291,6 +296,32 @@ export class AssetsService {
       );
     }
   }
+
+  private getDefaultCryptoIcon(baseCurrency: string): string {
+  // Menggunakan CryptoCompare API untuk icon gratis
+  const currency = baseCurrency.toUpperCase();
+  return `https://www.cryptocompare.com/media/37746251/btc.png`; // Default BTC
+  
+  // Atau gunakan mapping manual:
+  const iconMap: Record<string, string> = {
+    'BTC': 'https://cryptologos.cc/logos/bitcoin-btc-logo.png',
+    'ETH': 'https://cryptologos.cc/logos/ethereum-eth-logo.png',
+    'BNB': 'https://cryptologos.cc/logos/bnb-bnb-logo.png',
+    'XRP': 'https://cryptologos.cc/logos/xrp-xrp-logo.png',
+    'ADA': 'https://cryptologos.cc/logos/cardano-ada-logo.png',
+    'SOL': 'https://cryptologos.cc/logos/solana-sol-logo.png',
+    'DOT': 'https://cryptologos.cc/logos/polkadot-new-dot-logo.png',
+    'DOGE': 'https://cryptologos.cc/logos/dogecoin-doge-logo.png',
+    'MATIC': 'https://cryptologos.cc/logos/polygon-matic-logo.png',
+    'LTC': 'https://cryptologos.cc/logos/litecoin-ltc-logo.png',
+  };
+  
+  return iconMap[currency] || `https://via.placeholder.com/64?text=${currency}`;
+}
+
+private getDefaultNormalIcon(): string {
+  return 'https://via.placeholder.com/64?text=Asset';
+}
 
   private async validateCryptoAsset(dto: CreateAssetDto): Promise<void> {
     this.logger.log('🔍 Validating crypto asset configuration...');
@@ -607,6 +638,29 @@ export class AssetsService {
       message: 'Asset updated successfully',
     };
   }
+
+  async updateAssetIcon(assetId: string, iconUrl: string) {
+  const db = this.firebaseService.getFirestore();
+
+  const assetDoc = await db.collection(COLLECTIONS.ASSETS).doc(assetId).get();
+  if (!assetDoc.exists) {
+    throw new NotFoundException('Asset not found');
+  }
+
+  await db.collection(COLLECTIONS.ASSETS).doc(assetId).update({
+    icon: iconUrl,
+    updatedAt: new Date().toISOString(),
+  });
+
+  this.invalidateCache();
+
+  this.logger.log(`✅ Icon updated for asset ${assetId}`);
+
+  return {
+    message: 'Asset icon updated successfully',
+    icon: iconUrl,
+  };
+}
 
   async deleteAsset(assetId: string) {
     const db = this.firebaseService.getFirestore();
