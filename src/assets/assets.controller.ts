@@ -226,6 +226,36 @@ export class AssetsController {
     return this.assetsService.getAssetById(assetId);
   }
 
+  @Post('crypto/scheduler/cleanup')
+@UseGuards(RolesGuard)
+@Roles(USER_ROLES.SUPER_ADMIN)
+@ApiOperation({ 
+  summary: 'Trigger manual crypto cleanup (Super Admin only)',
+  description: 'Manually trigger aggressive cleanup for all crypto OHLC data'
+})
+async triggerCryptoCleanup() {
+  await this.cryptoScheduler.triggerCleanup();
+  return {
+    success: true,
+    message: 'Crypto cleanup triggered successfully',
+    info: 'Check logs for cleanup progress'
+  };
+}
+
+@Get('crypto/scheduler/cleanup-stats')
+@UseGuards(RolesGuard)
+@Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
+@ApiOperation({ 
+  summary: 'Get crypto cleanup statistics (Admin only)',
+})
+getCleanupStats() {
+  const status = this.cryptoScheduler.getStatus();
+  return {
+    success: true,
+    data: status.cleanup,
+  };
+}
+
   @Get(':id/price')
   @ApiOperation({ 
     summary: 'Get current price for asset',
