@@ -87,6 +87,14 @@ export const COLLECTIONS = {
   AFFILIATES: 'affiliates',
 } as const;
 
+export const ASSET_TYPE = {
+  FOREX: 'forex',
+  STOCK: 'stock',
+  COMMODITY: 'commodity',
+  CRYPTO: 'crypto',
+  INDEX: 'index',
+} as const;
+
 export const ASSET_CATEGORY = {
   NORMAL: 'normal',
   CRYPTO: 'crypto',
@@ -98,6 +106,40 @@ export const ASSET_DATA_SOURCE = {
   MOCK: 'mock',
   BINANCE: 'binance',  
 } as const;
+
+export const ASSET_TYPE_INFO = {
+  forex: {
+    label: 'Forex',
+    description: 'Foreign Exchange Currency Pairs',
+    examples: ['EUR/USD', 'GBP/USD', 'USD/JPY'],
+    icon: '💱',
+  },
+  stock: {
+    label: 'Stocks',
+    description: 'Company Shares & Equities',
+    examples: ['AAPL', 'GOOGL', 'TSLA'],
+    icon: '📈',
+  },
+  commodity: {
+    label: 'Commodities',
+    description: 'Raw Materials & Resources',
+    examples: ['Gold', 'Silver', 'Oil'],
+    icon: '🛢️',
+  },
+  crypto: {
+    label: 'Cryptocurrency',
+    description: 'Digital Currencies',
+    examples: ['BTC/USD', 'ETH/USD', 'BNB/USD'],
+    icon: '₿',
+  },
+  index: {
+    label: 'Indices',
+    description: 'Stock Market Indices',
+    examples: ['S&P 500', 'NASDAQ', 'Dow Jones'],
+    icon: '📊',
+  },
+} as const;
+
 
 export const BINANCE_CONFIG = {
   BASE_URL: 'https://api.binance.com/api/v3',
@@ -156,5 +198,6 @@ export type ValidDuration = typeof ALL_DURATIONS[number];
 export type BalanceAccountType = typeof BALANCE_ACCOUNT_TYPE[keyof typeof BALANCE_ACCOUNT_TYPE];
 export type UserStatus = typeof USER_STATUS[keyof typeof USER_STATUS];
 export type AffiliateStatus = typeof AFFILIATE_STATUS[keyof typeof AFFILIATE_STATUS];
+export type AssetType = typeof ASSET_TYPE[keyof typeof ASSET_TYPE];
 export type AssetCategory = typeof ASSET_CATEGORY[keyof typeof ASSET_CATEGORY];
 export type AssetDataSource = typeof ASSET_DATA_SOURCE[keyof typeof ASSET_DATA_SOURCE];

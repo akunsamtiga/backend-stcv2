@@ -39,6 +39,7 @@ export interface UserProfile {
     country?: string;
   };
   
+  // ✅ ENHANCED: Identity Document with Photos
   identityDocument?: {
     type?: 'ktp' | 'passport' | 'sim';
     number?: string;
@@ -46,6 +47,19 @@ export interface UserProfile {
     expiryDate?: string;
     isVerified?: boolean;
     verifiedAt?: string;
+    // ✅ NEW: Photo fields
+    photoFront?: {
+      url: string;
+      uploadedAt: string;
+      fileSize?: number;
+      mimeType?: string;
+    };
+    photoBack?: {
+      url: string;
+      uploadedAt: string;
+      fileSize?: number;
+      mimeType?: string;
+    };
   };
   
   bankAccount?: {
@@ -56,9 +70,22 @@ export interface UserProfile {
     verifiedAt?: string;
   };
   
+  // ✅ ENHANCED: Avatar with metadata
   avatar?: {
-    url?: string;
-    uploadedAt?: string;
+    url: string;
+    uploadedAt: string;
+    fileSize?: number;
+    mimeType?: string;
+  };
+  
+  // ✅ NEW: Selfie Verification
+  selfieVerification?: {
+    photoUrl: string;
+    uploadedAt: string;
+    isVerified: boolean;
+    verifiedAt?: string;
+    fileSize?: number;
+    mimeType?: string;
   };
   
   settings?: {
@@ -75,9 +102,12 @@ export interface UserProfile {
     phoneVerified?: boolean;
     identityVerified?: boolean;
     bankVerified?: boolean;
+    // ✅ NEW: Selfie verification status
+    selfieVerified?: boolean;
     verificationLevel?: 'unverified' | 'basic' | 'intermediate' | 'advanced';
   };
 }
+
 
 export interface User {
   id: string;
@@ -133,6 +163,8 @@ export interface Asset {
   symbol: string;
   
   icon?: string;
+  type: 'forex' | 'stock' | 'commodity' | 'crypto' | 'index';
+
   category: 'normal' | 'crypto';
   
   profitRate: number;

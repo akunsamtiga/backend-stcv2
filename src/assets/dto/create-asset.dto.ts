@@ -6,7 +6,7 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { ASSET_CATEGORY, ASSET_DATA_SOURCE } from '../../common/constants';
+import { ASSET_CATEGORY, ASSET_DATA_SOURCE, ASSET_TYPE } from '../../common/constants';
 
 export class SimulatorSettingsDto {
   @ApiProperty({ 
@@ -139,7 +139,6 @@ export class CreateAssetDto {
   @IsString()
   symbol: string;
 
-  // ✅ TAMBAHKAN ICON
   @ApiPropertyOptional({ 
     example: 'https://example.com/icons/btc.png OR data:image/png;base64,...',
     description: 'Asset icon - URL or base64 image (max 2MB)' 
@@ -147,6 +146,15 @@ export class CreateAssetDto {
   @IsOptional()
   @IsString()
   icon?: string;
+
+  // ✅ NEW: Asset Type Field
+  @ApiProperty({ 
+    enum: ASSET_TYPE,
+    example: 'forex',
+    description: 'Asset type: forex, stock, commodity, crypto, or index'
+  })
+  @IsEnum(ASSET_TYPE)
+  type: string;
 
   @ApiProperty({ 
     enum: ASSET_CATEGORY,

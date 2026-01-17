@@ -1,5 +1,3 @@
-// src/user/user.controller.ts
-
 import { 
   Controller, Get, Post, Put, Body, UseGuards, Param 
 } from '@nestjs/common';
@@ -10,7 +8,8 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/user.decorator';
 import { UserService } from './user.service';
 import { 
-  UpdateProfileDto, ChangePasswordDto, VerifyPhoneDto, UploadAvatarDto 
+  UpdateProfileDto, ChangePasswordDto, VerifyPhoneDto, 
+  UploadAvatarDto, UploadKTPDto, UploadSelfieDto 
 } from './dto/update-profile.dto';
 
 @ApiTags('user')
@@ -27,7 +26,7 @@ export class UserController {
   @Get('profile')
   @ApiOperation({ 
     summary: 'Get complete user profile',
-    description: 'Returns user profile with balance, statistics, and all personal information'
+    description: 'Returns user profile with balance, statistics, and all personal information including uploaded photos'
   })
   @ApiResponse({ 
     status: 200, 
@@ -48,7 +47,7 @@ export class UserController {
             createdAt: '2024-01-01T00:00:00.000Z'
           },
           profileInfo: {
-            completion: 75,
+            completion: 85,
             personal: {
               fullName: 'John Doe',
               email: 'user@example.com',
@@ -68,7 +67,15 @@ export class UserController {
               type: 'ktp',
               number: '************0001',
               isVerified: true,
-              verifiedAt: '2024-01-01T00:00:00.000Z'
+              verifiedAt: '2024-01-01T00:00:00.000Z',
+              photoFront: {
+                url: 'https://storage.example.com/ktp/user123_front.jpg',
+                uploadedAt: '2024-01-01T00:00:00.000Z'
+              },
+              photoBack: {
+                url: 'https://storage.example.com/ktp/user123_back.jpg',
+                uploadedAt: '2024-01-01T00:00:00.000Z'
+              }
             },
             bankAccount: {
               bankName: 'Bank Mandiri',
@@ -80,6 +87,11 @@ export class UserController {
             avatar: {
               url: 'https://example.com/avatar.jpg',
               uploadedAt: '2024-01-01T00:00:00.000Z'
+            },
+            selfie: {
+              url: 'https://storage.example.com/selfies/user123.jpg',
+              uploadedAt: '2024-01-01T00:00:00.000Z',
+              isVerified: true
             },
             settings: {
               emailNotifications: true,
@@ -93,6 +105,7 @@ export class UserController {
               emailVerified: true,
               phoneVerified: true,
               identityVerified: true,
+              selfieVerified: true,
               bankVerified: true,
               verificationLevel: 'advanced'
             }
@@ -116,19 +129,13 @@ export class UserController {
             real: 0,
             demo: 10000000,
             combined: 10000000
-          },
-          accountInfo: {
-            memberSince: '2024-01-01T00:00:00.000Z',
-            lastLogin: '2024-01-02T00:00:00.000Z',
-            loginCount: 5,
-            accountAge: '30 days'
           }
         }
       }
     }
   })
   getProfile(@CurrentUser('sub') userId: string) {
-    return this.userService.getProfile(userId)
+    return this.userService.getProfile(userId);
   }
 
   @Put('profile')
@@ -168,42 +175,17 @@ export class UserController {
     @CurrentUser('sub') userId: string,
     @Body() updateProfileDto: UpdateProfileDto,
   ) {
-    return this.userService.updateProfile(userId, updateProfileDto)
+    return this.userService.updateProfile(userId, updateProfileDto);
   }
 
   // ============================================
-  // SECURITY MANAGEMENT
-  // ============================================
-
-  @Post('change-password')
-  @ApiOperation({ 
-    summary: 'Change user password',
-    description: 'Change current password to new password with validation'
-  })
-  @ApiBody({ type: ChangePasswordDto })
-  @ApiResponse({ 
-    status: 200, 
-    description: 'Password changed successfully' 
-  })
-  @ApiResponse({ 
-    status: 400, 
-    description: 'Invalid current password or passwords do not match' 
-  })
-  changePassword(
-    @CurrentUser('sub') userId: string,
-    @Body() changePasswordDto: ChangePasswordDto,
-  ) {
-    return this.userService.changePassword(userId, changePasswordDto)
-  }
-
-  // ============================================
-  // AVATAR MANAGEMENT
+  // PHOTO UPLOAD ENDPOINTS
   // ============================================
 
   @Post('avatar')
   @ApiOperation({ 
-    summary: 'Upload user avatar',
-    description: 'Upload or update user profile picture'
+    summary: 'Upload user avatar/profile photo',
+    description: 'Upload or update user profile picture. Recommended: Max 2MB, JPG/PNG/WEBP format. Frontend should upload file to storage first, then send URL to this endpoint.'
   })
   @ApiBody({ type: UploadAvatarDto })
   @ApiResponse({ 
@@ -216,32 +198,219 @@ export class UserController {
           message: 'Avatar uploaded successfully',
           avatar: {
             url: 'https://storage.example.com/avatars/user123.jpg',
-            uploadedAt: '2024-01-01T00:00:00.000Z'
-          }
+            uploadedAt: '2024-01-01T00:00:00.000Z',
+            fileSize: 512000,
+            mimeType: 'image/jpeg'
+          },
+          profileCompletion: 45
         }
       }
     }
+  })
+  @ApiResponse({ 
+    status: 400, 
+    description: 'Invalid URL or file size too large' 
   })
   uploadAvatar(
     @CurrentUser('sub') userId: string,
     @Body() uploadAvatarDto: UploadAvatarDto,
   ) {
-    return this.userService.uploadAvatar(userId, uploadAvatarDto)
+    return this.userService.uploadAvatar(userId, uploadAvatarDto);
+  }
+
+  @Post('ktp')
+  @ApiOperation({ 
+    summary: 'Upload KTP/Identity Card photos (front & back)',
+    description: 'Upload identity document photos for verification. Auto-verify after upload. Recommended: Max 2MB per photo, JPG/PNG format. Backend validates and marks as verified immediately.'
+  })
+  @ApiBody({ type: UploadKTPDto })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'KTP photos uploaded and verified successfully',
+    schema: {
+      example: {
+        success: true,
+        data: {
+          message: 'KTP photos uploaded and verified successfully',
+          identityDocument: {
+            type: 'ktp',
+            photoFront: {
+              url: 'https://storage.example.com/ktp/user123_front.jpg',
+              uploadedAt: '2024-01-01T00:00:00.000Z',
+              fileSize: 2048576,
+              mimeType: 'image/jpeg'
+            },
+            photoBack: {
+              url: 'https://storage.example.com/ktp/user123_back.jpg',
+              uploadedAt: '2024-01-01T00:00:00.000Z',
+              fileSize: 1948576,
+              mimeType: 'image/jpeg'
+            },
+            isVerified: true,
+            verifiedAt: '2024-01-01T00:00:00.000Z'
+          },
+          verificationLevel: 'intermediate',
+          profileCompletion: 85
+        }
+      }
+    }
+  })
+  @ApiResponse({ 
+    status: 400, 
+    description: 'Invalid photo URL or missing required fields' 
+  })
+  uploadKTP(
+    @CurrentUser('sub') userId: string,
+    @Body() uploadKTPDto: UploadKTPDto,
+  ) {
+    return this.userService.uploadKTPPhotos(userId, uploadKTPDto);
+  }
+
+  @Post('selfie')
+  @ApiOperation({ 
+    summary: 'Upload selfie photo for verification',
+    description: 'Upload selfie photo for identity verification. Auto-verify after upload. Recommended: Max 1MB, JPG/PNG format, clear face photo. Marks selfie as verified immediately.'
+  })
+  @ApiBody({ type: UploadSelfieDto })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Selfie uploaded and verified successfully',
+    schema: {
+      example: {
+        success: true,
+        data: {
+          message: 'Selfie uploaded and verified successfully',
+          selfieVerification: {
+            photoUrl: 'https://storage.example.com/selfies/user123.jpg',
+            uploadedAt: '2024-01-01T00:00:00.000Z',
+            isVerified: true,
+            verifiedAt: '2024-01-01T00:00:00.000Z',
+            fileSize: 1024000,
+            mimeType: 'image/jpeg'
+          },
+          verificationLevel: 'advanced',
+          profileCompletion: 95
+        }
+      }
+    }
+  })
+  @ApiResponse({ 
+    status: 400, 
+    description: 'Invalid selfie URL or file size too large' 
+  })
+  uploadSelfie(
+    @CurrentUser('sub') userId: string,
+    @Body() uploadSelfieDto: UploadSelfieDto,
+  ) {
+    return this.userService.uploadSelfie(userId, uploadSelfieDto);
   }
 
   // ============================================
-  // VERIFICATION
+  // VERIFICATION STATUS
   // ============================================
+
+  @Get('verification-status')
+  @ApiOperation({ 
+    summary: 'Get complete verification status',
+    description: 'Get detailed verification status including all uploaded photos, verification level, and next steps to complete profile'
+  })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Verification status retrieved successfully',
+    schema: {
+      example: {
+        success: true,
+        data: {
+          verificationLevel: 'advanced',
+          profileCompletion: 95,
+          verification: {
+            emailVerified: true,
+            phoneVerified: true,
+            identityVerified: true,
+            selfieVerified: true,
+            bankVerified: true
+          },
+          uploadedPhotos: {
+            avatar: {
+              url: 'https://storage.example.com/avatars/user123.jpg',
+              uploadedAt: '2024-01-01T00:00:00.000Z'
+            },
+            ktpFront: {
+              url: 'https://storage.example.com/ktp/user123_front.jpg',
+              uploadedAt: '2024-01-01T00:00:00.000Z'
+            },
+            ktpBack: {
+              url: 'https://storage.example.com/ktp/user123_back.jpg',
+              uploadedAt: '2024-01-01T00:00:00.000Z'
+            },
+            selfie: {
+              url: 'https://storage.example.com/selfies/user123.jpg',
+              uploadedAt: '2024-01-01T00:00:00.000Z'
+            }
+          },
+          nextSteps: [
+            'All verification steps completed! 🎉',
+            'You can now access all features'
+          ]
+        }
+      }
+    }
+  })
+  getVerificationStatus(@CurrentUser('sub') userId: string) {
+    return this.userService.getVerificationStatus(userId);
+  }
+
+  // ============================================
+  // SECURITY MANAGEMENT
+  // ============================================
+
+  @Post('change-password')
+  @ApiOperation({ 
+    summary: 'Change user password',
+    description: 'Change current password to new password with validation. Requires current password for security.'
+  })
+  @ApiBody({ type: ChangePasswordDto })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Password changed successfully',
+    schema: {
+      example: {
+        success: true,
+        data: {
+          message: 'Password changed successfully'
+        }
+      }
+    }
+  })
+  @ApiResponse({ 
+    status: 400, 
+    description: 'Invalid current password or passwords do not match' 
+  })
+  changePassword(
+    @CurrentUser('sub') userId: string,
+    @Body() changePasswordDto: ChangePasswordDto,
+  ) {
+    return this.userService.changePassword(userId, changePasswordDto);
+  }
 
   @Post('verify-phone')
   @ApiOperation({ 
     summary: 'Verify phone number',
-    description: 'Verify user phone number with verification code'
+    description: 'Verify user phone number with verification code sent via SMS'
   })
   @ApiBody({ type: VerifyPhoneDto })
   @ApiResponse({ 
     status: 200, 
-    description: 'Phone number verified successfully' 
+    description: 'Phone number verified successfully',
+    schema: {
+      example: {
+        success: true,
+        data: {
+          message: 'Phone number verified successfully',
+          phoneNumber: '+6281234567890'
+        }
+      }
+    }
   })
   @ApiResponse({ 
     status: 400, 
@@ -251,7 +420,7 @@ export class UserController {
     @CurrentUser('sub') userId: string,
     @Body() verifyPhoneDto: VerifyPhoneDto,
   ) {
-    return this.userService.verifyPhone(userId, verifyPhoneDto)
+    return this.userService.verifyPhone(userId, verifyPhoneDto);
   }
 
   // ============================================
@@ -278,7 +447,7 @@ export class UserController {
     }
   })
   completeTutorial(@CurrentUser('sub') userId: string) {
-    return this.userService.completeTutorial(userId)
+    return this.userService.completeTutorial(userId);
   }
 
   @Post('reset-tutorial')
@@ -301,7 +470,7 @@ export class UserController {
     }
   })
   resetTutorial(@CurrentUser('sub') userId: string) {
-    return this.userService.resetTutorial(userId)
+    return this.userService.resetTutorial(userId);
   }
 
   // ============================================
@@ -311,7 +480,7 @@ export class UserController {
   @Get('affiliate')
   @ApiOperation({ 
     summary: 'Get detailed affiliate statistics',
-    description: 'Get complete affiliate information with referral details'
+    description: 'Get complete affiliate information with referral details, commission breakdown, and earning tips'
   })
   @ApiResponse({ 
     status: 200, 
@@ -349,16 +518,7 @@ export class UserController {
               'Share your referral code with friends',
               'Friend registers using your code',
               'Friend makes their first deposit',
-              'You receive commission based on their status:',
-              '  • Standard: Rp 25,000',
-              '  • Gold: Rp 100,000',
-              '  • VIP: Rp 400,000',
-            ],
-            tips: [
-              'No limit on referrals',
-              'Higher commission for higher status friends',
-              'Commission paid immediately after first deposit',
-              'Track all referrals in real-time',
+              'You receive commission based on their status'
             ]
           }
         }
@@ -366,7 +526,7 @@ export class UserController {
     }
   })
   getAffiliateStats(@CurrentUser('sub') userId: string) {
-    return this.userService.getDetailedAffiliateStats(userId)
+    return this.userService.getDetailedAffiliateStats(userId);
   }
 
   // ============================================
@@ -375,30 +535,70 @@ export class UserController {
 
   @Get('preferences')
   @ApiOperation({ 
-    summary: 'Get user preferences',
-    description: 'Get user settings and preferences'
+    summary: 'Get user preferences and settings',
+    description: 'Get user notification preferences, display settings, and trading alerts configuration'
   })
   @ApiResponse({ 
     status: 200, 
-    description: 'Preferences retrieved successfully'
+    description: 'Preferences retrieved successfully',
+    schema: {
+      example: {
+        success: true,
+        data: {
+          preferences: {
+            emailNotifications: true,
+            smsNotifications: true,
+            tradingAlerts: true,
+            twoFactorEnabled: false,
+            language: 'id',
+            timezone: 'Asia/Jakarta'
+          },
+          notifications: {
+            email: true,
+            sms: true,
+            trading: true
+          },
+          display: {
+            language: 'id',
+            timezone: 'Asia/Jakarta'
+          }
+        }
+      }
+    }
   })
   getPreferences(@CurrentUser('sub') userId: string) {
-    return this.userService.getUserPreferences(userId)
+    return this.userService.getUserPreferences(userId);
   }
 
   @Put('preferences')
   @ApiOperation({ 
     summary: 'Update user preferences',
-    description: 'Update user settings and preferences'
+    description: 'Update user settings and preferences including notifications and display options'
   })
   @ApiResponse({ 
     status: 200, 
-    description: 'Preferences updated successfully'
+    description: 'Preferences updated successfully',
+    schema: {
+      example: {
+        success: true,
+        data: {
+          message: 'Preferences updated successfully',
+          preferences: {
+            emailNotifications: true,
+            smsNotifications: false,
+            tradingAlerts: true,
+            twoFactorEnabled: false,
+            language: 'en',
+            timezone: 'Asia/Jakarta'
+          }
+        }
+      }
+    }
   })
   updatePreferences(
     @CurrentUser('sub') userId: string,
     @Body() preferences: any,
   ) {
-    return this.userService.updateUserPreferences(userId, preferences)
+    return this.userService.updateUserPreferences(userId, preferences);
   }
 }

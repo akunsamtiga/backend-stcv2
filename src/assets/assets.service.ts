@@ -1,4 +1,5 @@
 // src/assets/assets.service.ts
+
 import { Injectable, NotFoundException, ConflictException, Logger, RequestTimeoutException, BadRequestException } from '@nestjs/common';
 import { FirebaseService } from '../firebase/firebase.service';
 import { PriceFetcherService } from './services/price-fetcher.service';
@@ -6,6 +7,7 @@ import { BinanceService } from './services/binance.service';
 import { CreateAssetDto } from './dto/create-asset.dto';
 import { UpdateAssetDto } from './dto/update-asset.dto';
 import { COLLECTIONS, ALL_DURATIONS, ASSET_CATEGORY, ASSET_DATA_SOURCE } from '../common/constants';
+import { CalculationUtil, TimezoneUtil } from '../common/utils';
 import { Asset } from '../common/interfaces';
 
 @Injectable()
@@ -90,6 +92,7 @@ export class AssetsService {
     try {
       this.logger.log('🔧 Starting asset creation...');
       this.logger.log(`Category: ${createAssetDto.category}`);
+      this.logger.log(`Type: ${createAssetDto.type}`);
       this.logger.log(`DataSource: ${createAssetDto.dataSource}`);
       
       const db = this.firebaseService.getFirestore();
@@ -103,41 +106,59 @@ export class AssetsService {
         throw new ConflictException(`Asset with symbol ${createAssetDto.symbol} already exists`);
       }
 
-      // Di dalam createAsset method, sebelum save ke Firestore:
+      if (createAssetDto.icon) {
+        const isBase64 = createAssetDto.icon.startsWith('data:image/');
+        const isURL = createAssetDto.icon.startsWith('http://') || 
+                      createAssetDto.icon.startsWith('https://');
+        
+        if (!isBase64 && !isURL) {
+          throw new BadRequestException(
+            'Icon must be a valid URL or base64 encoded image'
+          );
+        }
+        
+        if (isBase64 && createAssetDto.icon.length > 2800000) {
+          throw new BadRequestException(
+            'Icon file too large. Maximum size is 2MB'
+          );
+        }
+        
+        if (isBase64) {
+          const validFormats = ['data:image/png', 'data:image/jpeg', 'data:image/jpg', 'data:image/svg+xml'];
+          const hasValidFormat = validFormats.some(format => 
+            createAssetDto.icon!.startsWith(format)
+          );
+          
+          if (!hasValidFormat) {
+            throw new BadRequestException(
+              'Icon must be PNG, JPEG, JPG, or SVG format'
+            );
+          }
+        }
+      }
 
-// ✅ Validate icon if provided
-if (createAssetDto.icon) {
-  const isBase64 = createAssetDto.icon.startsWith('data:image/');
-  const isURL = createAssetDto.icon.startsWith('http://') || 
-                createAssetDto.icon.startsWith('https://');
-  
-  if (!isBase64 && !isURL) {
-    throw new BadRequestException(
-      'Icon must be a valid URL or base64 encoded image'
-    );
-  }
-  
-  // Check base64 size (max 2MB ≈ 2.7MB in base64)
-  if (isBase64 && createAssetDto.icon.length > 2800000) {
-    throw new BadRequestException(
-      'Icon file too large. Maximum size is 2MB'
-    );
-  }
-  
-  // Validate base64 format
-  if (isBase64) {
-    const validFormats = ['data:image/png', 'data:image/jpeg', 'data:image/jpg', 'data:image/svg+xml'];
-    const hasValidFormat = validFormats.some(format => 
-      createAssetDto.icon!.startsWith(format)
-    );
-    
-    if (!hasValidFormat) {
-      throw new BadRequestException(
-        'Icon must be PNG, JPEG, JPG, or SVG format'
-      );
-    }
-  }
-}
+      if (!createAssetDto.type) {
+        throw new BadRequestException('Asset type is required');
+      }
+
+      const validTypes = ['forex', 'stock', 'commodity', 'crypto', 'index'];
+      if (!validTypes.includes(createAssetDto.type)) {
+        throw new BadRequestException(
+          `Invalid asset type: ${createAssetDto.type}. Must be one of: ${validTypes.join(', ')}`
+        );
+      }
+
+      if (createAssetDto.type === 'crypto' && createAssetDto.category !== ASSET_CATEGORY.CRYPTO) {
+        throw new BadRequestException(
+          'Asset type "crypto" must have category "crypto"'
+        );
+      }
+
+      if (createAssetDto.type !== 'crypto' && createAssetDto.category === ASSET_CATEGORY.CRYPTO) {
+        throw new BadRequestException(
+          `Category "crypto" requires type "crypto", but got type "${createAssetDto.type}"`
+        );
+      }
 
       if (!createAssetDto.category) {
         throw new BadRequestException('Category is required (normal or crypto)');
@@ -182,7 +203,8 @@ if (createAssetDto.icon) {
           id: assetId,
           name: createAssetDto.name,
           symbol: createAssetDto.symbol,
-        icon: createAssetDto.icon || this.getDefaultCryptoIcon(plainCryptoConfig.baseCurrency), 
+          icon: createAssetDto.icon || this.getDefaultCryptoIcon(plainCryptoConfig.baseCurrency),
+          type: createAssetDto.type,
           category: 'crypto',
           profitRate: createAssetDto.profitRate,
           isActive: createAssetDto.isActive,
@@ -233,7 +255,8 @@ if (createAssetDto.icon) {
           id: assetId,
           name: createAssetDto.name,
           symbol: createAssetDto.symbol,
-        icon: createAssetDto.icon || this.getDefaultNormalIcon(), 
+          icon: createAssetDto.icon || this.getDefaultNormalIcon(createAssetDto.type),
+          type: createAssetDto.type,
           category: 'normal',
           profitRate: createAssetDto.profitRate,
           isActive: createAssetDto.isActive,
@@ -263,10 +286,11 @@ if (createAssetDto.icon) {
 
       this.logger.log('');
       this.logger.log('🎉 ================================================');
-      this.logger.log(`🎉 NEW ${createAssetDto.category.toUpperCase()} ASSET: ${createAssetDto.symbol}`);
+      this.logger.log(`🎉 NEW ${createAssetDto.type.toUpperCase()} ASSET: ${createAssetDto.symbol}`);
       this.logger.log('🎉 ================================================');
       this.logger.log(`   Name: ${createAssetDto.name}`);
-    this.logger.log(`   Icon: ${plainAssetData.icon}`);
+      this.logger.log(`   Icon: ${plainAssetData.icon}`);
+      this.logger.log(`   Type: ${createAssetDto.type.toUpperCase()}`);
       this.logger.log(`   Category: ${createAssetDto.category.toUpperCase()}`);
       this.logger.log(`   Data Source: ${createAssetDto.dataSource}`);
       
@@ -294,7 +318,7 @@ if (createAssetDto.icon) {
       this.logger.log('');
 
       return {
-        message: `${createAssetDto.category} asset created successfully`,
+        message: `${createAssetDto.type} ${createAssetDto.category} asset created successfully`,
         asset: plainAssetData,
         storageInfo: createAssetDto.category === 'crypto' 
           ? {
@@ -304,7 +328,7 @@ if (createAssetDto.icon) {
               realtimeDbPath: plainAssetData.realtimeDbPath,
               updateFrequency: 'Every price fetch (cached 60s)',
               simulatorUsed: false,
-            icon: plainAssetData.icon,
+              icon: plainAssetData.icon,
               apiInfo: 'Binance FREE - No API key needed',
             }
           : {
@@ -313,7 +337,7 @@ if (createAssetDto.icon) {
               priceFlow: 'Simulator → Realtime Database',
               realtimeDbPath: plainAssetData.realtimeDbPath,
               updateFrequency: '1 second',
-            icon: plainAssetData.icon,
+              icon: plainAssetData.icon,
               simulatorUsed: true,
             },
       };
@@ -334,30 +358,36 @@ if (createAssetDto.icon) {
   }
 
   private getDefaultCryptoIcon(baseCurrency: string): string {
-  // Menggunakan CryptoCompare API untuk icon gratis
-  const currency = baseCurrency.toUpperCase();
-  return `https://www.cryptocompare.com/media/37746251/btc.png`; // Default BTC
-  
-  // Atau gunakan mapping manual:
-  const iconMap: Record<string, string> = {
-    'BTC': 'https://cryptologos.cc/logos/bitcoin-btc-logo.png',
-    'ETH': 'https://cryptologos.cc/logos/ethereum-eth-logo.png',
-    'BNB': 'https://cryptologos.cc/logos/bnb-bnb-logo.png',
-    'XRP': 'https://cryptologos.cc/logos/xrp-xrp-logo.png',
-    'ADA': 'https://cryptologos.cc/logos/cardano-ada-logo.png',
-    'SOL': 'https://cryptologos.cc/logos/solana-sol-logo.png',
-    'DOT': 'https://cryptologos.cc/logos/polkadot-new-dot-logo.png',
-    'DOGE': 'https://cryptologos.cc/logos/dogecoin-doge-logo.png',
-    'MATIC': 'https://cryptologos.cc/logos/polygon-matic-logo.png',
-    'LTC': 'https://cryptologos.cc/logos/litecoin-ltc-logo.png',
-  };
-  
-  return iconMap[currency] || `https://via.placeholder.com/64?text=${currency}`;
-}
+    const currency = baseCurrency.toUpperCase();
+    
+    const iconMap: Record<string, string> = {
+      'BTC': 'https://cryptologos.cc/logos/bitcoin-btc-logo.png',
+      'ETH': 'https://cryptologos.cc/logos/ethereum-eth-logo.png',
+      'BNB': 'https://cryptologos.cc/logos/bnb-bnb-logo.png',
+      'XRP': 'https://cryptologos.cc/logos/xrp-xrp-logo.png',
+      'ADA': 'https://cryptologos.cc/logos/cardano-ada-logo.png',
+      'SOL': 'https://cryptologos.cc/logos/solana-sol-logo.png',
+      'DOT': 'https://cryptologos.cc/logos/polkadot-new-dot-logo.png',
+      'DOGE': 'https://cryptologos.cc/logos/dogecoin-doge-logo.png',
+      'MATIC': 'https://cryptologos.cc/logos/polygon-matic-logo.png',
+      'LTC': 'https://cryptologos.cc/logos/litecoin-ltc-logo.png',
+    };
+    
+    return iconMap[currency] || `https://via.placeholder.com/64?text=${currency}`;
+  }
 
-private getDefaultNormalIcon(): string {
-  return 'https://via.placeholder.com/64?text=Asset';
-}
+  private getDefaultNormalIcon(type?: string): string {
+    const iconMap: Record<string, string> = {
+      'forex': 'https://via.placeholder.com/64?text=FX',
+      'stock': 'https://via.placeholder.com/64?text=STOCK',
+      'commodity': 'https://via.placeholder.com/64?text=COMMODITY',
+      'index': 'https://via.placeholder.com/64?text=INDEX',
+    };
+    
+    return type && iconMap[type] 
+      ? iconMap[type] 
+      : 'https://via.placeholder.com/64?text=Asset';
+  }
 
   private async validateCryptoAsset(dto: CreateAssetDto): Promise<void> {
     this.logger.log('🔍 Validating crypto asset configuration...');
@@ -465,6 +495,7 @@ private getDefaultNormalIcon(): string {
         id: 'test',
         name: dto.name,
         symbol: dto.symbol,
+        type: dto.type as any,
         category: 'crypto',
         profitRate: dto.profitRate,
         isActive: true,
@@ -659,6 +690,27 @@ private getDefaultNormalIcon(): string {
 
     const currentAsset = assetDoc.data() as Asset;
 
+    if (updateAssetDto.type) {
+      const validTypes = ['forex', 'stock', 'commodity', 'crypto', 'index'];
+      if (!validTypes.includes(updateAssetDto.type)) {
+        throw new BadRequestException(
+          `Invalid asset type: ${updateAssetDto.type}. Must be one of: ${validTypes.join(', ')}`
+        );
+      }
+
+      if (updateAssetDto.type === 'crypto' && currentAsset.category !== ASSET_CATEGORY.CRYPTO) {
+        throw new BadRequestException(
+          'Cannot change type to "crypto" for non-crypto category assets'
+        );
+      }
+
+      if (updateAssetDto.type !== 'crypto' && currentAsset.category === ASSET_CATEGORY.CRYPTO) {
+        throw new BadRequestException(
+          'Cannot change crypto asset type to non-crypto type'
+        );
+      }
+    }
+
     const plainUpdateData = this.toPlainObject({
       ...updateAssetDto,
       updatedAt: new Date().toISOString(),
@@ -676,27 +728,27 @@ private getDefaultNormalIcon(): string {
   }
 
   async updateAssetIcon(assetId: string, iconUrl: string) {
-  const db = this.firebaseService.getFirestore();
+    const db = this.firebaseService.getFirestore();
 
-  const assetDoc = await db.collection(COLLECTIONS.ASSETS).doc(assetId).get();
-  if (!assetDoc.exists) {
-    throw new NotFoundException('Asset not found');
+    const assetDoc = await db.collection(COLLECTIONS.ASSETS).doc(assetId).get();
+    if (!assetDoc.exists) {
+      throw new NotFoundException('Asset not found');
+    }
+
+    await db.collection(COLLECTIONS.ASSETS).doc(assetId).update({
+      icon: iconUrl,
+      updatedAt: new Date().toISOString(),
+    });
+
+    this.invalidateCache();
+
+    this.logger.log(`✅ Icon updated for asset ${assetId}`);
+
+    return {
+      message: 'Asset icon updated successfully',
+      icon: iconUrl,
+    };
   }
-
-  await db.collection(COLLECTIONS.ASSETS).doc(assetId).update({
-    icon: iconUrl,
-    updatedAt: new Date().toISOString(),
-  });
-
-  this.invalidateCache();
-
-  this.logger.log(`✅ Icon updated for asset ${assetId}`);
-
-  return {
-    message: 'Asset icon updated successfully',
-    icon: iconUrl,
-  };
-}
 
   async deleteAsset(assetId: string) {
     const db = this.firebaseService.getFirestore();
@@ -715,6 +767,7 @@ private getDefaultNormalIcon(): string {
     this.logger.log('🗑️ DELETING ASSET WITH REALTIME DB CLEANUP');
     this.logger.log('🗑️ ================================================');
     this.logger.log(`   Asset: ${asset.symbol} (${assetId})`);
+    this.logger.log(`   Type: ${asset.type}`);
     this.logger.log(`   Category: ${asset.category}`);
     this.logger.log(`   RT DB Path: ${assetPath}`);
     this.logger.log('🗑️ ================================================');
@@ -748,6 +801,7 @@ private getDefaultNormalIcon(): string {
       message: 'Asset deleted successfully',
       details: {
         symbol: asset.symbol,
+        type: asset.type,
         realtimeDbCleaned: realtimeDeleteSuccess,
         firestoreDeleted: true,
       },
@@ -767,10 +821,10 @@ private getDefaultNormalIcon(): string {
     return `/${asset.symbol.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
   }
 
-  async getAllAssets(activeOnly: boolean = false) {
+  async getAllAssets(activeOnly: boolean = false, type?: string) {
     const startTime = Date.now();
     
-    if (this.allAssetsCache && !activeOnly) {
+    if (this.allAssetsCache && !activeOnly && !type) {
       const age = Date.now() - this.allAssetsCache.timestamp;
       
       if (age < this.ALL_ASSETS_CACHE_TTL) {
@@ -791,6 +845,16 @@ private getDefaultNormalIcon(): string {
       query = query.where('isActive', '==', true) as any;
     }
 
+    if (type) {
+      const validTypes = ['forex', 'stock', 'commodity', 'crypto', 'index'];
+      if (!validTypes.includes(type)) {
+        throw new BadRequestException(
+          `Invalid type filter: ${type}. Must be one of: ${validTypes.join(', ')}`
+        );
+      }
+      query = query.where('type', '==', type) as any;
+    }
+
     const snapshot = await query.get();
     const assets = snapshot.docs.map(doc => {
       const data = doc.data() as Asset;
@@ -808,7 +872,7 @@ private getDefaultNormalIcon(): string {
       return data;
     });
 
-    if (!activeOnly) {
+    if (!activeOnly && !type) {
       this.allAssetsCache = {
         assets,
         timestamp: Date.now(),
@@ -824,20 +888,26 @@ private getDefaultNormalIcon(): string {
 
     const duration = Date.now() - startTime;
     
-    const normalAssets = assets.filter(a => a.category === ASSET_CATEGORY.NORMAL);
-    const cryptoAssets = assets.filter(a => a.category === ASSET_CATEGORY.CRYPTO);
+    const byType = assets.reduce((acc, asset) => {
+      if (!acc[asset.type]) {
+        acc[asset.type] = 0;
+      }
+      acc[asset.type]++;
+      return acc;
+    }, {} as Record<string, number>);
     
     this.logger.debug(
       `⚡ Fetched ${assets.length} assets in ${duration}ms ` +
-      `(Normal: ${normalAssets.length}, Crypto: ${cryptoAssets.length})`
+      `(${Object.entries(byType).map(([t, c]) => `${t}: ${c}`).join(', ')})`
     );
 
     return {
       assets,
       total: assets.length,
-      byCategory: {
-        normal: normalAssets.length,
-        crypto: cryptoAssets.length,
+      byType,
+      filters: {
+        activeOnly,
+        type: type || 'all',
       },
     };
   }
@@ -910,6 +980,7 @@ private getDefaultNormalIcon(): string {
           id: asset.id,
           name: asset.name,
           symbol: asset.symbol,
+          type: asset.type,
           category: asset.category,
         },
         price: priceData.price,
@@ -1022,15 +1093,17 @@ private getDefaultNormalIcon(): string {
   }
 
   getPerformanceStats() {
-    const normalAssets = Array.from(this.assetCache.values())
-      .filter(c => c.asset.category === ASSET_CATEGORY.NORMAL);
-    const cryptoAssets = Array.from(this.assetCache.values())
-      .filter(c => c.asset.category === ASSET_CATEGORY.CRYPTO);
+    const assetsByType = Array.from(this.assetCache.values()).reduce((acc, c) => {
+      if (!acc[c.asset.type]) {
+        acc[c.asset.type] = 0;
+      }
+      acc[c.asset.type]++;
+      return acc;
+    }, {} as Record<string, number>);
 
     return {
       cachedAssets: this.assetCache.size,
-      normalAssets: normalAssets.length,
-      cryptoAssets: cryptoAssets.length,
+      assetsByType,
       allAssetsCached: !!this.allAssetsCache,
       priceStats: this.priceFetcherService.getPerformanceStats(),
       cryptoApi: 'Binance FREE',

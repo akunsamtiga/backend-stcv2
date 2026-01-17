@@ -1,5 +1,4 @@
 // src/balance/balance.service.ts
-
 import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import { FirebaseService } from '../firebase/firebase.service';
 import { CreateBalanceDto } from './dto/create-balance.dto';
@@ -42,6 +41,220 @@ export class BalanceService {
     this.userStatusService = service;
   }
 
+  // ✅ FIX #1: Enhanced cache invalidation with user status
+  private invalidateCache(userId: string, accountType: 'real' | 'demo'): void {
+    if (accountType === BALANCE_ACCOUNT_TYPE.REAL) {
+      this.realBalanceCache.delete(userId);
+    } else {
+      this.demoBalanceCache.delete(userId);
+    }
+  }
+
+  // ✅ NEW: Clear all user-related caches
+  private invalidateAllUserCaches(userId: string): void {
+    this.realBalanceCache.delete(userId);
+    this.demoBalanceCache.delete(userId);
+    
+    // Clear user status cache
+    if (this.userStatusService) {
+      this.userStatusService.clearUserCache(userId);
+    }
+    
+    this.logger.debug(`🗑️ Cleared all caches for user ${userId}`);
+  }
+
+  async createBalanceEntry(
+    userId: string, 
+    createBalanceDto: CreateBalanceDto, 
+    critical = true
+  ) {
+    const startTime = Date.now();
+    const { accountType, amount, type } = createBalanceDto;
+    const lockKey = `${userId}_${accountType}`;
+    
+    try {
+      if (accountType !== BALANCE_ACCOUNT_TYPE.REAL && accountType !== BALANCE_ACCOUNT_TYPE.DEMO) {
+        throw new BadRequestException('Invalid account type. Must be "real" or "demo"');
+      }
+
+      await this.acquireTransactionLock(userId, accountType);
+      
+      const operationPromise = (async () => {
+        try {
+          await this.autoMigrateIfNeeded(userId);
+
+          const db = this.firebaseService.getFirestore();
+          
+          let affiliateInfo: {
+            hasPending: boolean;
+            affiliateId?: string;
+            referrerId?: string;
+            currentTotalDeposit: number;
+            futureStatus: string;
+            commissionAmount: number;
+            isFirstDeposit: boolean;
+          } = {
+            hasPending: false,
+            affiliateId: undefined,
+            referrerId: undefined,
+            currentTotalDeposit: 0,
+            futureStatus: USER_STATUS.STANDARD,
+            commissionAmount: 0,
+            isFirstDeposit: false,
+          };
+          
+          if (accountType === BALANCE_ACCOUNT_TYPE.REAL && type === BALANCE_TYPES.DEPOSIT) {
+            affiliateInfo = await this.hasPendingAffiliateAndCalculateCommission(userId, amount);
+            
+            if (affiliateInfo.hasPending) {
+              this.logger.log(`🎯 REAL DEPOSIT + PENDING AFFILIATE detected!`);
+              this.logger.log(`   Current deposits: Rp ${affiliateInfo.currentTotalDeposit.toLocaleString()}`);
+              this.logger.log(`   This deposit: Rp ${amount.toLocaleString()}`);
+              this.logger.log(`   Total after: Rp ${(affiliateInfo.currentTotalDeposit + amount).toLocaleString()}`);
+              this.logger.log(`   Future status: ${affiliateInfo.futureStatus.toUpperCase()}`);
+              this.logger.log(`   Commission: Rp ${affiliateInfo.commissionAmount.toLocaleString()}`);
+              this.logger.log(`   Is first deposit: ${affiliateInfo.isFirstDeposit ? 'YES ✅' : 'NO ⚠️'}`);
+              
+              if (!affiliateInfo.isFirstDeposit) {
+                this.logger.warn(`⚠️ WARNING: Affiliate is PENDING but deposits already exist!`);
+                this.logger.warn(`   This might indicate a data inconsistency`);
+              }
+            } else {
+              this.logger.log(`ℹ️ No pending affiliate or already completed`);
+            }
+          }
+          
+          // ✅ FIX: Withdrawal validation INSIDE transaction
+          if (type === BALANCE_TYPES.WITHDRAWAL) {
+            await db.runTransaction(async (transaction) => {
+              const balanceSnapshot = await transaction.get(
+                db.collection(COLLECTIONS.BALANCE)
+                  .where('user_id', '==', userId)
+                  .where('accountType', '==', accountType)
+              );
+
+              const transactions = balanceSnapshot.docs.map(doc => doc.data() as Balance);
+              const currentBalance = CalculationUtil.calculateBalance(transactions);
+
+              if (currentBalance < amount) {
+                throw new BadRequestException(
+                  `Insufficient ${accountType} balance. Available: ${currentBalance}, Required: ${amount}`
+                );
+              }
+
+              const balanceId = db.collection(COLLECTIONS.BALANCE).doc().id;
+              const balanceData = {
+                id: balanceId,
+                user_id: userId,
+                accountType,
+                type: BALANCE_TYPES.WITHDRAWAL,
+                amount,
+                description: createBalanceDto.description || '',
+                createdAt: new Date().toISOString(),
+              };
+
+              const balanceRef = db.collection(COLLECTIONS.BALANCE).doc(balanceId);
+              transaction.set(balanceRef, balanceData);
+            });
+
+            this.logger.log(`✅ Withdrawal completed: ${userId} - ${accountType} - ${amount}`);
+
+          } else {
+            const balanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
+            const balanceData = {
+              id: balanceId,
+              user_id: userId,
+              accountType,
+              type,
+              amount,
+              description: createBalanceDto.description || '',
+              createdAt: new Date().toISOString(),
+            };
+
+            await db.collection(COLLECTIONS.BALANCE).doc(balanceId).set(balanceData);
+
+            this.logger.log(`✅ Balance entry created: ${balanceId}`);
+
+            // ✅ FIX: Update user status and clear all caches for REAL deposits
+            if (accountType === BALANCE_ACCOUNT_TYPE.REAL && type === BALANCE_TYPES.DEPOSIT) {
+              if (this.userStatusService) {
+                try {
+                  const statusUpdate = await this.userStatusService.updateUserStatus(userId);
+                  
+                  if (statusUpdate.changed) {
+                    this.logger.log(
+                      `🎉 User status upgraded: ${statusUpdate.oldStatus.toUpperCase()} → ${statusUpdate.newStatus.toUpperCase()}`
+                    );
+                  }
+                } catch (error) {
+                  this.logger.warn(`⚠️ Status update failed: ${error.message}`);
+                }
+              }
+            }
+
+            if (affiliateInfo.hasPending && affiliateInfo.affiliateId && affiliateInfo.referrerId) {
+              await this.processAffiliate(
+                userId,
+                affiliateInfo.affiliateId,
+                affiliateInfo.referrerId,
+                affiliateInfo.futureStatus,
+                affiliateInfo.commissionAmount
+              );
+            }
+          }
+
+          // ✅ FIX: Clear ALL caches for the user
+          this.invalidateAllUserCaches(userId);
+
+          await new Promise(resolve => setTimeout(resolve, 100));
+
+          const currentBalance = await this.getCurrentBalance(userId, accountType, true);
+
+          const duration = Date.now() - startTime;
+          
+          this.logger.log(
+            `✅ Balance ${type} completed in ${duration}ms: ${userId} - ${accountType} - ${amount} (New: ${currentBalance})`
+          );
+
+          return {
+            message: `${accountType} balance ${type} recorded successfully`,
+            transaction: {
+              user_id: userId,
+              accountType,
+              type,
+              amount,
+            },
+            currentBalance,
+            accountType,
+            affiliateProcessed: affiliateInfo.hasPending,
+            affiliateCommission: affiliateInfo.hasPending ? affiliateInfo.commissionAmount : 0,
+            executionTime: duration,
+          };
+
+        } finally {
+          this.releaseTransactionLock(userId, accountType);
+        }
+      })();
+
+      this.setTransactionLock(userId, accountType, operationPromise);
+
+      return await operationPromise;
+
+    } catch (error) {
+      this.logger.error(`❌ createBalanceEntry error: ${error.message}`, error.stack);
+      
+      this.releaseTransactionLock(userId, accountType);
+      
+      throw error;
+    }
+  }
+
+  clearUserCache(userId: string): void {
+    this.invalidateAllUserCaches(userId);
+  }
+
+  // ... rest of the methods remain the same ...
+  
   private async acquireTransactionLock(userId: string, accountType: string): Promise<void> {
     const lockKey = `${userId}_${accountType}`;
     
@@ -185,7 +398,7 @@ export class BalanceService {
       };
 
     } catch (error) {
-      this.logger.error(`❌ hasPendingAffiliateAndCalculateCommission error: ${error.message}`);
+      this.logger.error(`❌ hasPendingAffiliateAndCalculateCommission error: ${error.message}`, error.stack);
       return {
         hasPending: false,
         currentTotalDeposit: 0,
@@ -263,7 +476,8 @@ export class BalanceService {
 
       this.logger.log(`✅ Commission balance entry created: ${commissionBalanceId}`);
 
-      this.realBalanceCache.delete(referrerId);
+      // ✅ FIX: Clear referrer's cache too
+      this.invalidateAllUserCaches(referrerId);
 
       this.logger.log(
         `🎉 AFFILIATE COMMISSION PAID SUCCESSFULLY!\n` +
@@ -274,8 +488,7 @@ export class BalanceService {
       );
 
     } catch (error) {
-      this.logger.error(`❌ Affiliate processing error: ${error.message}`);
-      this.logger.error(error.stack);
+      this.logger.error(`❌ Affiliate processing error: ${error.message}`, error.stack);
     }
   }
 
@@ -339,7 +552,7 @@ export class BalanceService {
       }
 
     } catch (error) {
-      this.logger.error(`❌ Auto-migration error for user ${userId}: ${error.message}`);
+      this.logger.error(`❌ Auto-migration error for user ${userId}: ${error.message}`, error.stack);
     }
   }
 
@@ -383,9 +596,7 @@ export class BalanceService {
       return balance;
 
     } catch (error) {
-      this.logger.error(`❌ getCurrentBalance error: ${error.message}`);
-      this.logger.error(error.stack);
-      
+      this.logger.error(`❌ getCurrentBalance error: ${error.message}`, error.stack);
       return 0;
     }
   }
@@ -424,8 +635,7 @@ export class BalanceService {
       };
 
     } catch (error) {
-      this.logger.error(`❌ getBothBalances error: ${error.message}`);
-      this.logger.error(error.stack);
+      this.logger.error(`❌ getBothBalances error: ${error.message}`, error.stack);
       
       return {
         realBalance: 0,
@@ -433,189 +643,6 @@ export class BalanceService {
         realTransactions: 0,
         demoTransactions: 1,
       };
-    }
-  }
-
-  async createBalanceEntry(
-    userId: string, 
-    createBalanceDto: CreateBalanceDto, 
-    critical = true
-  ) {
-    const startTime = Date.now();
-    const { accountType, amount, type } = createBalanceDto;
-    const lockKey = `${userId}_${accountType}`;
-    
-    try {
-      if (accountType !== BALANCE_ACCOUNT_TYPE.REAL && accountType !== BALANCE_ACCOUNT_TYPE.DEMO) {
-        throw new BadRequestException('Invalid account type. Must be "real" or "demo"');
-      }
-
-      await this.acquireTransactionLock(userId, accountType);
-      
-      const operationPromise = (async () => {
-        try {
-          await this.autoMigrateIfNeeded(userId);
-
-          const db = this.firebaseService.getFirestore();
-          
-          let affiliateInfo: {
-            hasPending: boolean;
-            affiliateId?: string;
-            referrerId?: string;
-            currentTotalDeposit: number;
-            futureStatus: string;
-            commissionAmount: number;
-            isFirstDeposit: boolean;
-          } = {
-            hasPending: false,
-            affiliateId: undefined,
-            referrerId: undefined,
-            currentTotalDeposit: 0,
-            futureStatus: USER_STATUS.STANDARD,
-            commissionAmount: 0,
-            isFirstDeposit: false,
-          };
-          
-          if (accountType === BALANCE_ACCOUNT_TYPE.REAL && type === BALANCE_TYPES.DEPOSIT) {
-            affiliateInfo = await this.hasPendingAffiliateAndCalculateCommission(userId, amount);
-            
-            if (affiliateInfo.hasPending) {
-              this.logger.log(`🎯 REAL DEPOSIT + PENDING AFFILIATE detected!`);
-              this.logger.log(`   Current deposits: Rp ${affiliateInfo.currentTotalDeposit.toLocaleString()}`);
-              this.logger.log(`   This deposit: Rp ${amount.toLocaleString()}`);
-              this.logger.log(`   Total after: Rp ${(affiliateInfo.currentTotalDeposit + amount).toLocaleString()}`);
-              this.logger.log(`   Future status: ${affiliateInfo.futureStatus.toUpperCase()}`);
-              this.logger.log(`   Commission: Rp ${affiliateInfo.commissionAmount.toLocaleString()}`);
-              this.logger.log(`   Is first deposit: ${affiliateInfo.isFirstDeposit ? 'YES ✅' : 'NO ⚠️'}`);
-              
-              if (!affiliateInfo.isFirstDeposit) {
-                this.logger.warn(`⚠️ WARNING: Affiliate is PENDING but deposits already exist!`);
-                this.logger.warn(`   This might indicate a data inconsistency`);
-              }
-            } else {
-              this.logger.log(`ℹ️ No pending affiliate or already completed`);
-            }
-          }
-          
-          if (type === BALANCE_TYPES.WITHDRAWAL) {
-            await db.runTransaction(async (transaction) => {
-              const balanceSnapshot = await transaction.get(
-                db.collection(COLLECTIONS.BALANCE)
-                  .where('user_id', '==', userId)
-                  .where('accountType', '==', accountType)
-              );
-
-              const transactions = balanceSnapshot.docs.map(doc => doc.data() as Balance);
-              const currentBalance = CalculationUtil.calculateBalance(transactions);
-
-              if (currentBalance < amount) {
-                throw new BadRequestException(
-                  `Insufficient ${accountType} balance. Available: ${currentBalance}, Required: ${amount}`
-                );
-              }
-
-              const balanceId = db.collection(COLLECTIONS.BALANCE).doc().id;
-              const balanceData = {
-                id: balanceId,
-                user_id: userId,
-                accountType,
-                type: BALANCE_TYPES.WITHDRAWAL,
-                amount,
-                description: createBalanceDto.description || '',
-                createdAt: new Date().toISOString(),
-              };
-
-              const balanceRef = db.collection(COLLECTIONS.BALANCE).doc(balanceId);
-              transaction.set(balanceRef, balanceData);
-            });
-
-            this.logger.log(`✅ Withdrawal completed: ${userId} - ${accountType} - ${amount}`);
-
-          } else {
-            const balanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
-            const balanceData = {
-              id: balanceId,
-              user_id: userId,
-              accountType,
-              type,
-              amount,
-              description: createBalanceDto.description || '',
-              createdAt: new Date().toISOString(),
-            };
-
-            await db.collection(COLLECTIONS.BALANCE).doc(balanceId).set(balanceData);
-
-            this.logger.log(`✅ Balance entry created: ${balanceId}`);
-
-            if (accountType === BALANCE_ACCOUNT_TYPE.REAL && type === BALANCE_TYPES.DEPOSIT) {
-              if (this.userStatusService) {
-                try {
-                  const statusUpdate = await this.userStatusService.updateUserStatus(userId);
-                  
-                  if (statusUpdate.changed) {
-                    this.logger.log(
-                      `🎉 User status upgraded: ${statusUpdate.oldStatus.toUpperCase()} → ${statusUpdate.newStatus.toUpperCase()}`
-                    );
-                  }
-                } catch (error) {
-                  this.logger.warn(`⚠️ Status update failed: ${error.message}`);
-                }
-              }
-            }
-
-            if (affiliateInfo.hasPending && affiliateInfo.affiliateId && affiliateInfo.referrerId) {
-              await this.processAffiliate(
-                userId,
-                affiliateInfo.affiliateId,
-                affiliateInfo.referrerId,
-                affiliateInfo.futureStatus,
-                affiliateInfo.commissionAmount
-              );
-            }
-          }
-
-          this.invalidateCache(userId, accountType);
-
-          await new Promise(resolve => setTimeout(resolve, 100));
-
-          const currentBalance = await this.getCurrentBalance(userId, accountType, true);
-
-          const duration = Date.now() - startTime;
-          
-          this.logger.log(
-            `✅ Balance ${type} completed in ${duration}ms: ${userId} - ${accountType} - ${amount} (New: ${currentBalance})`
-          );
-
-          return {
-            message: `${accountType} balance ${type} recorded successfully`,
-            transaction: {
-              user_id: userId,
-              accountType,
-              type,
-              amount,
-            },
-            currentBalance,
-            accountType,
-            affiliateProcessed: affiliateInfo.hasPending,
-            affiliateCommission: affiliateInfo.hasPending ? affiliateInfo.commissionAmount : 0,
-            executionTime: duration,
-          };
-
-        } finally {
-          this.releaseTransactionLock(userId, accountType);
-        }
-      })();
-
-      this.setTransactionLock(userId, accountType, operationPromise);
-
-      return await operationPromise;
-
-    } catch (error) {
-      this.logger.error(`❌ createBalanceEntry error: ${error.message}`);
-      
-      this.releaseTransactionLock(userId, accountType);
-      
-      throw error;
     }
   }
 
@@ -677,7 +704,7 @@ export class BalanceService {
         };
 
       } catch (queryError) {
-        this.logger.error(`❌ Balance history query error: ${queryError.message}`);
+        this.logger.error(`❌ Balance history query error: ${queryError.message}`, queryError.stack);
         
         const summary = await this.getBothBalances(userId);
         
@@ -699,8 +726,7 @@ export class BalanceService {
       }
 
     } catch (error) {
-      this.logger.error(`❌ getBalanceHistory error: ${error.message}`);
-      this.logger.error(error.stack);
+      this.logger.error(`❌ getBalanceHistory error: ${error.message}`, error.stack);
       
       return {
         currentBalances: {
@@ -782,7 +808,7 @@ export class BalanceService {
       };
 
     } catch (error) {
-      this.logger.error(`❌ getBalanceSummary error: ${error.message}`);
+      this.logger.error(`❌ getBalanceSummary error: ${error.message}`, error.stack);
       
       return {
         real: {
@@ -808,19 +834,6 @@ export class BalanceService {
         },
       };
     }
-  }
-
-  private invalidateCache(userId: string, accountType: 'real' | 'demo'): void {
-    if (accountType === BALANCE_ACCOUNT_TYPE.REAL) {
-      this.realBalanceCache.delete(userId);
-    } else {
-      this.demoBalanceCache.delete(userId);
-    }
-  }
-
-  clearUserCache(userId: string): void {
-    this.realBalanceCache.delete(userId);
-    this.demoBalanceCache.delete(userId);
   }
 
   private cleanupCache(): void {
@@ -849,7 +862,7 @@ export class BalanceService {
   }
 
   async forceRefreshBalance(userId: string, accountType: 'real' | 'demo'): Promise<number> {
-    this.invalidateCache(userId, accountType);
+    this.invalidateAllUserCaches(userId);
     return this.getCurrentBalance(userId, accountType, true);
   }
 

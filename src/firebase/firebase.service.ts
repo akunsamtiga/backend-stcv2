@@ -212,31 +212,76 @@ export class FirebaseService implements OnModuleInit {
   }
 
   private getNextConnection(): AxiosInstance {
-    if (this.restConnectionPool.length === 0) {
-      throw new Error('No REST connections available');
+  if (this.restConnectionPool.length === 0) {
+    throw new Error('No REST connections available');
+  }
+  
+  let bestIndex = this.currentPoolIndex;
+  let bestScore = -Infinity;
+  let hasHealthyConnection = false;
+  
+  // Find the healthiest connection
+  for (let i = 0; i < this.restConnectionPool.length; i++) {
+    const health = this.connectionHealth.restConnections.get(i);
+    if (!health) continue;
+    
+    const age = Date.now() - health.lastSuccess;
+    const failureScore = health.failures * 1000;
+    const score = 10000 - age - failureScore;
+    
+    if (score > bestScore) {
+      bestIndex = i;
+      bestScore = score;
     }
     
-    let bestIndex = this.currentPoolIndex;
-    let bestScore = -Infinity;
+    // Check if this connection is "healthy" (recent success, low failures)
+    if (age < 30000 && health.failures < 3) {
+      hasHealthyConnection = true;
+    }
+  }
+  
+  // ✅ FIX #3: Handle all connections unhealthy
+  if (!hasHealthyConnection) {
+    this.logger.error('❌ All connections unhealthy!');
+    this.logger.error(`   Best score: ${bestScore}`);
+    this.logger.error(`   Best index: ${bestIndex}`);
     
+    // Log all connection health
     for (let i = 0; i < this.restConnectionPool.length; i++) {
       const health = this.connectionHealth.restConnections.get(i);
-      if (!health) continue;
-      
-      const age = Date.now() - health.lastSuccess;
-      const failureScore = health.failures * 1000;
-      const score = 10000 - age - failureScore;
-      
-      if (score > bestScore) {
-        bestIndex = i;
-        bestScore = score;
+      if (health) {
+        const age = Date.now() - health.lastSuccess;
+        this.logger.error(
+          `   Connection ${i}: age=${age}ms, failures=${health.failures}`
+        );
       }
     }
     
-    this.currentPoolIndex = (bestIndex + 1) % this.POOL_SIZE;
+    // Try to reconnect in background
+    setImmediate(() => {
+      this.logger.warn('🔄 Attempting automatic reconnect...');
+      this.reconnectRealtimeDb().catch(err => {
+        this.logger.error(`Reconnect failed: ${err.message}`);
+      });
+    });
     
-    return this.restConnectionPool[bestIndex];
+    // Reset all connection failures to give them a chance
+    for (let i = 0; i < this.restConnectionPool.length; i++) {
+      const health = this.connectionHealth.restConnections.get(i);
+      if (health) {
+        health.failures = Math.max(0, health.failures - 1);
+      }
+    }
+    
+    // Use connection with best (least worst) score as fallback
+    this.logger.warn(`⚠️ Using fallback connection ${bestIndex}`);
   }
+  
+  this.currentPoolIndex = (bestIndex + 1) % this.POOL_SIZE;
+  
+  return this.restConnectionPool[bestIndex];
+}
+
 
   async getRealtimeDbValue(path: string, useCache = true): Promise<any> {
     if (!this.isConnected) {
@@ -517,38 +562,88 @@ export class FirebaseService implements OnModuleInit {
   }
 
   private async healthCheckConnections(): Promise<void> {
-    if (!this.useRestForRealtimeDb || this.restConnectionPool.length === 0) return;
+  if (!this.useRestForRealtimeDb || this.restConnectionPool.length === 0) return;
 
-    try {
-      const conn = this.restConnectionPool[0];
-      await conn.get('/.json?shallow=true&timeout=2000');
+  try {
+    const conn = this.restConnectionPool[0];
+    await conn.get('/.json?shallow=true&timeout=2000');
+    
+    // Success - reset failure counter
+    this.connectionHealth.consecutiveFailures = 0;
+    
+  } catch (error) {
+    this.connectionHealth.consecutiveFailures++;
+    
+    this.logger.warn(
+      `⚠️ Health check failed (${this.connectionHealth.consecutiveFailures}/3): ${error.message}`
+    );
+    
+    // ✅ FIX #3: Auto-reconnect after 3 consecutive failures
+    if (this.connectionHealth.consecutiveFailures >= 3) {
+      this.logger.error('❌ Multiple health check failures detected!');
       
-    } catch (error) {
-      this.logger.warn(`⚠️ Health check failed: ${error.message}`);
+      // Check if all connections are unhealthy
+      let allUnhealthy = true;
+      for (const [, health] of this.connectionHealth.restConnections) {
+        const age = Date.now() - health.lastSuccess;
+        if (age < 60000 && health.failures < 5) {
+          allUnhealthy = false;
+          break;
+        }
+      }
       
-      if (this.connectionHealth.consecutiveFailures >= 3) {
+      if (allUnhealthy) {
+        this.logger.error('❌ All connections unhealthy - triggering reconnect');
         await this.reconnectRealtimeDb();
+      } else {
+        this.logger.warn('⚠️ Some connections still healthy - skipping reconnect');
+        this.connectionHealth.consecutiveFailures = 0;
       }
     }
   }
+}
+
 
   private async reconnectRealtimeDb(): Promise<void> {
-    this.logger.log('🔄 Reconnecting Realtime DB...');
+  this.logger.log('🔄 Reconnecting Realtime DB...');
+  
+  try {
+    // Clear existing pools
+    this.restConnectionPool = [];
+    this.connectionHealth.restConnections.clear();
     
-    try {
-      this.restConnectionPool = [];
-      this.connectionHealth.restConnections.clear();
-      
-      await this.initializeRealtimeDbWithPool();
-      
-      this.connectionHealth.consecutiveFailures = 0;
-      this.logger.log('✅ Reconnection successful');
-      
-    } catch (error) {
-      this.logger.error(`❌ Reconnection failed: ${error.message}`);
-      this.isConnected = false;
+    // Recreate connection pool
+    await this.initializeRealtimeDbWithPool();
+    
+    // Test connection
+    if (this.restConnectionPool.length > 0) {
+      try {
+        await this.restConnectionPool[0].get('/.json?shallow=true&timeout=2000');
+        
+        this.connectionHealth.consecutiveFailures = 0;
+        this.connectionHealth.lastSuccessfulFetch = Date.now();
+        
+        this.logger.log('✅ Reconnection successful');
+      } catch (testError) {
+        this.logger.error(`❌ Reconnection test failed: ${testError.message}`);
+        throw testError;
+      }
+    } else {
+      throw new Error('No connections created after reconnect');
     }
+    
+  } catch (error) {
+    this.logger.error(`❌ Reconnection failed: ${error.message}`);
+    this.isConnected = false;
+    
+    // Schedule retry after delay
+    setTimeout(() => {
+      this.logger.warn('🔄 Retrying reconnection...');
+      this.reconnectRealtimeDb();
+    }, 5000);
   }
+}
+
 
   private resetDailyStats(): void {
     const hoursSinceReset = (Date.now() - this.lastReadReset) / 3600000;
