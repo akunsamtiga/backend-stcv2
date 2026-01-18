@@ -12,14 +12,13 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class PhotoUploadDto {
   @ApiProperty({ 
-    example: 'https://storage.example.com/photos/ktp_front_123.jpg',
-    description: 'URL of the uploaded photo (must be HTTPS)'
+    example: 'data:image/jpeg;base64,/9j/4AAQSkZJRg...',
+    description: 'Base64 data URL or HTTPS URL of the uploaded photo'
   })
-  @IsUrl({
-    protocols: ['https'],
-    require_protocol: true,
-    require_valid_protocol: true,
-  }, { message: 'Photo URL must be a valid HTTPS URL' })
+  @IsString()
+  @Matches(/^(data:image\/(jpeg|jpg|png|webp);base64,|https:\/\/)/, {
+    message: 'Photo URL must be a valid base64 data URL or HTTPS URL'
+  })
   url: string;
 
   @ApiPropertyOptional({ 
@@ -43,6 +42,7 @@ export class PhotoUploadDto {
   })
   mimeType?: string;
 }
+
 
 // ============================================
 // PROFILE SECTION DTOs
@@ -341,19 +341,18 @@ export class UpdateProfileDto {
 
 export class UploadAvatarDto {
   @ApiProperty({ 
-    example: 'https://storage.example.com/avatars/user123.jpg',
-    description: 'HTTPS URL of uploaded avatar/profile photo'
+    example: 'data:image/jpeg;base64,/9j/4AAQSkZJRg...',
+    description: 'Base64 data URL or HTTPS URL of uploaded avatar/profile photo'
   })
-  @IsUrl({
-    protocols: ['https'],
-    require_protocol: true,
-    require_valid_protocol: true,
-  }, { message: 'Avatar URL must be a valid HTTPS URL' })
+  @IsString()
+  @Matches(/^(data:image\/(jpeg|jpg|png|webp);base64,|https:\/\/)/, {
+    message: 'Avatar URL must be a valid base64 data URL or HTTPS URL'
+  })
   url: string;
 
   @ApiPropertyOptional({ 
     example: 512000,
-    description: 'File size in bytes (recommended max 2MB)'
+    description: 'File size in bytes (max 2MB for avatar)'
   })
   @IsOptional()
   @IsNumber()
@@ -372,6 +371,8 @@ export class UploadAvatarDto {
   })
   mimeType?: string;
 }
+
+
 
 export class UploadKTPDto {
   @ApiProperty({ 
@@ -394,19 +395,18 @@ export class UploadKTPDto {
 
 export class UploadSelfieDto {
   @ApiProperty({ 
-    example: 'https://storage.example.com/selfies/user_selfie_123.jpg',
-    description: 'HTTPS URL of uploaded selfie photo for identity verification'
+    example: 'data:image/jpeg;base64,/9j/4AAQSkZJRg...',
+    description: 'Base64 data URL or HTTPS URL of uploaded selfie photo for identity verification'
   })
-  @IsUrl({
-    protocols: ['https'],
-    require_protocol: true,
-    require_valid_protocol: true,
-  }, { message: 'Selfie URL must be a valid HTTPS URL' })
+  @IsString()
+  @Matches(/^(data:image\/(jpeg|jpg|png|webp);base64,|https:\/\/)/, {
+    message: 'Selfie URL must be a valid base64 data URL or HTTPS URL'
+  })
   url: string;
 
   @ApiPropertyOptional({ 
     example: 1024000,
-    description: 'File size in bytes (recommended max 1MB)'
+    description: 'File size in bytes (max 1MB for selfie)'
   })
   @IsOptional()
   @IsNumber()

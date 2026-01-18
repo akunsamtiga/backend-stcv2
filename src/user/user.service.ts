@@ -1087,11 +1087,33 @@ export class UserService {
   }
 
   private validatePhotoUpload(photo: any, maxSize: number, photoType: string): void {
-  // Validate URL format
-  try {
-    new URL(photo.url);
-  } catch (error) {
-    throw new BadRequestException(`Invalid ${photoType} URL format`);
+  // ✅ FIXED: Allow both base64 data URLs and HTTPS URLs
+  const isBase64 = photo.url.startsWith('data:image/');
+  const isHttpsUrl = photo.url.startsWith('https://');
+  
+  if (!isBase64 && !isHttpsUrl) {
+    throw new BadRequestException(
+      `${photoType} must be either a base64 data URL or HTTPS URL`
+    );
+  }
+
+  // Validate base64 format if it's a data URL
+  if (isBase64) {
+    const base64Regex = /^data:image\/(jpeg|jpg|png|webp);base64,/i;
+    if (!base64Regex.test(photo.url)) {
+      throw new BadRequestException(
+        `${photoType} must be a valid base64 image (JPEG, PNG, or WEBP)`
+      );
+    }
+  }
+  
+  // Validate HTTPS URL format if it's a URL
+  if (isHttpsUrl) {
+    try {
+      new URL(photo.url);
+    } catch (error) {
+      throw new BadRequestException(`Invalid ${photoType} URL format`);
+    }
   }
 
   // Validate file size
@@ -1104,16 +1126,9 @@ export class UserService {
 
   // Validate MIME type
   const validMimeTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
-  if (photo.mimeType && !validMimeTypes.includes(photo.mimeType)) {
+  if (photo.mimeType && !validMimeTypes.includes(photo.mimeType.toLowerCase())) {
     throw new BadRequestException(
       `${photoType} must be JPEG, PNG, or WEBP format`
-    );
-  }
-
-  // Validate URL is HTTPS (security)
-  if (!photo.url.startsWith('https://')) {
-    throw new BadRequestException(
-      `${photoType} URL must use HTTPS for security`
     );
   }
 }
