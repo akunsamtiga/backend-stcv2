@@ -7,7 +7,7 @@ import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 // ============================================
-// PHOTO UPLOAD DTOs - ENHANCED VALIDATION
+// PHOTO UPLOAD DTOs - 4MB LIMIT
 // ============================================
 
 export class PhotoUploadDto {
@@ -22,13 +22,13 @@ export class PhotoUploadDto {
   url: string;
 
   @ApiPropertyOptional({ 
-    example: 2048576,
-    description: 'File size in bytes (max 2MB for documents, 1MB for selfie)'
+    example: 4194304,
+    description: 'File size in bytes (max 4MB)'
   })
   @IsOptional()
   @IsNumber()
   @Min(0, { message: 'File size must be a positive number' })
-  @Max(2097152, { message: 'File size must not exceed 2MB (2,097,152 bytes)' })
+  @Max(4194304, { message: 'File size must not exceed 4MB (4,194,304 bytes)' })
   fileSize?: number;
 
   @ApiPropertyOptional({ 
@@ -42,7 +42,6 @@ export class PhotoUploadDto {
   })
   mimeType?: string;
 }
-
 
 // ============================================
 // PROFILE SECTION DTOs
@@ -138,7 +137,7 @@ export class IdentityDocumentDto {
 
   @ApiPropertyOptional({ 
     type: PhotoUploadDto,
-    description: 'Front photo of identity document (HTTPS URL, max 2MB, JPEG/PNG/WEBP)'
+    description: 'Front photo of identity document (HTTPS URL, max 4MB, JPEG/PNG/WEBP)'
   })
   @IsOptional()
   @ValidateNested()
@@ -147,7 +146,7 @@ export class IdentityDocumentDto {
 
   @ApiPropertyOptional({ 
     type: PhotoUploadDto,
-    description: 'Back photo of identity document (HTTPS URL, max 2MB, JPEG/PNG/WEBP)'
+    description: 'Back photo of identity document (HTTPS URL, max 4MB, JPEG/PNG/WEBP)'
   })
   @IsOptional()
   @ValidateNested()
@@ -336,7 +335,7 @@ export class UpdateProfileDto {
 }
 
 // ============================================
-// UPLOAD SPECIFIC DTOs - ENHANCED VALIDATION
+// UPLOAD SPECIFIC DTOs - 4MB LIMIT
 // ============================================
 
 export class UploadAvatarDto {
@@ -351,13 +350,13 @@ export class UploadAvatarDto {
   url: string;
 
   @ApiPropertyOptional({ 
-    example: 512000,
-    description: 'File size in bytes (max 2MB for avatar)'
+    example: 4194304,
+    description: 'File size in bytes (max 4MB)'
   })
   @IsOptional()
   @IsNumber()
   @Min(0, { message: 'File size must be a positive number' })
-  @Max(2097152, { message: 'Avatar file size must not exceed 2MB (2,097,152 bytes)' })
+  @Max(4194304, { message: 'Avatar file size must not exceed 4MB (4,194,304 bytes)' })
   fileSize?: number;
 
   @ApiPropertyOptional({ 
@@ -372,12 +371,10 @@ export class UploadAvatarDto {
   mimeType?: string;
 }
 
-
-
 export class UploadKTPDto {
   @ApiProperty({ 
     type: PhotoUploadDto,
-    description: 'Front side photo of KTP/Identity Card (HTTPS URL, max 2MB, JPEG/PNG/WEBP)'
+    description: 'Front side photo of KTP/Identity Card (HTTPS URL, max 4MB, JPEG/PNG/WEBP)'
   })
   @ValidateNested()
   @Type(() => PhotoUploadDto)
@@ -405,13 +402,13 @@ export class UploadSelfieDto {
   url: string;
 
   @ApiPropertyOptional({ 
-    example: 1024000,
-    description: 'File size in bytes (max 1MB for selfie)'
+    example: 4194304,
+    description: 'File size in bytes (max 4MB)'
   })
   @IsOptional()
   @IsNumber()
   @Min(0, { message: 'File size must be a positive number' })
-  @Max(1048576, { message: 'Selfie file size must not exceed 1MB (1,048,576 bytes)' })
+  @Max(4194304, { message: 'Selfie file size must not exceed 4MB (4,194,304 bytes)' })
   fileSize?: number;
 
   @ApiPropertyOptional({ 
@@ -481,7 +478,7 @@ export class ChangePasswordDto {
 }
 
 // ============================================
-// ADMIN VERIFICATION DTOs (Optional - for future use)
+// ADMIN VERIFICATION DTOs
 // ============================================
 
 export class AdminVerifyIdentityDto {

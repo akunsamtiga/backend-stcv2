@@ -122,8 +122,8 @@ export class UserService {
 
   async uploadAvatar(userId: string, uploadAvatarDto: UploadAvatarDto) {
   try {
-    // Validate before processing
-    this.validatePhotoUpload(uploadAvatarDto, 2097152, 'Avatar'); // 2MB
+    // ✅ UPDATE: 4MB limit
+    this.validatePhotoUpload(uploadAvatarDto, 4194304, 'Avatar'); // 4MB
 
     const db = this.firebaseService.getFirestore();
     const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
@@ -168,11 +168,11 @@ export class UserService {
 
   async uploadKTPPhotos(userId: string, uploadKTPDto: UploadKTPDto) {
   try {
-    // Validate both photos
-    this.validatePhotoUpload(uploadKTPDto.photoFront, 2097152, 'KTP Front'); // 2MB
+    // ✅ UPDATE: 4MB limit for both photos
+    this.validatePhotoUpload(uploadKTPDto.photoFront, 4194304, 'KTP Front'); // 4MB
     
     if (uploadKTPDto.photoBack) {
-      this.validatePhotoUpload(uploadKTPDto.photoBack, 2097152, 'KTP Back'); // 2MB
+      this.validatePhotoUpload(uploadKTPDto.photoBack, 4194304, 'KTP Back'); // 4MB
     }
 
     const db = this.firebaseService.getFirestore();
@@ -186,7 +186,6 @@ export class UserService {
     const currentProfile = user.profile || {};
     const timestamp = new Date().toISOString();
 
-    // ✅ FIX: Set isVerified to FALSE, require manual verification
     const updatedProfile: UserProfile = {
       ...currentProfile,
       identityDocument: {
@@ -207,13 +206,12 @@ export class UserService {
           fileSize: uploadKTPDto.photoBack.fileSize,
           mimeType: uploadKTPDto.photoBack.mimeType,
         } : currentProfile.identityDocument?.photoBack,
-        // ✅ FIX: Manual verification required
         isVerified: false,
         verifiedAt: undefined,
       },
       verification: {
         ...currentProfile.verification,
-        identityVerified: false, // Wait for admin verification
+        identityVerified: false,
         verificationLevel: this.calculateVerificationLevel({
           ...currentProfile.verification,
           identityVerified: false,
@@ -246,8 +244,8 @@ export class UserService {
 
   async uploadSelfie(userId: string, uploadSelfieDto: UploadSelfieDto) {
   try {
-    // Validate photo
-    this.validatePhotoUpload(uploadSelfieDto, 1048576, 'Selfie'); // 1MB
+    // ✅ UPDATE: 4MB limit
+    this.validatePhotoUpload(uploadSelfieDto, 4194304, 'Selfie'); // 4MB
 
     const db = this.firebaseService.getFirestore();
     const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
@@ -260,20 +258,19 @@ export class UserService {
     const currentProfile = user.profile || {};
     const timestamp = new Date().toISOString();
 
-    // ✅ FIX: Set isVerified to FALSE, require manual verification
     const updatedProfile: UserProfile = {
       ...currentProfile,
       selfieVerification: {
         photoUrl: uploadSelfieDto.url,
         uploadedAt: timestamp,
-        isVerified: false, // Wait for admin verification
+        isVerified: false,
         verifiedAt: undefined,
         fileSize: uploadSelfieDto.fileSize,
         mimeType: uploadSelfieDto.mimeType,
       },
       verification: {
         ...currentProfile.verification,
-        selfieVerified: false, // Wait for admin verification
+        selfieVerified: false,
         verificationLevel: this.calculateVerificationLevel({
           ...currentProfile.verification,
           selfieVerified: false,
@@ -301,6 +298,7 @@ export class UserService {
     throw error;
   }
 }
+
 
 
   async getVerificationStatus(userId: string) {
