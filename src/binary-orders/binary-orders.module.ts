@@ -1,5 +1,4 @@
-// src/binary-orders/binary-orders.module.ts
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { BinaryOrdersController } from './binary-orders.controller';
@@ -12,7 +11,7 @@ import { UserModule } from '../user/user.module';
 @Module({
   imports: [
     BalanceModule,
-    AssetsModule,
+    forwardRef(() => AssetsModule), // ➕ Tambahkan forwardRef
     AuthModule,
     UserModule,
     JwtModule.registerAsync({

@@ -18,7 +18,7 @@ import { BinaryOrdersModule } from '../binary-orders/binary-orders.module';
     }),
     FirebaseModule,
     forwardRef(() => AssetsModule),
-    BinaryOrdersModule,
+    forwardRef(() => BinaryOrdersModule), 
   ],
   providers: [TradingGateway],
   exports: [TradingGateway],
