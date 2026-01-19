@@ -1,11 +1,10 @@
-// src/assets/services/crypto-price-scheduler.service.ts
-
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron, SchedulerRegistry } from '@nestjs/schedule';
 import { FirebaseService } from '../../firebase/firebase.service';
 import { BinanceService } from './binance.service';
 import { AssetsService } from '../assets.service';
 import { CryptoTimeframeManager, CryptoBar } from './crypto-timeframe-manager';
+import { TradingGateway } from '../../websocket/trading.gateway';
 import { ASSET_CATEGORY } from '../../common/constants';
 import { Asset } from '../../common/interfaces';
 
@@ -50,6 +49,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     private binanceService: BinanceService,
     private assetsService: AssetsService,
     private schedulerRegistry: SchedulerRegistry,
+    private readonly tradingGateway: TradingGateway, // 🔥 WebSocket gateway
   ) {}
 
   async onModuleInit() {
@@ -351,6 +351,18 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
         if (cryptoPrice) {
           successCount++;
           await this.generateOHLC(asset, cryptoPrice);
+          
+          // 🔥 **EMIT REAL-TIME PRICE UPDATE VIA WEBSOCKET**
+          this.tradingGateway.emitPriceUpdate(asset.id, {
+            price: cryptoPrice.price,
+            timestamp: cryptoPrice.timestamp,
+            datetime: cryptoPrice.datetime,
+            volume24h: cryptoPrice.volume24h,
+            changePercent24h: cryptoPrice.changePercent24h,
+            high24h: cryptoPrice.high24h,
+            low24h: cryptoPrice.low24h,
+          });
+          
         } else {
           failCount++;
         }

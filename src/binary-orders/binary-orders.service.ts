@@ -1,5 +1,3 @@
-// src/binary-orders/binary-orders.service.ts
-
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { FirebaseService } from '../firebase/firebase.service';
@@ -7,9 +5,18 @@ import { BalanceService } from '../balance/balance.service';
 import { AssetsService } from '../assets/assets.service';
 import { PriceFetcherService } from '../assets/services/price-fetcher.service';
 import { UserStatusService } from '../user/user-status.service';
+import { TradingGateway } from '../websocket/trading.gateway';
 import { CreateBinaryOrderDto } from './dto/create-binary-order.dto';
 import { QueryBinaryOrderDto } from './dto/query-binary-order.dto';
-import { COLLECTIONS, ORDER_STATUS, BALANCE_TYPES, ALL_DURATIONS, ValidDuration, BALANCE_ACCOUNT_TYPE, DURATION_CONFIG } from '../common/constants';
+import { 
+  COLLECTIONS, 
+  ORDER_STATUS, 
+  BALANCE_TYPES, 
+  ALL_DURATIONS, 
+  ValidDuration, 
+  BALANCE_ACCOUNT_TYPE, 
+  DURATION_CONFIG 
+} from '../common/constants';
 import { CalculationUtil, TimezoneUtil } from '../common/utils';
 import { BinaryOrder, Asset } from '../common/interfaces';
 
@@ -41,6 +48,7 @@ export class BinaryOrdersService {
     private assetsService: AssetsService,
     private priceFetcherService: PriceFetcherService,
     private userStatusService: UserStatusService,
+    private readonly tradingGateway: TradingGateway, // 🔥 WebSocket gateway
   ) {
     setInterval(() => this.cleanupStaleCache(), 10000);
     
@@ -222,8 +230,22 @@ export class BinaryOrdersService {
       const orderId = await this.firebaseService.generateId(COLLECTIONS.ORDERS);
       
       const entryTimestamp = TimezoneUtil.getCurrentTimestamp();
+      
+      // ✅ MODIFIED: Gunakan calculateExpiryTimestamp yang baru
       const expiryTimestamp = CalculationUtil.calculateExpiryTimestamp(entryTimestamp, duration);
       
+      // ✅ NEW: Log informasi expiry adjustment
+      const remainingSeconds = TimezoneUtil.getRemainingSecondsInMinute(entryTimestamp);
+      const isAdjusted = remainingSeconds <= 20;
+
+      if (isAdjusted) {
+        this.logger.warn(
+          `⚠️ [END-OF-CANDLE DETECTED] ${asset.symbol} - ` +
+          `Entry: ${TimezoneUtil.formatDateTime()} (${remainingSeconds} detik tersisa), ` +
+          `Expiry: ${TimezoneUtil.formatTimestamp(expiryTimestamp)} (ADJUSTED +1 menit)`
+        );
+      }
+
       const entryDate = TimezoneUtil.fromTimestamp(entryTimestamp);
       const expiryDate = TimezoneUtil.fromTimestamp(expiryTimestamp);
       
@@ -249,6 +271,13 @@ export class BinaryOrdersService {
         baseProfitRate: baseProfitRate,
         statusBonus: statusBonus,
         userStatus: userStatus,
+        metadata: {
+          isEndOfCandleEntry: isAdjusted,
+          remainingSecondsInMinute: remainingSeconds,
+          originalDuration: createOrderDto.duration,
+          adjustedDuration: isAdjusted ? createOrderDto.duration + 1 : createOrderDto.duration,
+          timezone: 'Asia/Jakarta',
+        },
         createdAt: entryDateTimeInfo.datetime_iso,
       };
 
@@ -259,6 +288,10 @@ export class BinaryOrdersService {
       this.logger.log(`✅ Order ${orderId} created, now debiting balance...`);
       this.logger.log(`📅 Entry: ${entryDateTimeInfo.datetime} WIB (${entryTimestamp})`);
       this.logger.log(`📅 Expiry: ${expiryDateTimeInfo.datetime} WIB (${expiryTimestamp})`);
+      // ✅ NEW: Log jika di-adjust
+      if (isAdjusted) {
+        this.logger.warn(`⚠️ Expiry ADJUSTED to end of next candle due to late entry (${remainingSeconds}s remaining)`);
+      }
       this.logger.log(`⏱️ Duration: ${durationDisplay}`);
 
       try {
@@ -296,6 +329,34 @@ export class BinaryOrdersService {
       this.orderCreateCount++;
       this.avgCreateTime = (this.avgCreateTime * 0.9) + (executionTime * 0.1);
 
+      // 🔥 **EMIT ORDER CREATED VIA WEBSOCKET**
+      this.tradingGateway.emitOrderCreated(userId, {
+        order: orderData,
+        accountType,
+        balanceAfter: newBalance,
+        executionTime,
+        durationDisplay,
+        statusInfo: {
+          userStatus,
+          baseProfitRate,
+          statusBonus,
+          finalProfitRate,
+        },
+        timing: {
+          entry: entryDateTimeInfo.datetime,
+          expiry: expiryDateTimeInfo.datetime,
+          entryTimestamp,
+          expiryTimestamp,
+          durationSeconds: Math.round((isAdjusted ? createOrderDto.duration + 1 : createOrderDto.duration) * 60),
+          timezone: 'Asia/Jakarta (WIB)',
+          // ✅ NEW: Info adjustment
+          expiryAdjusted: isAdjusted,
+          originalDuration: createOrderDto.duration,
+          adjustedDuration: isAdjusted ? createOrderDto.duration + 1 : createOrderDto.duration,
+          remainingSecondsInMinute: remainingSeconds,
+        },
+      });
+
       this.logger.log(
         `⚡ [${accountType.toUpperCase()}] Order created in ${executionTime}ms - ${asset.symbol} ${createOrderDto.direction} ${durationDisplay} (Profit: ${finalProfitRate}%)`
       );
@@ -318,8 +379,13 @@ export class BinaryOrdersService {
           expiry: expiryDateTimeInfo.datetime,
           entryTimestamp,
           expiryTimestamp,
-          durationSeconds: Math.round(duration * 60),
+          durationSeconds: Math.round((isAdjusted ? createOrderDto.duration + 1 : createOrderDto.duration) * 60),
           timezone: 'Asia/Jakarta (WIB)',
+          // ✅ NEW: Info adjustment
+          expiryAdjusted: isAdjusted,
+          originalDuration: createOrderDto.duration,
+          adjustedDuration: isAdjusted ? createOrderDto.duration + 1 : createOrderDto.duration,
+          remainingSecondsInMinute: remainingSeconds,
         },
       };
 
@@ -471,6 +537,18 @@ export class BinaryOrdersService {
       }
 
       this.orderCache.delete(order.id);
+
+      // 🔥 **EMIT SETTLEMENT RESULT VIA WEBSOCKET**
+      this.tradingGateway.emitOrderSettled(order.user_id, {
+        id: order.id,
+        status: result,
+        exit_price: priceData.price,
+        profit,
+        profitRate: order.profitRate,
+        asset_symbol: order.asset_name,
+        duration: order.duration,
+        settled_at: settlementDateTime,
+      });
 
       const duration = Date.now() - startTime;
       this.orderSettleCount++;

@@ -1,5 +1,3 @@
-// src/main.ts
-
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -7,12 +5,14 @@ import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { Request, Response, NextFunction } from 'express';
 import helmet from 'helmet';
 import * as compression from 'compression';
+import { IoAdapter } from '@nestjs/platform-socket.io'; // 🔥 NEW
 import { AppModule } from './app.module';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 import { TimezoneUtil } from './common/utils';
 
+// 🔥 Set timezone
 process.env.TZ = 'Asia/Jakarta';
 
 async function bootstrap() {
@@ -38,6 +38,11 @@ async function bootstrap() {
   logger.log('🌍 ================================================');
   logger.log('');
 
+  // 🔥 NEW: WebSocket Adapter
+  app.useWebSocketAdapter(new IoAdapter(app));
+  logger.log('✅ WebSocket Adapter initialized');
+
+  // Timeout middleware
   app.use((req: Request, res: Response, next: NextFunction) => {
     const path = req.path;
     
@@ -74,12 +79,14 @@ async function bootstrap() {
     next();
   });
 
+  // Keep-Alive headers
   app.use((req: Request, res: Response, next: NextFunction) => {
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('Keep-Alive', 'timeout=60, max=1000');
     next();
   });
 
+  // CORS preflight
   app.use((req: Request, res: Response, next: NextFunction) => {
     if (req.method === 'OPTIONS') {
       res.status(200).end();
@@ -88,11 +95,13 @@ async function bootstrap() {
     next();
   });
 
+  // Security middleware
   app.use(helmet({
     contentSecurityPolicy: false,
     crossOriginEmbedderPolicy: false,
   }));
 
+  // Compression
   app.use(compression({
     level: 6,
     threshold: 512,
@@ -104,6 +113,7 @@ async function bootstrap() {
     },
   }));
 
+  // Global validation
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -121,13 +131,18 @@ async function bootstrap() {
 
   const nodeEnv = configService.get('nodeEnv');
   
+  // Logging interceptor hanya di development
   if (nodeEnv === 'development') {
     app.useGlobalInterceptors(new LoggingInterceptor());
   }
   
+  // Response interceptor
   app.useGlobalInterceptors(new ResponseInterceptor());
+  
+  // Exception filter
   app.useGlobalFilters(new AllExceptionsFilter());
 
+  // CORS configuration
   const corsOrigin = configService.get('cors.origin');
   app.enableCors({
     origin: corsOrigin,
@@ -140,15 +155,17 @@ async function bootstrap() {
     optionsSuccessStatus: 204,
   });
 
+  // Global prefix
   const apiPrefix = configService.get('apiPrefix');
   const apiVersion = configService.get('apiVersion');
   app.setGlobalPrefix(`${apiPrefix}/${apiVersion}`);
 
+  // Swagger (hanya di non-production)
   if (nodeEnv !== 'production') {
     const config = new DocumentBuilder()
       .setTitle('Binary Option Trading API')
-      .setDescription('⚡ ULTRA-FAST Binary Option Trading System with Timezone Support')
-      .setVersion('3.2')
+      .setDescription('⚡ ULTRA-FAST Binary Option Trading System with Timezone Support & Real-Time WebSocket')
+      .setVersion('3.3')
       .addBearerAuth()
       .addTag('auth', 'Authentication')
       .addTag('user', 'User management')
@@ -157,6 +174,7 @@ async function bootstrap() {
       .addTag('binary-orders', 'Binary option orders (ULTRA-FAST)')
       .addTag('admin', 'Admin management')
       .addTag('health', 'Health & Performance')
+      .addTag('websocket', 'Real-time WebSocket Events')
       .build();
 
     const document = SwaggerModule.createDocument(app, config);
@@ -171,14 +189,16 @@ async function bootstrap() {
 
   const port = configService.get('port');
   
+  // Start server
   await app.listen(port, '0.0.0.0', () => {
     logger.log('');
     logger.log('⚡ ================================================');
-    logger.log('⚡ BINARY OPTION TRADING - ULTRA-FAST MODE v3.2');
+    logger.log('⚡ BINARY OPTION TRADING - ULTRA-FAST MODE v3.3');
     logger.log('⚡ ================================================');
     logger.log(`⚡ Environment: ${configService.get('nodeEnv')}`);
     logger.log(`⚡ URL: http://localhost:${port}`);
     logger.log(`⚡ API: http://localhost:${port}/${apiPrefix}/${apiVersion}`);
+    logger.log(`⚡ WebSocket: ws://localhost:${port}`);
     if (nodeEnv !== 'production') {
       logger.log(`⚡ Docs: http://localhost:${port}/api/docs`);
     }
@@ -192,9 +212,15 @@ async function bootstrap() {
     logger.log('⚡ PERFORMANCE OPTIMIZATIONS:');
     logger.log('⚡   • Order Creation: < 300ms target');
     logger.log('⚡   • Price Fetch: < 100ms target');
-    logger.log('⚡   • Settlement: Every 2 seconds');
+    logger.log('⚡   • Settlement: Every 1 second');
+    logger.log('⚡   • WebSocket Push: < 100ms');
     logger.log('⚡   • Multi-layer caching');
     logger.log('⚡   • 15-connection pool');
+    logger.log('⚡ ================================================');
+    logger.log('⚡ WEBSOCKET ENDPOINTS:');
+    logger.log('⚡   • Connection: ws://localhost:3000');
+    logger.log('⚡   • Auth: JWT token in handshake');
+    logger.log('⚡   • Events: price:update, order:update');
     logger.log('⚡ ================================================');
     logger.log('⚡ AGGRESSIVE TIMEOUTS:');
     logger.log('⚡   • Binary Orders: 2s');
@@ -205,6 +231,7 @@ async function bootstrap() {
     logger.log('');
   });
 
+  // Graceful shutdown
   process.on('SIGTERM', async () => {
     logger.log('⚠️ SIGTERM received, shutting down gracefully...');
     await app.close();

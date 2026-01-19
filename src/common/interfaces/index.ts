@@ -263,6 +263,14 @@ export interface BinaryOrder {
   statusBonus?: number;
   userStatus?: string;
   createdAt: string;
+  
+  metadata?: {
+    isEndOfCandleEntry: boolean;
+    remainingSecondsInMinute: number;
+    originalDuration: number;
+    adjustedDuration: number;
+    timezone: string;
+  };
 }
 
 export interface RealtimePrice {

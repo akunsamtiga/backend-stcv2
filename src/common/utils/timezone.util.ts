@@ -1,4 +1,3 @@
-// src/common/utils/timezone.util.ts
 export class TimezoneUtil {
   static getCurrentTimestamp(): number {
     return Math.floor(Date.now() / 1000);
@@ -122,6 +121,26 @@ export class TimezoneUtil {
     }
     
     return hour >= 9 && hour < 16;
+  }
+
+  // ✅ NEW: Hitung sisa waktu di candle/menit saat ini (dalam detik)
+  static getRemainingSecondsInMinute(timestamp: number): number {
+    const date = this.fromTimestamp(timestamp);
+    return 60 - date.getSeconds();
+  }
+
+  // ✅ NEW: Hitung akhir menit berikutnya untuk timestamp yang diberikan
+  static getNextEndOfMinuteTimestamp(timestamp: number): number {
+    const date = this.fromTimestamp(timestamp);
+    const nextMinute = new Date(date);
+    nextMinute.setMinutes(nextMinute.getMinutes() + 1, 59, 999);
+    return this.toTimestamp(nextMinute);
+  }
+
+  // ✅ NEW: Periksa apakah entry terjadi di detik akhir candle (≤20 detik tersisa)
+  static isEntryAtEndOfCandle(timestamp: number): boolean {
+    const remainingSeconds = this.getRemainingSecondsInMinute(timestamp);
+    return remainingSeconds <= 20;
   }
 }
 

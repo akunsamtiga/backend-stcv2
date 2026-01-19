@@ -1,9 +1,8 @@
-// src/assets/assets.service.ts
-
 import { Injectable, NotFoundException, ConflictException, Logger, RequestTimeoutException, BadRequestException } from '@nestjs/common';
 import { FirebaseService } from '../firebase/firebase.service';
 import { PriceFetcherService } from './services/price-fetcher.service';
 import { BinanceService } from './services/binance.service';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { CreateAssetDto } from './dto/create-asset.dto';
 import { UpdateAssetDto } from './dto/update-asset.dto';
 import { COLLECTIONS, ALL_DURATIONS, ASSET_CATEGORY, ASSET_DATA_SOURCE } from '../common/constants';
@@ -43,6 +42,7 @@ export class AssetsService {
     private firebaseService: FirebaseService,
     private priceFetcherService: PriceFetcherService,
     private binanceService: BinanceService,
+    private readonly eventEmitter: EventEmitter2, // 🔥 EventEmitter for WebSocket
   ) {
     setTimeout(async () => {
       try {
@@ -974,6 +974,14 @@ export class AssetsService {
 
       const duration = Date.now() - startTime;
       this.logger.debug(`⚡ Got price for ${asset.symbol} in ${duration}ms`);
+
+      // 🔥 **EMIT PRICE UPDATE EVENT FOR NORMAL ASSETS**
+      if (asset.category !== ASSET_CATEGORY.CRYPTO) {
+        this.eventEmitter.emit('simulator.price.update', {
+          assetId,
+          priceData,
+        });
+      }
 
       return {
         asset: {

@@ -1,7 +1,8 @@
-// src/assets/services/price-fetcher.service.ts
 import { Injectable, Logger } from '@nestjs/common';
 import { FirebaseService } from '../../firebase/firebase.service';
 import { BinanceService } from './binance.service';
+import { TradingGateway } from '../../websocket/trading.gateway';
+import { OnEvent } from '@nestjs/event-emitter';
 import { Asset, RealtimePrice } from '../../common/interfaces';
 import { ASSET_CATEGORY, ASSET_DATA_SOURCE } from '../../common/constants';
 
@@ -29,6 +30,7 @@ export class PriceFetcherService {
   constructor(
     private firebaseService: FirebaseService,
     private binanceService: BinanceService,
+    private readonly tradingGateway: TradingGateway, // 🔥 WebSocket gateway
   ) {
     setInterval(() => this.cleanupStaleCache(), 5000);
   }
@@ -249,11 +251,18 @@ export class PriceFetcherService {
     const variation = (Math.random() - 0.5) * 2 * basePrice * volatility;
     const price = basePrice + variation;
 
-    return {
+    const priceData = {
       price: Math.round(price * 1000000) / 1000000,
       timestamp: Math.floor(Date.now() / 1000),
       datetime: new Date().toISOString(),
     };
+
+    // 🔥 **EMIT PRICE UPDATE FOR NORMAL ASSETS**
+    if (asset.category !== ASSET_CATEGORY.CRYPTO) {
+      this.tradingGateway.emitPriceUpdate(asset.id, priceData);
+    }
+
+    return priceData;
   }
 
   private getCachedPrice(assetId: string, maxAge: number): RealtimePrice | null {
@@ -384,5 +393,12 @@ export class PriceFetcherService {
   async warmUpCache(assets: Asset[]): Promise<void> {
     this.logger.log(`⚡ Warming up cache for ${assets.length} assets...`);
     await this.prefetchPrices(assets);
+  }
+
+  // 🔥 **LISTEN SIMULATOR EVENTS & BROADCAST VIA WEBSOCKET**
+  @OnEvent('simulator.price.update')
+  handleSimulatorPriceUpdate(payload: { assetId: string, priceData: RealtimePrice }) {
+    this.tradingGateway.emitPriceUpdate(payload.assetId, payload.priceData);
+    this.logger.debug(`📡 Simulator price broadcast: ${payload.assetId} = ${payload.priceData.price}`);
   }
 }

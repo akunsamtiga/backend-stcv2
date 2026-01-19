@@ -1,4 +1,3 @@
-// src/common/utils/calculation.util.ts
 import TimezoneUtil from './timezone.util';
 
 export class CalculationUtil {
@@ -38,9 +37,25 @@ export class CalculationUtil {
     return new Date(startTime.getTime() + durationMs);
   }
 
+  /**
+   * ✅ MODIFIED: Calculate expiry timestamp dengan aturan "akhir candle"
+   * Jika entry di detik akhir (≤20 detik tersisa), expiry akan di akhir candle berikutnya
+   */
   static calculateExpiryTimestamp(startTimestamp: number, durationMinutes: number): number {
-    const durationSeconds = Math.round(durationMinutes * 60);
-    return startTimestamp + durationSeconds;
+    const now = this.getCurrentTimestamp();
+    
+    // ✅ NEW: Cek apakah entry di detik akhir candle
+    const isEndOfCandle = TimezoneUtil.isEntryAtEndOfCandle(startTimestamp);
+    
+    if (isEndOfCandle) {
+      // Jika di detik akhir, tambahkan 1 menit agar expiry di akhir candle berikutnya
+      const durationInSeconds = Math.round((durationMinutes + 1) * 60);
+      return startTimestamp + durationInSeconds;
+    }
+    
+    // Normal expiry calculation
+    const durationInSeconds = Math.round(durationMinutes * 60);
+    return startTimestamp + durationInSeconds;
   }
 
   static getCurrentTimestamp(): number {
@@ -120,3 +135,5 @@ export class CalculationUtil {
     );
   }
 }
+
+export default CalculationUtil;
