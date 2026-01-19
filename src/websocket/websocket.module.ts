@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TradingGateway } from './trading.gateway';
@@ -17,7 +17,7 @@ import { BinaryOrdersModule } from '../binary-orders/binary-orders.module';
       }),
     }),
     FirebaseModule,
-    AssetsModule,
+    forwardRef(() => AssetsModule),
     BinaryOrdersModule,
   ],
   providers: [TradingGateway],
