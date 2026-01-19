@@ -16,6 +16,7 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { ManageBalanceDto, ApproveWithdrawalDto } from './dto/manage-balance.dto';
 import { GetUsersQueryDto } from './dto/get-users-query.dto';
+import { VerifyDocumentDto } from './dto/verify-document.dto';
 
 @ApiTags('admin')
 @Controller('admin')
@@ -25,7 +26,156 @@ export class AdminController {
   constructor(private adminService: AdminService) {}
 
   // ============================================
-  // WITHDRAWAL MANAGEMENT (NEW)
+  // VERIFICATION MANAGEMENT (NEW)
+  // ============================================
+
+  @Get('verifications/pending')
+  @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
+  @ApiOperation({ 
+    summary: 'Get all pending verifications (Admin only)',
+    description: 'Get users with pending KTP or Selfie verification'
+  })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Pending verifications retrieved successfully',
+    schema: {
+      example: {
+        success: true,
+        data: {
+          ktpVerifications: [
+            {
+              userId: 'user_123',
+              email: 'user@example.com',
+              fullName: 'John Doe',
+              documentType: 'ktp',
+              documentNumber: '1234567890123456',
+              photoFront: {
+                url: 'https://storage.googleapis.com/...',
+                uploadedAt: '2024-01-01T00:00:00.000Z'
+              },
+              photoBack: {
+                url: 'https://storage.googleapis.com/...',
+                uploadedAt: '2024-01-01T00:00:00.000Z'
+              },
+              uploadedAt: '2024-01-01T00:00:00.000Z'
+            }
+          ],
+          selfieVerifications: [
+            {
+              userId: 'user_456',
+              email: 'user2@example.com',
+              fullName: 'Jane Smith',
+              photoUrl: 'https://storage.googleapis.com/...',
+              uploadedAt: '2024-01-02T00:00:00.000Z'
+            }
+          ],
+          summary: {
+            totalPendingKTP: 5,
+            totalPendingSelfie: 3,
+            total: 8
+          }
+        }
+      }
+    }
+  })
+  getPendingVerifications() {
+    return this.adminService.getPendingVerifications();
+  }
+
+  @Post('verifications/:userId/ktp')
+  @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
+  @ApiOperation({ 
+    summary: 'Verify/Reject user KTP (Admin only)',
+    description: 'Approve or reject KTP verification for a user'
+  })
+  @ApiParam({ name: 'userId', description: 'User ID' })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'KTP verification processed successfully',
+    schema: {
+      example: {
+        success: true,
+        data: {
+          message: 'KTP verified successfully',
+          user: {
+            id: 'user_123',
+            email: 'user@example.com',
+            fullName: 'John Doe'
+          },
+          verification: {
+            type: 'ktp',
+            approved: true,
+            verifiedBy: 'admin_456',
+            verifiedAt: '2024-01-01T00:00:00.000Z'
+          }
+        }
+      }
+    }
+  })
+  @ApiResponse({ 
+    status: 400, 
+    description: 'Bad request - rejection reason required or no document found'
+  })
+  @ApiResponse({ 
+    status: 404, 
+    description: 'User not found'
+  })
+  verifyKTP(
+    @Param('userId') userId: string,
+    @Body() verifyDto: VerifyDocumentDto,
+    @CurrentUser('sub') adminId: string,
+  ) {
+    return this.adminService.verifyKTP(userId, verifyDto, adminId);
+  }
+
+  @Post('verifications/:userId/selfie')
+  @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
+  @ApiOperation({ 
+    summary: 'Verify/Reject user Selfie (Admin only)',
+    description: 'Approve or reject Selfie verification for a user'
+  })
+  @ApiParam({ name: 'userId', description: 'User ID' })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Selfie verification processed successfully',
+    schema: {
+      example: {
+        success: true,
+        data: {
+          message: 'Selfie verified successfully',
+          user: {
+            id: 'user_123',
+            email: 'user@example.com',
+            fullName: 'John Doe'
+          },
+          verification: {
+            type: 'selfie',
+            approved: true,
+            verifiedBy: 'admin_456',
+            verifiedAt: '2024-01-01T00:00:00.000Z'
+          }
+        }
+      }
+    }
+  })
+  @ApiResponse({ 
+    status: 400, 
+    description: 'Bad request - rejection reason required or no selfie found'
+  })
+  @ApiResponse({ 
+    status: 404, 
+    description: 'User not found'
+  })
+  verifySelfie(
+    @Param('userId') userId: string,
+    @Body() verifyDto: VerifyDocumentDto,
+    @CurrentUser('sub') adminId: string,
+  ) {
+    return this.adminService.verifySelfie(userId, verifyDto, adminId);
+  }
+
+  // ============================================
+  // WITHDRAWAL MANAGEMENT
   // ============================================
 
   @Get('withdrawals')

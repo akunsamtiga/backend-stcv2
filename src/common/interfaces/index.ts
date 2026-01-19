@@ -39,7 +39,7 @@ export interface UserProfile {
     country?: string;
   };
   
-  // ✅ ENHANCED: Identity Document with Photos
+  // ✅ ENHANCED: Identity Document with Photos & Verification
   identityDocument?: {
     type?: 'ktp' | 'passport' | 'sim';
     number?: string;
@@ -47,7 +47,10 @@ export interface UserProfile {
     expiryDate?: string;
     isVerified?: boolean;
     verifiedAt?: string;
-    // ✅ NEW: Photo fields
+    verifiedBy?: string; // ✅ NEW: Admin ID who verified
+    rejectionReason?: string; // ✅ NEW: Rejection reason
+    rejectedAt?: string; // ✅ NEW: When rejected
+    rejectedBy?: string; // ✅ NEW: Admin ID who rejected
     photoFront?: {
       url: string;
       uploadedAt: string;
@@ -78,12 +81,16 @@ export interface UserProfile {
     mimeType?: string;
   };
   
-  // ✅ NEW: Selfie Verification
+  // ✅ ENHANCED: Selfie Verification with Rejection Fields
   selfieVerification?: {
     photoUrl: string;
     uploadedAt: string;
     isVerified: boolean;
     verifiedAt?: string;
+    verifiedBy?: string; // ✅ NEW: Admin ID who verified
+    rejectionReason?: string; // ✅ NEW: Rejection reason
+    rejectedAt?: string; // ✅ NEW: When rejected
+    rejectedBy?: string; // ✅ NEW: Admin ID who rejected
     fileSize?: number;
     mimeType?: string;
   };
@@ -102,8 +109,7 @@ export interface UserProfile {
     phoneVerified?: boolean;
     identityVerified?: boolean;
     bankVerified?: boolean;
-    // ✅ NEW: Selfie verification status
-    selfieVerified?: boolean;
+    selfieVerified?: boolean; // ✅ NEW: Selfie verification status
     verificationLevel?: 'unverified' | 'basic' | 'intermediate' | 'advanced';
   };
 }
@@ -119,14 +125,15 @@ export interface User {
   profile?: UserProfile;
   referralCode: string;
   referredBy?: string;
-  isNewUser: boolean  
-  tutorialCompleted: boolean  
+  isNewUser: boolean;
+  tutorialCompleted: boolean;
   createdAt: string;
   updatedAt?: string;
   createdBy?: string;
   lastLoginAt?: string;
   loginCount?: number;
 }
+
 
 export interface Balance {
   id: string;

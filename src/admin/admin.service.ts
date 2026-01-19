@@ -9,6 +9,7 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { ManageBalanceDto, ApproveWithdrawalDto } from './dto/manage-balance.dto';
 import { GetUsersQueryDto } from './dto/get-users-query.dto';
+import { VerifyDocumentDto } from './dto/verify-document.dto';
 import { COLLECTIONS, BALANCE_TYPES, ORDER_STATUS, BALANCE_ACCOUNT_TYPE, USER_STATUS, AFFILIATE_STATUS, WITHDRAWAL_STATUS } from '../common/constants';
 import { User, Balance, BinaryOrder, Affiliate, WithdrawalRequest } from '../common/interfaces';
 
@@ -23,7 +24,211 @@ export class AdminService {
   ) {}
 
   // ============================================
-  // WITHDRAWAL MANAGEMENT (NEW)
+  // VERIFICATION MANAGEMENT (NEW)
+  // ============================================
+
+  async getPendingVerifications() {
+    const db = this.firebaseService.getFirestore();
+
+    try {
+      // Get all users
+      const usersSnapshot = await db.collection(COLLECTIONS.USERS).get();
+      const users: User[] = usersSnapshot.docs.map(doc => doc.data() as User);
+
+      // Filter users with pending KTP verification
+      const pendingKTP = users.filter(user => 
+        user.profile?.identityDocument?.photoFront?.url && 
+        !user.profile?.identityDocument?.isVerified
+      );
+
+      // Filter users with pending Selfie verification
+      const pendingSelfie = users.filter(user =>
+        user.profile?.selfieVerification?.photoUrl &&
+        !user.profile?.selfieVerification?.isVerified
+      );
+
+      return {
+        ktpVerifications: pendingKTP.map(user => ({
+          userId: user.id,
+          email: user.email,
+          fullName: user.profile?.fullName,
+          documentType: user.profile?.identityDocument?.type,
+          documentNumber: user.profile?.identityDocument?.number,
+          photoFront: user.profile?.identityDocument?.photoFront,
+          photoBack: user.profile?.identityDocument?.photoBack,
+          uploadedAt: user.profile?.identityDocument?.photoFront?.uploadedAt,
+        })),
+        selfieVerifications: pendingSelfie.map(user => ({
+          userId: user.id,
+          email: user.email,
+          fullName: user.profile?.fullName,
+          photoUrl: user.profile?.selfieVerification?.photoUrl,
+          uploadedAt: user.profile?.selfieVerification?.uploadedAt,
+        })),
+        summary: {
+          totalPendingKTP: pendingKTP.length,
+          totalPendingSelfie: pendingSelfie.length,
+          total: pendingKTP.length + pendingSelfie.length,
+        }
+      };
+    } catch (error) {
+      this.logger.error(`❌ getPendingVerifications error: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async verifyKTP(
+    userId: string,
+    verifyDto: VerifyDocumentDto,
+    adminId: string,
+  ) {
+    const db = this.firebaseService.getFirestore();
+    const { approve, adminNotes, rejectionReason } = verifyDto;
+
+    try {
+      // 1. Get user document
+      const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
+      if (!userDoc.exists) {
+        throw new NotFoundException('User not found');
+      }
+
+      const user = userDoc.data() as User;
+
+      // 2. Validate KTP document exists
+      if (!user.profile?.identityDocument?.photoFront?.url) {
+        throw new BadRequestException('No KTP document found for this user');
+      }
+
+      // 3. Validate rejection reason if rejecting
+      if (!approve && !rejectionReason?.trim()) {
+        throw new BadRequestException('Rejection reason is required when rejecting');
+      }
+
+      // 4. Prepare update data
+      const timestamp = new Date().toISOString();
+      const updateData: any = {
+        'profile.identityDocument.isVerified': approve,
+        updatedAt: timestamp,
+      };
+
+      if (approve) {
+        // APPROVED
+        updateData['profile.identityDocument.verifiedAt'] = timestamp;
+        updateData['profile.identityDocument.verifiedBy'] = adminId;
+      } else {
+        // REJECTED
+        updateData['profile.identityDocument.rejectionReason'] = rejectionReason;
+        updateData['profile.identityDocument.rejectedAt'] = timestamp;
+        updateData['profile.identityDocument.rejectedBy'] = adminId;
+      }
+
+      // 5. Update user document
+      await db.collection(COLLECTIONS.USERS).doc(userId).update(updateData);
+
+      // 6. Log the action
+      this.logger.log(
+        `${approve ? '✅ KTP verified' : '❌ KTP rejected'}: ${user.email} by admin ${adminId}`
+      );
+
+      // 7. Return response
+      return {
+        message: approve ? 'KTP verified successfully' : 'KTP verification rejected',
+        user: {
+          id: userId,
+          email: user.email,
+          fullName: user.profile?.fullName,
+        },
+        verification: {
+          type: 'ktp',
+          approved: approve,
+          verifiedBy: adminId,
+          verifiedAt: timestamp,
+          rejectionReason: approve ? undefined : rejectionReason,
+        },
+      };
+    } catch (error) {
+      this.logger.error(`❌ verifyKTP error: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async verifySelfie(
+    userId: string,
+    verifyDto: VerifyDocumentDto,
+    adminId: string,
+  ) {
+    const db = this.firebaseService.getFirestore();
+    const { approve, adminNotes, rejectionReason } = verifyDto;
+
+    try {
+      // 1. Get user document
+      const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
+      if (!userDoc.exists) {
+        throw new NotFoundException('User not found');
+      }
+
+      const user = userDoc.data() as User;
+
+      // 2. Validate selfie exists
+      if (!user.profile?.selfieVerification?.photoUrl) {
+        throw new BadRequestException('No selfie found for this user');
+      }
+
+      // 3. Validate rejection reason if rejecting
+      if (!approve && !rejectionReason?.trim()) {
+        throw new BadRequestException('Rejection reason is required when rejecting');
+      }
+
+      // 4. Prepare update data
+      const timestamp = new Date().toISOString();
+      const updateData: any = {
+        'profile.selfieVerification.isVerified': approve,
+        updatedAt: timestamp,
+      };
+
+      if (approve) {
+        // APPROVED
+        updateData['profile.selfieVerification.verifiedAt'] = timestamp;
+        updateData['profile.selfieVerification.verifiedBy'] = adminId;
+      } else {
+        // REJECTED
+        updateData['profile.selfieVerification.rejectionReason'] = rejectionReason;
+        updateData['profile.selfieVerification.rejectedAt'] = timestamp;
+        updateData['profile.selfieVerification.rejectedBy'] = adminId;
+      }
+
+      // 5. Update user document
+      await db.collection(COLLECTIONS.USERS).doc(userId).update(updateData);
+
+      // 6. Log the action
+      this.logger.log(
+        `${approve ? '✅ Selfie verified' : '❌ Selfie rejected'}: ${user.email} by admin ${adminId}`
+      );
+
+      // 7. Return response
+      return {
+        message: approve ? 'Selfie verified successfully' : 'Selfie verification rejected',
+        user: {
+          id: userId,
+          email: user.email,
+          fullName: user.profile?.fullName,
+        },
+        verification: {
+          type: 'selfie',
+          approved: approve,
+          verifiedBy: adminId,
+          verifiedAt: timestamp,
+          rejectionReason: approve ? undefined : rejectionReason,
+        },
+      };
+    } catch (error) {
+      this.logger.error(`❌ verifySelfie error: ${error.message}`);
+      throw error;
+    }
+  }
+
+  // ============================================
+  // WITHDRAWAL MANAGEMENT
   // ============================================
 
   async getAllWithdrawalRequests(status?: string) {
@@ -714,7 +919,6 @@ export class AdminService {
     const affiliatesSnapshot = await db.collection(COLLECTIONS.AFFILIATES).get();
     const affiliates: Affiliate[] = affiliatesSnapshot.docs.map(doc => doc.data() as Affiliate);
 
-    // Get withdrawal requests
     const withdrawalSnapshot = await db.collection(COLLECTIONS.WITHDRAWAL_REQUESTS).get();
     const withdrawalRequests: WithdrawalRequest[] = withdrawalSnapshot.docs.map(doc => doc.data() as WithdrawalRequest);
 
