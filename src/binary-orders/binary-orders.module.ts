@@ -7,11 +7,13 @@ import { BalanceModule } from '../balance/balance.module';
 import { AssetsModule } from '../assets/assets.module';
 import { AuthModule } from '../auth/auth.module';
 import { UserModule } from '../user/user.module';
+import { WebSocketModule } from '../websocket/websocket.module'; // ➕ Import WebSocketModule
 
 @Module({
   imports: [
     BalanceModule,
-    forwardRef(() => AssetsModule), // ➕ Tambahkan forwardRef
+    forwardRef(() => AssetsModule),
+    forwardRef(() => WebSocketModule), // ➕ Tambahkan ini
     AuthModule,
     UserModule,
     JwtModule.registerAsync({
