@@ -138,6 +138,37 @@ export interface Balance {
   createdAt: string;
 }
 
+export interface WithdrawalRequest {
+  id: string;
+  user_id: string;
+  amount: number;
+  status: 'pending' | 'approved' | 'rejected' | 'completed';
+  description?: string;
+  
+  // User info snapshot
+  userEmail: string;
+  userName?: string;
+  bankAccount?: {
+    bankName: string;
+    accountNumber: string;
+    accountHolderName: string;
+  };
+  
+  // Verification proof
+  ktpVerified: boolean;
+  selfieVerified: boolean;
+  currentBalance: number;
+  
+  // Admin action
+  reviewedBy?: string;
+  reviewedAt?: string;
+  rejectionReason?: string;
+  adminNotes?: string;
+  
+  createdAt: string;
+  updatedAt?: string;
+}
+
 export interface Affiliate {
   id: string;
   referrer_id: string;

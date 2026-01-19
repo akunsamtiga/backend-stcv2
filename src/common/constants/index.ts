@@ -79,12 +79,35 @@ export const AFFILIATE_CONFIG = {
   },
 } as const;
 
+// ============================================
+// WITHDRAWAL CONSTANTS (NEW)
+// ============================================
+
+export const WITHDRAWAL_STATUS = {
+  PENDING: 'pending',
+  APPROVED: 'approved',
+  REJECTED: 'rejected',
+  COMPLETED: 'completed',
+} as const;
+
+export const WITHDRAWAL_CONFIG = {
+  MIN_AMOUNT: 100000, // Minimum Rp 100,000
+  REQUIRE_KTP: true,
+  REQUIRE_SELFIE: true,
+  REQUIRE_BANK_ACCOUNT: true,
+} as const;
+
+// ============================================
+// COLLECTIONS
+// ============================================
+
 export const COLLECTIONS = {
   USERS: 'users',
   BALANCE: 'balance',
   ORDERS: 'binary_orders',
   ASSETS: 'assets',
   AFFILIATES: 'affiliates',
+  WITHDRAWAL_REQUESTS: 'withdrawal_requests', // 👈 NEW COLLECTION
 } as const;
 
 export const ASSET_TYPE = {
@@ -139,7 +162,6 @@ export const ASSET_TYPE_INFO = {
     icon: '📊',
   },
 } as const;
-
 
 export const BINANCE_CONFIG = {
   BASE_URL: 'https://api.binance.com/api/v3',
@@ -198,6 +220,7 @@ export type ValidDuration = typeof ALL_DURATIONS[number];
 export type BalanceAccountType = typeof BALANCE_ACCOUNT_TYPE[keyof typeof BALANCE_ACCOUNT_TYPE];
 export type UserStatus = typeof USER_STATUS[keyof typeof USER_STATUS];
 export type AffiliateStatus = typeof AFFILIATE_STATUS[keyof typeof AFFILIATE_STATUS];
+export type WithdrawalStatus = typeof WITHDRAWAL_STATUS[keyof typeof WITHDRAWAL_STATUS]; // 👈 NEW TYPE
 export type AssetType = typeof ASSET_TYPE[keyof typeof ASSET_TYPE];
 export type AssetCategory = typeof ASSET_CATEGORY[keyof typeof ASSET_CATEGORY];
 export type AssetDataSource = typeof ASSET_DATA_SOURCE[keyof typeof ASSET_DATA_SOURCE];

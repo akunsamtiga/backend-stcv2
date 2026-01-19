@@ -1,4 +1,5 @@
 // src/admin/admin.controller.ts
+
 import { 
   Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards 
 } from '@nestjs/common';
@@ -13,7 +14,7 @@ import { USER_ROLES } from '../common/constants';
 import { AdminService } from './admin.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
-import { ManageBalanceDto } from './dto/manage-balance.dto';
+import { ManageBalanceDto, ApproveWithdrawalDto } from './dto/manage-balance.dto';
 import { GetUsersQueryDto } from './dto/get-users-query.dto';
 
 @ApiTags('admin')
@@ -22,6 +23,147 @@ import { GetUsersQueryDto } from './dto/get-users-query.dto';
 @ApiBearerAuth()
 export class AdminController {
   constructor(private adminService: AdminService) {}
+
+  // ============================================
+  // WITHDRAWAL MANAGEMENT (NEW)
+  // ============================================
+
+  @Get('withdrawals')
+  @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
+  @ApiOperation({ 
+    summary: 'Get all withdrawal requests (Admin only)',
+    description: 'Get all withdrawal requests with optional status filter. Returns summary and detailed list.'
+  })
+  @ApiQuery({ 
+    name: 'status', 
+    required: false, 
+    enum: ['pending', 'approved', 'rejected', 'completed'],
+    description: 'Filter by status (optional)'
+  })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Withdrawal requests retrieved successfully',
+    schema: {
+      example: {
+        success: true,
+        data: {
+          requests: [
+            {
+              id: 'withdrawal_req_123',
+              user_id: 'user_123',
+              amount: 500000,
+              status: 'pending',
+              description: 'Monthly withdrawal',
+              userEmail: 'user@example.com',
+              userName: 'John Doe',
+              bankAccount: {
+                bankName: 'Bank Mandiri',
+                accountNumber: '1234567890',
+                accountHolderName: 'John Doe'
+              },
+              ktpVerified: true,
+              selfieVerified: true,
+              currentBalance: 1000000,
+              createdAt: '2024-01-01T00:00:00.000Z'
+            }
+          ],
+          summary: {
+            total: 10,
+            pending: 3,
+            approved: 0,
+            rejected: 2,
+            completed: 5
+          }
+        }
+      }
+    }
+  })
+  getAllWithdrawalRequests(@Query('status') status?: string) {
+    return this.adminService.getAllWithdrawalRequests(status);
+  }
+
+  @Get('withdrawals/:id')
+  @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
+  @ApiOperation({ 
+    summary: 'Get withdrawal request detail (Admin only)',
+    description: 'Get detailed information about specific withdrawal request including user details'
+  })
+  @ApiParam({ name: 'id', description: 'Withdrawal request ID' })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Withdrawal request detail retrieved successfully'
+  })
+  @ApiResponse({ 
+    status: 404, 
+    description: 'Withdrawal request not found'
+  })
+  getWithdrawalRequestById(@Param('id') requestId: string) {
+    return this.adminService.getWithdrawalRequestById(requestId);
+  }
+
+  @Post('withdrawals/:id/approve')
+  @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
+  @ApiOperation({ 
+    summary: 'Approve or reject withdrawal request (Admin only)',
+    description: `Process withdrawal request:
+    
+    **APPROVE (approve: true):**
+    • Validates current balance is still sufficient
+    • Creates withdrawal balance entry
+    • Updates request status to COMPLETED
+    • User balance is automatically deducted
+    
+    **REJECT (approve: false):**
+    • Requires rejection reason
+    • Updates request status to REJECTED
+    • User balance remains unchanged
+    • User can submit new request`
+  })
+  @ApiParam({ name: 'id', description: 'Withdrawal request ID' })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Withdrawal processed successfully',
+    schema: {
+      example: {
+        success: true,
+        data: {
+          message: 'Withdrawal approved and processed successfully',
+          request: {
+            id: 'withdrawal_req_123',
+            amount: 500000,
+            status: 'completed',
+            user: {
+              email: 'user@example.com',
+              name: 'John Doe'
+            },
+            bankAccount: {
+              bankName: 'Bank Mandiri',
+              accountNumber: '1234567890',
+              accountHolderName: 'John Doe'
+            },
+            reviewedBy: 'admin_123',
+            reviewedAt: '2024-01-01T00:00:00.000Z',
+            newBalance: 500000
+          }
+        }
+      }
+    }
+  })
+  @ApiResponse({ 
+    status: 400, 
+    description: 'Invalid request - already processed, insufficient balance, or missing rejection reason'
+  })
+  @ApiResponse({ 
+    status: 404, 
+    description: 'Withdrawal request not found'
+  })
+  approveWithdrawal(
+    @Param('id') requestId: string,
+    @Body() approveDto: ApproveWithdrawalDto,
+    @CurrentUser('sub') adminId: string,
+  ) {
+    return this.adminService.approveWithdrawal(requestId, approveDto, adminId);
+  }
 
   // ============================================
   // USER MANAGEMENT
@@ -84,14 +226,17 @@ export class AdminController {
   }
 
   // ============================================
-  // BALANCE MANAGEMENT (NEW)
+  // BALANCE MANAGEMENT
   // ============================================
 
   @Post('users/:id/balance')
   @Roles(USER_ROLES.SUPER_ADMIN)
   @ApiOperation({ 
     summary: 'Manage user balance - Add or subtract (Super Admin only)',
-    description: 'Add or subtract balance from user account'
+    description: `Add or subtract balance from user account.
+    
+    ⚠️ NOTE: For REAL account withdrawals via admin, this bypasses the withdrawal request system.
+    Normal users must use the withdrawal request system.`
   })
   @ApiParam({ name: 'id', description: 'User ID' })
   @ApiResponse({ status: 200, description: 'Balance updated successfully' })
@@ -117,7 +262,7 @@ export class AdminController {
   }
 
   // ============================================
-  // USER HISTORY (NEW)
+  // USER HISTORY
   // ============================================
 
   @Get('users/:id/history')
@@ -145,16 +290,91 @@ export class AdminController {
   }
 
   // ============================================
-  // SYSTEM STATISTICS (NEW)
+  // SYSTEM STATISTICS
   // ============================================
 
   @Get('statistics')
   @Roles(USER_ROLES.SUPER_ADMIN)
   @ApiOperation({ 
     summary: 'Get system-wide statistics (Super Admin only)',
-    description: 'Get overall system statistics including users, trading, and financial data'
+    description: 'Get overall system statistics including users, trading, financial data, and withdrawal requests'
   })
-  @ApiResponse({ status: 200, description: 'Returns system statistics' })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Returns system statistics',
+    schema: {
+      example: {
+        success: true,
+        data: {
+          users: {
+            total: 100,
+            active: 85,
+            admins: 5,
+            statusDistribution: {
+              standard: 70,
+              gold: 20,
+              vip: 10
+            }
+          },
+          affiliate: {
+            totalReferrals: 50,
+            completedReferrals: 30,
+            pendingReferrals: 20,
+            totalCommissionsPaid: 1500000,
+            commissionRate: 25000,
+            conversionRate: 60
+          },
+          withdrawal: {
+            totalRequests: 25,
+            pending: 5,
+            approved: 0,
+            rejected: 3,
+            completed: 17,
+            totalAmount: 8500000
+          },
+          realAccount: {
+            trading: {
+              totalOrders: 500,
+              activeOrders: 10,
+              wonOrders: 280,
+              lostOrders: 210,
+              totalVolume: 50000000,
+              totalProfit: 5000000,
+              winRate: 57
+            },
+            financial: {
+              totalDeposits: 100000000,
+              totalWithdrawals: 8500000,
+              affiliateCommissions: 1500000,
+              netFlow: 90000000
+            }
+          },
+          demoAccount: {
+            trading: {
+              totalOrders: 1200,
+              activeOrders: 25,
+              wonOrders: 650,
+              lostOrders: 525,
+              totalVolume: 120000000,
+              totalProfit: 10000000,
+              winRate: 55
+            },
+            financial: {
+              totalDeposits: 1000000000,
+              totalWithdrawals: 0,
+              netFlow: 1000000000
+            }
+          },
+          combined: {
+            totalOrders: 1700,
+            totalVolume: 170000000,
+            totalProfit: 15000000
+          },
+          timestamp: '2024-01-01T00:00:00.000Z'
+        }
+      }
+    }
+  })
   getSystemStatistics() {
     return this.adminService.getSystemStatistics();
   }

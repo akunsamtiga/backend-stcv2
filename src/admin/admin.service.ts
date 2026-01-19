@@ -1,4 +1,5 @@
 // src/admin/admin.service.ts
+
 import { Injectable, NotFoundException, ConflictException, Logger, BadRequestException } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 import { FirebaseService } from '../firebase/firebase.service';
@@ -6,10 +7,10 @@ import { BalanceService } from '../balance/balance.service';
 import { UserStatusService } from '../user/user-status.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
-import { ManageBalanceDto } from './dto/manage-balance.dto';
+import { ManageBalanceDto, ApproveWithdrawalDto } from './dto/manage-balance.dto';
 import { GetUsersQueryDto } from './dto/get-users-query.dto';
-import { COLLECTIONS, BALANCE_TYPES, ORDER_STATUS, BALANCE_ACCOUNT_TYPE, USER_STATUS, AFFILIATE_STATUS } from '../common/constants';
-import { User, Balance, BinaryOrder, Affiliate } from '../common/interfaces';
+import { COLLECTIONS, BALANCE_TYPES, ORDER_STATUS, BALANCE_ACCOUNT_TYPE, USER_STATUS, AFFILIATE_STATUS, WITHDRAWAL_STATUS } from '../common/constants';
+import { User, Balance, BinaryOrder, Affiliate, WithdrawalRequest } from '../common/interfaces';
 
 @Injectable()
 export class AdminService {
@@ -21,73 +22,291 @@ export class AdminService {
     private userStatusService: UserStatusService,
   ) {}
 
-  async createUser(createUserDto: CreateUserDto, createdBy: string) {
-  const db = this.firebaseService.getFirestore();
+  // ============================================
+  // WITHDRAWAL MANAGEMENT (NEW)
+  // ============================================
 
-  const existingSnapshot = await db.collection(COLLECTIONS.USERS)
-    .where('email', '==', createUserDto.email)
-    .limit(1)
-    .get();
+  async getAllWithdrawalRequests(status?: string) {
+    const db = this.firebaseService.getFirestore();
 
-  if (!existingSnapshot.empty) {
-    throw new ConflictException('Email already registered');
+    try {
+      let query = db.collection(COLLECTIONS.WITHDRAWAL_REQUESTS)
+        .orderBy('createdAt', 'desc');
+
+      if (status && ['pending', 'approved', 'rejected', 'completed'].includes(status)) {
+        query = query.where('status', '==', status) as any;
+      }
+
+      const snapshot = await query.get();
+      const requests = snapshot.docs.map(doc => doc.data() as WithdrawalRequest);
+
+      return {
+        requests,
+        summary: {
+          total: requests.length,
+          pending: requests.filter(r => r.status === WITHDRAWAL_STATUS.PENDING).length,
+          approved: requests.filter(r => r.status === WITHDRAWAL_STATUS.APPROVED).length,
+          rejected: requests.filter(r => r.status === WITHDRAWAL_STATUS.REJECTED).length,
+          completed: requests.filter(r => r.status === WITHDRAWAL_STATUS.COMPLETED).length,
+        },
+      };
+    } catch (error) {
+      this.logger.error(`❌ getAllWithdrawalRequests error: ${error.message}`);
+      throw error;
+    }
   }
 
-  const hashedPassword = await bcrypt.hash(createUserDto.password, 10);
-  const userId = await this.firebaseService.generateId(COLLECTIONS.USERS);
-  const timestamp = new Date().toISOString();
+  async getWithdrawalRequestById(requestId: string) {
+    const db = this.firebaseService.getFirestore();
 
-  const userData = {
-    id: userId,
-    email: createUserDto.email,
-    password: hashedPassword,
-    role: createUserDto.role,
-    status: USER_STATUS.STANDARD,
-    isActive: true,
-    createdAt: timestamp,
-    updatedAt: timestamp,
-    createdBy,
-  };
+    try {
+      const requestDoc = await db.collection(COLLECTIONS.WITHDRAWAL_REQUESTS).doc(requestId).get();
+      
+      if (!requestDoc.exists) {
+        throw new NotFoundException('Withdrawal request not found');
+      }
 
-  await db.collection(COLLECTIONS.USERS).doc(userId).set(userData);
+      const request = requestDoc.data() as WithdrawalRequest;
 
-  const balanceId1 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
-  const balanceId2 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
+      // Get user details
+      const userDoc = await db.collection(COLLECTIONS.USERS).doc(request.user_id).get();
+      const user = userDoc.exists ? userDoc.data() as User : null;
 
-  await Promise.all([
-    db.collection(COLLECTIONS.BALANCE).doc(balanceId1).set({
-      id: balanceId1,
-      user_id: userId,
-      accountType: BALANCE_ACCOUNT_TYPE.REAL,
-      type: BALANCE_TYPES.DEPOSIT,
-      amount: 0,
-      description: 'Initial real balance',
+      return {
+        request,
+        userDetails: user ? {
+          id: user.id,
+          email: user.email,
+          role: user.role,
+          status: user.status,
+          isActive: user.isActive,
+          profile: {
+            fullName: user.profile?.fullName,
+            phoneNumber: user.profile?.phoneNumber,
+            identityDocument: user.profile?.identityDocument ? {
+              type: user.profile.identityDocument.type,
+              isVerified: user.profile.identityDocument.isVerified,
+              verifiedAt: user.profile.identityDocument.verifiedAt,
+            } : null,
+            selfieVerification: user.profile?.selfieVerification ? {
+              isVerified: user.profile.selfieVerification.isVerified,
+              verifiedAt: user.profile.selfieVerification.verifiedAt,
+            } : null,
+            bankAccount: user.profile?.bankAccount,
+          },
+        } : null,
+      };
+    } catch (error) {
+      this.logger.error(`❌ getWithdrawalRequestById error: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async approveWithdrawal(
+    requestId: string,
+    approveDto: ApproveWithdrawalDto,
+    adminId: string,
+  ) {
+    const db = this.firebaseService.getFirestore();
+    const { approve, adminNotes, rejectionReason } = approveDto;
+
+    try {
+      // 1. Get withdrawal request
+      const requestDoc = await db.collection(COLLECTIONS.WITHDRAWAL_REQUESTS).doc(requestId).get();
+      
+      if (!requestDoc.exists) {
+        throw new NotFoundException('Withdrawal request not found');
+      }
+
+      const request = requestDoc.data() as WithdrawalRequest;
+
+      // 2. Check if already processed
+      if (request.status !== WITHDRAWAL_STATUS.PENDING) {
+        throw new BadRequestException(
+          `Withdrawal request already ${request.status}`
+        );
+      }
+
+      const timestamp = new Date().toISOString();
+
+      if (approve) {
+        // 3a. APPROVE - Process withdrawal
+        
+        // Verify balance masih cukup
+        const currentBalance = await this.balanceService.getCurrentBalance(
+          request.user_id, 
+          BALANCE_ACCOUNT_TYPE.REAL,
+          true
+        );
+
+        if (currentBalance < request.amount) {
+          throw new BadRequestException(
+            `Insufficient balance. Current: Rp ${currentBalance.toLocaleString()}, Required: Rp ${request.amount.toLocaleString()}`
+          );
+        }
+
+        // Create withdrawal balance entry
+        const balanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
+        
+        await db.collection(COLLECTIONS.BALANCE).doc(balanceId).set({
+          id: balanceId,
+          user_id: request.user_id,
+          accountType: BALANCE_ACCOUNT_TYPE.REAL,
+          type: BALANCE_TYPES.WITHDRAWAL,
+          amount: request.amount,
+          description: `Withdrawal approved by admin - ${request.description || 'Withdrawal request'}`,
+          createdAt: timestamp,
+        });
+
+        // Update request status
+        await db.collection(COLLECTIONS.WITHDRAWAL_REQUESTS).doc(requestId).update({
+          status: WITHDRAWAL_STATUS.COMPLETED,
+          reviewedBy: adminId,
+          reviewedAt: timestamp,
+          adminNotes: adminNotes || 'Approved and processed',
+          updatedAt: timestamp,
+        });
+
+        // Invalidate balance cache
+        this.balanceService.clearUserCache(request.user_id);
+
+        this.logger.log(
+          `✅ Withdrawal approved: ${requestId}\n` +
+          `   User: ${request.userEmail}\n` +
+          `   Amount: Rp ${request.amount.toLocaleString()}\n` +
+          `   Bank: ${request.bankAccount?.bankName} - ${request.bankAccount?.accountNumber}\n` +
+          `   Admin: ${adminId}`
+        );
+
+        return {
+          message: 'Withdrawal approved and processed successfully',
+          request: {
+            id: requestId,
+            amount: request.amount,
+            status: WITHDRAWAL_STATUS.COMPLETED,
+            user: {
+              email: request.userEmail,
+              name: request.userName,
+            },
+            bankAccount: request.bankAccount,
+            reviewedBy: adminId,
+            reviewedAt: timestamp,
+            newBalance: currentBalance - request.amount,
+          },
+        };
+
+      } else {
+        // 3b. REJECT
+        if (!rejectionReason || rejectionReason.trim() === '') {
+          throw new BadRequestException('Rejection reason is required when rejecting withdrawal');
+        }
+
+        await db.collection(COLLECTIONS.WITHDRAWAL_REQUESTS).doc(requestId).update({
+          status: WITHDRAWAL_STATUS.REJECTED,
+          reviewedBy: adminId,
+          reviewedAt: timestamp,
+          rejectionReason,
+          adminNotes: adminNotes || rejectionReason,
+          updatedAt: timestamp,
+        });
+
+        this.logger.log(
+          `❌ Withdrawal rejected: ${requestId}\n` +
+          `   User: ${request.userEmail}\n` +
+          `   Amount: Rp ${request.amount.toLocaleString()}\n` +
+          `   Reason: ${rejectionReason}\n` +
+          `   Admin: ${adminId}`
+        );
+
+        return {
+          message: 'Withdrawal request rejected',
+          request: {
+            id: requestId,
+            amount: request.amount,
+            status: WITHDRAWAL_STATUS.REJECTED,
+            rejectionReason,
+            reviewedBy: adminId,
+            reviewedAt: timestamp,
+          },
+        };
+      }
+
+    } catch (error) {
+      this.logger.error(`❌ approveWithdrawal error: ${error.message}`);
+      throw error;
+    }
+  }
+
+  // ============================================
+  // USER MANAGEMENT
+  // ============================================
+
+  async createUser(createUserDto: CreateUserDto, createdBy: string) {
+    const db = this.firebaseService.getFirestore();
+
+    const existingSnapshot = await db.collection(COLLECTIONS.USERS)
+      .where('email', '==', createUserDto.email)
+      .limit(1)
+      .get();
+
+    if (!existingSnapshot.empty) {
+      throw new ConflictException('Email already registered');
+    }
+
+    const hashedPassword = await bcrypt.hash(createUserDto.password, 10);
+    const userId = await this.firebaseService.generateId(COLLECTIONS.USERS);
+    const timestamp = new Date().toISOString();
+
+    const userData = {
+      id: userId,
+      email: createUserDto.email,
+      password: hashedPassword,
+      role: createUserDto.role,
+      status: USER_STATUS.STANDARD,
+      isActive: true,
       createdAt: timestamp,
-    }),
-    db.collection(COLLECTIONS.BALANCE).doc(balanceId2).set({
-      id: balanceId2,
-      user_id: userId,
-      accountType: BALANCE_ACCOUNT_TYPE.DEMO,
-      type: BALANCE_TYPES.DEPOSIT,
-      amount: 10000000,
-      description: 'Initial demo balance - 10 million',
-      createdAt: timestamp,
-    }),
-  ]);
+      updatedAt: timestamp,
+      createdBy,
+    };
 
-  this.logger.log(`✅ User created by admin: ${createUserDto.email}`);
+    await db.collection(COLLECTIONS.USERS).doc(userId).set(userData);
 
-  const { password, ...userWithoutPassword } = userData;
-  return {
-    message: 'User created successfully',
-    user: userWithoutPassword,
-    initialBalances: {
-      real: 0,
-      demo: 10000000,
-    },
-  };
-}
+    const balanceId1 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
+    const balanceId2 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
 
+    await Promise.all([
+      db.collection(COLLECTIONS.BALANCE).doc(balanceId1).set({
+        id: balanceId1,
+        user_id: userId,
+        accountType: BALANCE_ACCOUNT_TYPE.REAL,
+        type: BALANCE_TYPES.DEPOSIT,
+        amount: 0,
+        description: 'Initial real balance',
+        createdAt: timestamp,
+      }),
+      db.collection(COLLECTIONS.BALANCE).doc(balanceId2).set({
+        id: balanceId2,
+        user_id: userId,
+        accountType: BALANCE_ACCOUNT_TYPE.DEMO,
+        type: BALANCE_TYPES.DEPOSIT,
+        amount: 10000000,
+        description: 'Initial demo balance - 10 million',
+        createdAt: timestamp,
+      }),
+    ]);
+
+    this.logger.log(`✅ User created by admin: ${createUserDto.email}`);
+
+    const { password, ...userWithoutPassword } = userData;
+    return {
+      message: 'User created successfully',
+      user: userWithoutPassword,
+      initialBalances: {
+        real: 0,
+        demo: 10000000,
+      },
+    };
+  }
 
   async updateUser(userId: string, updateUserDto: UpdateUserDto) {
     const db = this.firebaseService.getFirestore();
@@ -199,6 +418,10 @@ export class AdminService {
     };
   }
 
+  // ============================================
+  // BALANCE MANAGEMENT
+  // ============================================
+
   async manageUserBalance(
     userId: string, 
     manageBalanceDto: ManageBalanceDto,
@@ -251,53 +474,53 @@ export class AdminService {
   }
 
   async getUserBalance(userId: string) {
-  const user = await this.getUserById(userId);
-  const summary = await this.balanceService.getBothBalances(userId);
-  const statusInfo = await this.userStatusService.getUserStatusInfo(userId);
-  const history = await this.balanceService.getBalanceHistory(userId, { 
-    page: 1, 
-    limit: 20 
-  });
+    const user = await this.getUserById(userId);
+    const summary = await this.balanceService.getBothBalances(userId);
+    const statusInfo = await this.userStatusService.getUserStatusInfo(userId);
+    const history = await this.balanceService.getBalanceHistory(userId, { 
+      page: 1, 
+      limit: 20 
+    });
 
-  const transactions = history.transactions as Balance[];
-  
-  const realTransactions = transactions.filter(
-    t => t.accountType === BALANCE_ACCOUNT_TYPE.REAL
-  );
-  const demoTransactions = transactions.filter(
-    t => t.accountType === BALANCE_ACCOUNT_TYPE.DEMO
-  );
+    const transactions = history.transactions as Balance[];
+    
+    const realTransactions = transactions.filter(
+      t => t.accountType === BALANCE_ACCOUNT_TYPE.REAL
+    );
+    const demoTransactions = transactions.filter(
+      t => t.accountType === BALANCE_ACCOUNT_TYPE.DEMO
+    );
 
-  return {
-    user: {
-      id: user.id,
-      email: user.email,
-      role: user.role,
-      status: user.status,
-    },
-    statusInfo: {
-      current: statusInfo.status,
-      totalDeposit: statusInfo.totalDeposit,
-      profitBonus: statusInfo.profitBonus,
-      nextStatus: statusInfo.nextStatus,
-      progress: statusInfo.progress,
-    },
-    balances: {
-      real: {
-        current: summary.realBalance,
-        recentTransactions: realTransactions.slice(0, 10),
+    return {
+      user: {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        status: user.status,
       },
-      demo: {
-        current: summary.demoBalance,
-        recentTransactions: demoTransactions.slice(0, 10),
+      statusInfo: {
+        current: statusInfo.status,
+        totalDeposit: statusInfo.totalDeposit,
+        profitBonus: statusInfo.profitBonus,
+        nextStatus: statusInfo.nextStatus,
+        progress: statusInfo.progress,
       },
-    },
-    summary: {
-      combinedBalance: summary.realBalance + summary.demoBalance,
-      totalTransactions: summary.realTransactions + summary.demoTransactions,
-    },
-  };
-}
+      balances: {
+        real: {
+          current: summary.realBalance,
+          recentTransactions: realTransactions.slice(0, 10),
+        },
+        demo: {
+          current: summary.demoBalance,
+          recentTransactions: demoTransactions.slice(0, 10),
+        },
+      },
+      summary: {
+        combinedBalance: summary.realBalance + summary.demoBalance,
+        totalTransactions: summary.realTransactions + summary.demoTransactions,
+      },
+    };
+  }
 
   async getAllUsersWithBalance() {
     const db = this.firebaseService.getFirestore();
@@ -360,6 +583,10 @@ export class AdminService {
       },
     };
   }
+
+  // ============================================
+  // USER HISTORY
+  // ============================================
 
   async getUserHistory(userId: string) {
     const user = await this.getUserById(userId);
@@ -468,6 +695,10 @@ export class AdminService {
     };
   }
 
+  // ============================================
+  // SYSTEM STATISTICS
+  // ============================================
+
   async getSystemStatistics() {
     const db = this.firebaseService.getFirestore();
 
@@ -482,6 +713,10 @@ export class AdminService {
 
     const affiliatesSnapshot = await db.collection(COLLECTIONS.AFFILIATES).get();
     const affiliates: Affiliate[] = affiliatesSnapshot.docs.map(doc => doc.data() as Affiliate);
+
+    // Get withdrawal requests
+    const withdrawalSnapshot = await db.collection(COLLECTIONS.WITHDRAWAL_REQUESTS).get();
+    const withdrawalRequests: WithdrawalRequest[] = withdrawalSnapshot.docs.map(doc => doc.data() as WithdrawalRequest);
 
     const realOrders: BinaryOrder[] = orders.filter(o => o.accountType === BALANCE_ACCOUNT_TYPE.REAL);
     const demoOrders: BinaryOrder[] = orders.filter(o => o.accountType === BALANCE_ACCOUNT_TYPE.DEMO);
@@ -517,7 +752,11 @@ export class AdminService {
         .filter(t => t.type === BALANCE_TYPES.WITHDRAWAL)
         .reduce((sum, t) => sum + t.amount, 0),
       affiliateCommissions: realTransactions
-        .filter(t => t.type === BALANCE_TYPES.AFFILIATE_COMMISSION)
+        .filter(t => 
+          t.type === BALANCE_TYPES.DEPOSIT && 
+          t.description && 
+          t.description.toLowerCase().includes('affiliate commission')
+        )
         .reduce((sum, t) => sum + t.amount, 0),
     };
 
@@ -561,6 +800,16 @@ export class AdminService {
           ? Math.round((completedAffiliates.length / affiliates.length) * 100) 
           : 0,
       },
+      withdrawal: {
+        totalRequests: withdrawalRequests.length,
+        pending: withdrawalRequests.filter(w => w.status === WITHDRAWAL_STATUS.PENDING).length,
+        approved: withdrawalRequests.filter(w => w.status === WITHDRAWAL_STATUS.APPROVED).length,
+        rejected: withdrawalRequests.filter(w => w.status === WITHDRAWAL_STATUS.REJECTED).length,
+        completed: withdrawalRequests.filter(w => w.status === WITHDRAWAL_STATUS.COMPLETED).length,
+        totalAmount: withdrawalRequests
+          .filter(w => w.status === WITHDRAWAL_STATUS.COMPLETED)
+          .reduce((sum, w) => sum + w.amount, 0),
+      },
       realAccount: {
         trading: {
           ...realStats,
@@ -592,6 +841,10 @@ export class AdminService {
       timestamp: new Date().toISOString(),
     };
   }
+
+  // ============================================
+  // PRIVATE HELPER METHODS
+  // ============================================
 
   private calculateAccountStats(transactions: Balance[], orders: BinaryOrder[]) {
     const totalDeposits = transactions

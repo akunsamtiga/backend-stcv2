@@ -1,11 +1,12 @@
 // src/balance/balance.service.ts
-import { Injectable, BadRequestException, Logger } from '@nestjs/common';
+
+import { Injectable, BadRequestException, Logger, NotFoundException } from '@nestjs/common';
 import { FirebaseService } from '../firebase/firebase.service';
 import { CreateBalanceDto } from './dto/create-balance.dto';
 import { QueryBalanceDto } from './dto/query-balance.dto';
-import { COLLECTIONS, BALANCE_TYPES, BALANCE_ACCOUNT_TYPE, AFFILIATE_STATUS, AFFILIATE_CONFIG, USER_STATUS } from '../common/constants';
+import { COLLECTIONS, BALANCE_TYPES, BALANCE_ACCOUNT_TYPE, AFFILIATE_STATUS, AFFILIATE_CONFIG, USER_STATUS, WITHDRAWAL_STATUS, WITHDRAWAL_CONFIG } from '../common/constants';
 import { CalculationUtil } from '../common/utils';
-import { Balance, BalanceSummary, Affiliate } from '../common/interfaces';
+import { Balance, BalanceSummary, Affiliate, User, WithdrawalRequest } from '../common/interfaces';
 
 @Injectable()
 export class BalanceService {
@@ -41,27 +42,209 @@ export class BalanceService {
     this.userStatusService = service;
   }
 
-  // ✅ FIX #1: Enhanced cache invalidation with user status
-  private invalidateCache(userId: string, accountType: 'real' | 'demo'): void {
-    if (accountType === BALANCE_ACCOUNT_TYPE.REAL) {
-      this.realBalanceCache.delete(userId);
-    } else {
-      this.demoBalanceCache.delete(userId);
+  // ============================================
+  // WITHDRAWAL REQUEST - NEW SYSTEM
+  // ============================================
+
+  async requestWithdrawal(userId: string, amount: number, description?: string) {
+    const db = this.firebaseService.getFirestore();
+
+    try {
+      // 1. Validasi minimum amount
+      if (amount < WITHDRAWAL_CONFIG.MIN_AMOUNT) {
+        throw new BadRequestException(
+          `Minimum withdrawal amount is Rp ${WITHDRAWAL_CONFIG.MIN_AMOUNT.toLocaleString()}`
+        );
+      }
+
+      // 2. Get user data
+      const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
+      if (!userDoc.exists) {
+        throw new NotFoundException('User not found');
+      }
+
+      const user = userDoc.data() as User;
+      const profile = user.profile || {};
+
+      // 3. Check KTP verification
+      if (!profile.identityDocument?.isVerified) {
+        throw new BadRequestException(
+          'KTP/Identity verification required. Please upload and verify your KTP first.'
+        );
+      }
+
+      // 4. Check Selfie verification
+      if (!profile.selfieVerification?.isVerified) {
+        throw new BadRequestException(
+          'Selfie verification required. Please upload and verify your selfie first.'
+        );
+      }
+
+      // 5. Check bank account
+      if (!profile.bankAccount?.accountNumber) {
+        throw new BadRequestException(
+          'Bank account required. Please add your bank account details first.'
+        );
+      }
+
+      // 6. Check balance
+      const currentBalance = await this.getCurrentBalance(userId, BALANCE_ACCOUNT_TYPE.REAL, true);
+      
+      if (currentBalance < amount) {
+        throw new BadRequestException(
+          `Insufficient balance. Available: Rp ${currentBalance.toLocaleString()}, Requested: Rp ${amount.toLocaleString()}`
+        );
+      }
+
+      // 7. Check pending withdrawal
+      const pendingWithdrawal = await db.collection(COLLECTIONS.WITHDRAWAL_REQUESTS)
+        .where('user_id', '==', userId)
+        .where('status', '==', WITHDRAWAL_STATUS.PENDING)
+        .limit(1)
+        .get();
+
+      if (!pendingWithdrawal.empty) {
+        throw new BadRequestException(
+          'You already have a pending withdrawal request. Please wait for admin approval.'
+        );
+      }
+
+      // 8. Create withdrawal request
+      const requestId = await this.firebaseService.generateId(COLLECTIONS.WITHDRAWAL_REQUESTS);
+      const timestamp = new Date().toISOString();
+
+      const withdrawalRequest: WithdrawalRequest = {
+        id: requestId,
+        user_id: userId,
+        amount,
+        status: WITHDRAWAL_STATUS.PENDING,
+        description: description || 'Withdrawal request',
+        
+        userEmail: user.email,
+        userName: profile.fullName,
+        bankAccount: {
+          bankName: profile.bankAccount.bankName!,
+          accountNumber: profile.bankAccount.accountNumber!,
+          accountHolderName: profile.bankAccount.accountHolderName!,
+        },
+        
+        ktpVerified: true,
+        selfieVerified: true,
+        currentBalance,
+        
+        createdAt: timestamp,
+      };
+
+      await db.collection(COLLECTIONS.WITHDRAWAL_REQUESTS).doc(requestId).set(withdrawalRequest);
+
+      this.logger.log(
+        `✅ Withdrawal request created: ${requestId} - User: ${userId} - Amount: Rp ${amount.toLocaleString()}`
+      );
+
+      return {
+        message: 'Withdrawal request submitted successfully. Waiting for admin approval.',
+        request: {
+          id: requestId,
+          amount,
+          status: WITHDRAWAL_STATUS.PENDING,
+          bankAccount: {
+            bankName: profile.bankAccount.bankName,
+            accountNumber: this.maskBankAccount(profile.bankAccount.accountNumber),
+            accountHolderName: profile.bankAccount.accountHolderName,
+          },
+          estimatedProcess: '1-2 business days',
+          requirements: {
+            minAmount: `Rp ${WITHDRAWAL_CONFIG.MIN_AMOUNT.toLocaleString()}`,
+            ktpVerified: '✅ Verified',
+            selfieVerified: '✅ Verified',
+            bankAccount: '✅ Added',
+          },
+          createdAt: timestamp,
+        },
+      };
+
+    } catch (error) {
+      this.logger.error(`❌ requestWithdrawal error: ${error.message}`);
+      throw error;
     }
   }
 
-  // ✅ NEW: Clear all user-related caches
-  private invalidateAllUserCaches(userId: string): void {
-    this.realBalanceCache.delete(userId);
-    this.demoBalanceCache.delete(userId);
-    
-    // Clear user status cache
-    if (this.userStatusService) {
-      this.userStatusService.clearUserCache(userId);
+  async getMyWithdrawalRequests(userId: string) {
+    const db = this.firebaseService.getFirestore();
+
+    try {
+      const snapshot = await db.collection(COLLECTIONS.WITHDRAWAL_REQUESTS)
+        .where('user_id', '==', userId)
+        .orderBy('createdAt', 'desc')
+        .get();
+
+      const requests = snapshot.docs.map(doc => {
+        const data = doc.data() as WithdrawalRequest;
+        return {
+          ...data,
+          bankAccount: data.bankAccount ? {
+            ...data.bankAccount,
+            accountNumber: this.maskBankAccount(data.bankAccount.accountNumber),
+          } : undefined,
+        };
+      });
+
+      return {
+        requests,
+        summary: {
+          total: requests.length,
+          pending: requests.filter(r => r.status === WITHDRAWAL_STATUS.PENDING).length,
+          approved: requests.filter(r => r.status === WITHDRAWAL_STATUS.APPROVED).length,
+          rejected: requests.filter(r => r.status === WITHDRAWAL_STATUS.REJECTED).length,
+          completed: requests.filter(r => r.status === WITHDRAWAL_STATUS.COMPLETED).length,
+        },
+      };
+
+    } catch (error) {
+      this.logger.error(`❌ getMyWithdrawalRequests error: ${error.message}`);
+      throw error;
     }
-    
-    this.logger.debug(`🗑️ Cleared all caches for user ${userId}`);
   }
+
+  async cancelWithdrawalRequest(userId: string, requestId: string) {
+    const db = this.firebaseService.getFirestore();
+
+    try {
+      const requestDoc = await db.collection(COLLECTIONS.WITHDRAWAL_REQUESTS).doc(requestId).get();
+      
+      if (!requestDoc.exists) {
+        throw new NotFoundException('Withdrawal request not found');
+      }
+
+      const request = requestDoc.data() as WithdrawalRequest;
+
+      if (request.user_id !== userId) {
+        throw new BadRequestException('Unauthorized to cancel this request');
+      }
+
+      if (request.status !== WITHDRAWAL_STATUS.PENDING) {
+        throw new BadRequestException(
+          `Cannot cancel request with status: ${request.status}`
+        );
+      }
+
+      await db.collection(COLLECTIONS.WITHDRAWAL_REQUESTS).doc(requestId).delete();
+
+      this.logger.log(`✅ Withdrawal request cancelled: ${requestId}`);
+
+      return {
+        message: 'Withdrawal request cancelled successfully',
+      };
+
+    } catch (error) {
+      this.logger.error(`❌ cancelWithdrawalRequest error: ${error.message}`);
+      throw error;
+    }
+  }
+
+  // ============================================
+  // BALANCE ENTRY - MODIFIED
+  // ============================================
 
   async createBalanceEntry(
     userId: string, 
@@ -75,6 +258,13 @@ export class BalanceService {
     try {
       if (accountType !== BALANCE_ACCOUNT_TYPE.REAL && accountType !== BALANCE_ACCOUNT_TYPE.DEMO) {
         throw new BadRequestException('Invalid account type. Must be "real" or "demo"');
+      }
+
+      // ✅ BLOCK DIRECT WITHDRAWAL for REAL account
+      if (type === BALANCE_TYPES.WITHDRAWAL && accountType === BALANCE_ACCOUNT_TYPE.REAL) {
+        throw new BadRequestException(
+          'Direct withdrawal not allowed for real account. Please use withdrawal request endpoint: POST /balance/withdrawal/request'
+        );
       }
 
       await this.acquireTransactionLock(userId, accountType);
@@ -124,7 +314,7 @@ export class BalanceService {
             }
           }
           
-          // ✅ FIX: Withdrawal validation INSIDE transaction
+          // ✅ Withdrawal validation INSIDE transaction (for DEMO only)
           if (type === BALANCE_TYPES.WITHDRAWAL) {
             await db.runTransaction(async (transaction) => {
               const balanceSnapshot = await transaction.get(
@@ -160,6 +350,7 @@ export class BalanceService {
             this.logger.log(`✅ Withdrawal completed: ${userId} - ${accountType} - ${amount}`);
 
           } else {
+            // DEPOSIT or other types
             const balanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
             const balanceData = {
               id: balanceId,
@@ -175,7 +366,7 @@ export class BalanceService {
 
             this.logger.log(`✅ Balance entry created: ${balanceId}`);
 
-            // ✅ FIX: Update user status and clear all caches for REAL deposits
+            // Update user status for REAL deposits
             if (accountType === BALANCE_ACCOUNT_TYPE.REAL && type === BALANCE_TYPES.DEPOSIT) {
               if (this.userStatusService) {
                 try {
@@ -192,6 +383,7 @@ export class BalanceService {
               }
             }
 
+            // Process affiliate commission
             if (affiliateInfo.hasPending && affiliateInfo.affiliateId && affiliateInfo.referrerId) {
               await this.processAffiliate(
                 userId,
@@ -203,7 +395,7 @@ export class BalanceService {
             }
           }
 
-          // ✅ FIX: Clear ALL caches for the user
+          // Clear all caches
           this.invalidateAllUserCaches(userId);
 
           await new Promise(resolve => setTimeout(resolve, 100));
@@ -253,8 +445,29 @@ export class BalanceService {
     this.invalidateAllUserCaches(userId);
   }
 
-  // ... rest of the methods remain the same ...
-  
+  // ============================================
+  // PRIVATE HELPER METHODS
+  // ============================================
+
+  private invalidateCache(userId: string, accountType: 'real' | 'demo'): void {
+    if (accountType === BALANCE_ACCOUNT_TYPE.REAL) {
+      this.realBalanceCache.delete(userId);
+    } else {
+      this.demoBalanceCache.delete(userId);
+    }
+  }
+
+  private invalidateAllUserCaches(userId: string): void {
+    this.realBalanceCache.delete(userId);
+    this.demoBalanceCache.delete(userId);
+    
+    if (this.userStatusService) {
+      this.userStatusService.clearUserCache(userId);
+    }
+    
+    this.logger.debug(`🗑️ Cleared all caches for user ${userId}`);
+  }
+
   private async acquireTransactionLock(userId: string, accountType: string): Promise<void> {
     const lockKey = `${userId}_${accountType}`;
     
@@ -449,6 +662,7 @@ export class BalanceService {
         return;
       }
 
+      // Update affiliate status
       await db.collection(COLLECTIONS.AFFILIATES)
         .doc(affiliateId)
         .update({
@@ -462,26 +676,27 @@ export class BalanceService {
       this.logger.log(`✅ Affiliate record updated: PENDING → COMPLETED`);
       this.logger.log(`   📌 This user will NOT trigger commission again!`);
 
+      // Create commission balance entry (as DEPOSIT to REAL account)
       const commissionBalanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
       
       await db.collection(COLLECTIONS.BALANCE).doc(commissionBalanceId).set({
         id: commissionBalanceId,
         user_id: referrerId,
         accountType: BALANCE_ACCOUNT_TYPE.REAL,
-        type: BALANCE_TYPES.AFFILIATE_COMMISSION,
+        type: BALANCE_TYPES.DEPOSIT,
         amount: commissionAmount,
         description: `Affiliate commission - Friend deposit (${futureStatus.toUpperCase()} level)`,
         createdAt: timestamp,
       });
 
-      this.logger.log(`✅ Commission balance entry created: ${commissionBalanceId}`);
+      this.logger.log(`✅ Commission deposited to REAL account: ${commissionBalanceId}`);
 
-      // ✅ FIX: Clear referrer's cache too
+      // Invalidate referrer's cache
       this.invalidateAllUserCaches(referrerId);
 
       this.logger.log(
         `🎉 AFFILIATE COMMISSION PAID SUCCESSFULLY!\n` +
-        `   Referrer: ${referrerId} (+Rp ${commissionAmount.toLocaleString()})\n` +
+        `   Referrer: ${referrerId} (+Rp ${commissionAmount.toLocaleString()} to REAL balance)\n` +
         `   Referee: ${userId} (${futureStatus.toUpperCase()})\n` +
         `   Status: PENDING → COMPLETED ✅\n` +
         `   📌 Future deposits from ${userId} will NOT trigger commission`
@@ -776,7 +991,11 @@ export class BalanceService {
           .filter(t => t.type === BALANCE_TYPES.ORDER_PROFIT)
           .reduce((sum, t) => sum + t.amount, 0),
         totalAffiliateCommissions: realTransactions
-          .filter(t => t.type === BALANCE_TYPES.AFFILIATE_COMMISSION)
+          .filter(t => 
+            t.type === BALANCE_TYPES.DEPOSIT && 
+            t.description && 
+            t.description.toLowerCase().includes('affiliate commission')
+          )
           .reduce((sum, t) => sum + t.amount, 0),
         transactionCount: realTransactions.length,
       };
@@ -864,6 +1083,15 @@ export class BalanceService {
   async forceRefreshBalance(userId: string, accountType: 'real' | 'demo'): Promise<number> {
     this.invalidateAllUserCaches(userId);
     return this.getCurrentBalance(userId, accountType, true);
+  }
+
+  private maskBankAccount(accountNumber?: string): string {
+    if (!accountNumber) return '****';
+    if (accountNumber.length <= 4) return '****';
+    
+    const visible = accountNumber.slice(-4);
+    const masked = '*'.repeat(accountNumber.length - 4);
+    return masked + visible;
   }
 
   getPerformanceStats() {
