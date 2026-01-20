@@ -1,3 +1,4 @@
+//src/websocket/trading.gateway.ts
 import {
   WebSocketGateway,
   WebSocketServer,
@@ -75,10 +76,16 @@ export class TradingGateway implements OnGatewayInit, OnGatewayConnection, OnGat
 
   handleDisconnect(client: Socket) {
     const authClient = client as AuthenticatedSocket;
-    this.logger.log(`📴 Socket disconnected: ${client.id} | User: ${authClient.userId}`);
+    this.logger.log(`🔴 Socket disconnected: ${client.id} | User: ${authClient.userId}`);
   }
 
-  // Emit price update ke semua client yang terhubung
+  // ============================================
+  // PRICE EVENTS
+  // ============================================
+
+  /**
+   * Emit price update ke semua client yang terhubung
+   */
   emitPriceUpdate(assetId: string, priceData: any) {
     const payload = {
       assetId,
@@ -90,7 +97,43 @@ export class TradingGateway implements OnGatewayInit, OnGatewayConnection, OnGat
     this.logger.debug(`📡 Price pushed: ${assetId} = ${priceData.price}`);
   }
 
-  // Emit order yang baru dibuat
+  /**
+   * Client subscribe ke specific assets
+   */
+  @SubscribeMessage('price:subscribe')
+  async handlePriceSubscribe(client: AuthenticatedSocket, payload: { assetIds: string[] }) {
+    try {
+      const assets = await this.firebaseService.getFirestore()
+        .collection('assets')
+        .where('id', 'in', payload.assetIds)
+        .get();
+
+      assets.docs.forEach(doc => {
+        client.join(`asset:${doc.id}`);
+      });
+
+      client.emit('price:subscribed', { assetIds: payload.assetIds });
+
+      // Langsung kirim snapshot
+      for (const assetId of payload.assetIds) {
+        const priceData = await this.getCurrentPriceSnapshot(assetId);
+        if (priceData) {
+          client.emit('price:update', { assetId, ...priceData });
+        }
+      }
+    } catch (error) {
+      this.logger.error(`❌ Price subscription error: ${error.message}`);
+      client.emit('error', { message: 'Failed to subscribe to prices' });
+    }
+  }
+
+  // ============================================
+  // ORDER EVENTS
+  // ============================================
+
+  /**
+   * Emit order yang baru dibuat
+   */
   emitOrderCreated(userId: string, orderData: any) {
     const payload = {
       ...orderData,
@@ -100,10 +143,12 @@ export class TradingGateway implements OnGatewayInit, OnGatewayConnection, OnGat
     
     // Hanya kirim ke user yang bersangkutan (room)
     this.server.to(`user:${userId}`).emit('order:update', payload);
-    this.logger.debug(`📤 Order created pushed: ${orderData.id}`);
+    this.logger.debug(`📤 Order created pushed: ${orderData.order?.id || 'unknown'}`);
   }
 
-  // Emit settlement result
+  /**
+   * Emit settlement result
+   */
   emitOrderSettled(userId: string, settlementData: any) {
     const payload = {
       ...settlementData,
@@ -115,12 +160,13 @@ export class TradingGateway implements OnGatewayInit, OnGatewayConnection, OnGat
     this.logger.debug(`⚡ Settlement pushed: ${settlementData.id} = ${settlementData.status}`);
   }
 
-  // Emit update untuk admin
-  emitAdminUpdate(event: string, data: any) {
-    this.server.to('room:admin').emit(event, data);
-  }
+  // ============================================
+  // USER SUBSCRIPTION
+  // ============================================
 
-  // Client subscribe ke room user
+  /**
+   * Client subscribe ke room user
+   */
   @SubscribeMessage('user:subscribe')
   handleUserSubscribe(client: AuthenticatedSocket, payload: { userId: string }) {
     if (client.userId !== payload.userId) {
@@ -133,7 +179,13 @@ export class TradingGateway implements OnGatewayInit, OnGatewayConnection, OnGat
     client.emit('user:subscribed', { userId: payload.userId });
   }
 
-  // Admin subscribe
+  // ============================================
+  // ADMIN EVENTS
+  // ============================================
+
+  /**
+   * Admin subscribe
+   */
   @SubscribeMessage('admin:subscribe')
   handleAdminSubscribe(client: AuthenticatedSocket) {
     if (!client.isAdmin) {
@@ -146,31 +198,24 @@ export class TradingGateway implements OnGatewayInit, OnGatewayConnection, OnGat
     client.emit('admin:subscribed', { role: 'admin' });
   }
 
-  // Client request price manual (will be pushed via subscription)
-  @SubscribeMessage('price:subscribe')
-  async handlePriceSubscribe(client: AuthenticatedSocket, payload: { assetIds: string[] }) {
-    const assets = await this.firebaseService.getFirestore()
-      .collection('assets')
-      .where('id', 'in', payload.assetIds)
-      .get();
-
-    assets.docs.forEach(doc => {
-      client.join(`asset:${doc.id}`);
-    });
-
-    client.emit('price:subscribed', { assetIds: payload.assetIds });
-
-    // Langsung kirim snapshot
-    for (const assetId of payload.assetIds) {
-      const priceData = await this.getCurrentPriceSnapshot(assetId);
-      if (priceData) {
-        client.emit('price:update', { assetId, ...priceData });
-      }
-    }
+  /**
+   * Emit update untuk admin
+   */
+  emitAdminUpdate(event: string, data: any) {
+    this.server.to('room:admin').emit(event, data);
   }
 
+  // ============================================
+  // HELPER METHODS
+  // ============================================
+
   private async sendInitialPriceSnapshot(client: Socket) {
-    // Bisa diexpand untuk kirim snapshot market
+    try {
+      // Bisa diexpand untuk kirim snapshot market
+      this.logger.debug(`📊 Initial snapshot sent to ${client.id}`);
+    } catch (error) {
+      this.logger.error(`❌ Failed to send snapshot: ${error.message}`);
+    }
   }
 
   private async getCurrentPriceSnapshot(assetId: string): Promise<any | null> {

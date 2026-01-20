@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, Inject, forwardRef } from '@nestjs/common';
 import { Cron, SchedulerRegistry } from '@nestjs/schedule';
 import { FirebaseService } from '../../firebase/firebase.service';
 import { BinanceService } from './binance.service';
@@ -23,13 +23,12 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
   // ✅ AGGRESSIVE CLEANUP SETTINGS
   private readonly UPDATE_INTERVAL = 1000;
   private readonly REFRESH_INTERVAL = 600000;  // 10 minutes
-  private readonly CLEANUP_INTERVAL = 1800000; // ✅ 30 minutes (was 2 hours)
-  private readonly AGGRESSIVE_CLEANUP_INTERVAL = 600000; // ✅ 10 minutes for 1s bars
+  private readonly CLEANUP_INTERVAL = 1800000; // 30 minutes
+  private readonly AGGRESSIVE_CLEANUP_INTERVAL = 600000; // 10 minutes for 1s bars
   
   private lastCleanupTime = 0;
   private lastAggressiveCleanupTime = 0;
   
-  // ✅ Cleanup statistics
   private cleanupStats = {
     totalRuns: 0,
     totalDeleted: 0,
@@ -49,7 +48,8 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     private binanceService: BinanceService,
     private assetsService: AssetsService,
     private schedulerRegistry: SchedulerRegistry,
-    private readonly tradingGateway: TradingGateway, // 🔥 WebSocket gateway
+    @Inject(forwardRef(() => TradingGateway))
+    private readonly tradingGateway: TradingGateway, // 🔥 WebSocket gateway with forwardRef
   ) {}
 
   async onModuleInit() {
@@ -80,8 +80,6 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       
       if (this.cryptoAssets.length > 0) {
         await this.startScheduler();
-        
-        // ✅ Start cleanup schedulers
         this.startCleanupSchedulers();
       } else {
         this.logger.warn('⚠️ No crypto assets found - scheduler NOT started');
@@ -114,7 +112,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       
       this.logger.log('');
       this.logger.log('💎 ================================================');
-      this.logger.log('💎 CRYPTO PRICE SCHEDULER - AGGRESSIVE CLEANUP');
+      this.logger.log('💎 CRYPTO PRICE SCHEDULER - WEBSOCKET ENABLED');
       this.logger.log('💎 ================================================');
       this.logger.log(`💎 Active Crypto Assets: ${this.cryptoAssets.length}`);
       this.cryptoAssets.forEach(asset => {
@@ -124,10 +122,9 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
         this.logger.log(`   • ${asset.symbol} (${pair}) → ${path}`);
       });
       this.logger.log(`⚡ Update: Every 1 second`);
-      this.logger.log(`🗑️ Cleanup 1s: Every 10 minutes (AGGRESSIVE)`);
+      this.logger.log(`📡 WebSocket: ENABLED for real-time push`);
+      this.logger.log(`🗑️ Cleanup 1s: Every 10 minutes`);
       this.logger.log(`🗑️ Cleanup All: Every 30 minutes`);
-      this.logger.log(`📊 Retention 1s: 1 hour (reduced from 2h)`);
-      this.logger.log(`📊 Retention 1m: 1 day (reduced from 2d)`);
       this.logger.log('💎 ================================================');
       this.logger.log('');
       
@@ -159,10 +156,9 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       }
     }, this.UPDATE_INTERVAL);
     
-    this.logger.log('✅ Crypto price scheduler started (AGGRESSIVE CLEANUP MODE)');
+    this.logger.log('✅ Crypto price scheduler started (WEBSOCKET MODE)');
   }
 
-  // ✅ NEW: Start cleanup schedulers
   private startCleanupSchedulers(): void {
     // Aggressive cleanup for 1s bars (every 10 minutes)
     setInterval(async () => {
@@ -175,11 +171,8 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     }, this.CLEANUP_INTERVAL);
     
     this.logger.log('✅ Cleanup schedulers started');
-    this.logger.log(`   🗑️ Aggressive (1s): Every ${this.AGGRESSIVE_CLEANUP_INTERVAL / 60000} minutes`);
-    this.logger.log(`   🗑️ Regular (all): Every ${this.CLEANUP_INTERVAL / 60000} minutes`);
   }
 
-  // ✅ NEW: Aggressive cleanup for 1s bars only
   private async aggressiveCleanup1sBars(): Promise<void> {
     if (this.cryptoAssets.length === 0) return;
 
@@ -191,7 +184,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
 
       for (const asset of this.cryptoAssets) {
         try {
-          const deleted = await this.cleanupAssetTimeframe(asset, '1s', 0.0417); // 1 hour
+          const deleted = await this.cleanupAssetTimeframe(asset, '1s', 0.0417);
           totalDeleted += deleted;
         } catch (error) {
           this.logger.error(`❌ 1s cleanup error for ${asset.symbol}: ${error.message}`);
@@ -205,7 +198,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       this.cleanupStats.totalDeleted += totalDeleted;
       this.cleanupStats.lastRun = Date.now();
 
-      this.logger.log(`✅ Aggressive 1s cleanup completed: ${totalDeleted} bars deleted in ${duration}ms`);
+      this.logger.log(`✅ Aggressive 1s cleanup: ${totalDeleted} bars deleted in ${duration}ms`);
 
     } catch (error) {
       this.logger.error(`❌ Aggressive cleanup failed: ${error.message}`);
@@ -213,7 +206,6 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     }
   }
 
-  // ✅ NEW: Regular cleanup for all timeframes
   private async regularCleanup(): Promise<void> {
     if (this.cryptoAssets.length === 0) return;
 
@@ -245,11 +237,8 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
 
       const duration = Date.now() - startTime;
       this.lastCleanupTime = Date.now();
-      this.cleanupStats.totalRuns++;
-      this.cleanupStats.totalDeleted += totalDeleted;
-      this.cleanupStats.lastRun = Date.now();
 
-      this.logger.log(`✅ Regular cleanup completed: ${totalDeleted} bars deleted in ${duration}ms`);
+      this.logger.log(`✅ Regular cleanup: ${totalDeleted} bars deleted in ${duration}ms`);
 
     } catch (error) {
       this.logger.error(`❌ Regular cleanup failed: ${error.message}`);
@@ -257,7 +246,6 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     }
   }
 
-  // ✅ NEW: Cleanup specific timeframe for an asset
   private async cleanupAssetTimeframe(
     asset: Asset,
     timeframe: string,
@@ -282,11 +270,8 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
         return 0;
       }
 
-      this.logger.log(
-        `  🗑️ Deleting ${oldKeys.length} old ${timeframe} bars for ${asset.symbol}`
-      );
+      this.logger.log(`  🗑️ Deleting ${oldKeys.length} old ${timeframe} bars for ${asset.symbol}`);
 
-      // ✅ Batch delete for efficiency
       const BATCH_SIZE = 50;
       for (let i = 0; i < oldKeys.length; i += BATCH_SIZE) {
         const batch = oldKeys.slice(i, i + BATCH_SIZE);
@@ -320,7 +305,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     if (previousCount === 0 && currentCount > 0) {
       this.logger.log('✅ Crypto assets detected! Starting scheduler...');
       await this.startScheduler();
-      this.startCleanupSchedulers(); // ✅ Start cleanup
+      this.startCleanupSchedulers();
     } else if (previousCount > 0 && currentCount === 0) {
       this.logger.warn('⚠️ No more crypto assets! Stopping scheduler...');
       await this.stopScheduler();
@@ -353,15 +338,19 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
           await this.generateOHLC(asset, cryptoPrice);
           
           // 🔥 **EMIT REAL-TIME PRICE UPDATE VIA WEBSOCKET**
-          this.tradingGateway.emitPriceUpdate(asset.id, {
-            price: cryptoPrice.price,
-            timestamp: cryptoPrice.timestamp,
-            datetime: cryptoPrice.datetime,
-            volume24h: cryptoPrice.volume24h,
-            changePercent24h: cryptoPrice.changePercent24h,
-            high24h: cryptoPrice.high24h,
-            low24h: cryptoPrice.low24h,
-          });
+          try {
+            this.tradingGateway.emitPriceUpdate(asset.id, {
+              price: cryptoPrice.price,
+              timestamp: cryptoPrice.timestamp,
+              datetime: cryptoPrice.datetime,
+              volume24h: cryptoPrice.volume24h,
+              changePercent24h: cryptoPrice.changePercent24h,
+              high24h: cryptoPrice.high24h,
+              low24h: cryptoPrice.low24h,
+            });
+          } catch (wsError) {
+            this.logger.debug(`WebSocket emit skipped: ${wsError.message}`);
+          }
           
         } else {
           failCount++;
@@ -376,7 +365,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       if (this.updateCount % 30 === 0) {
         this.logger.log(
           `💎 Update #${this.updateCount}: ${successCount}/${this.cryptoAssets.length} ` +
-          `prices + OHLC in ${duration}ms`
+          `prices + OHLC + WS in ${duration}ms`
         );
       }
       
@@ -430,9 +419,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       }
       
     } catch (error) {
-      this.logger.error(
-        `❌ OHLC generation failed for ${asset.symbol}: ${error.message}`
-      );
+      this.logger.error(`❌ OHLC generation failed for ${asset.symbol}: ${error.message}`);
     }
   }
 
@@ -459,9 +446,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     }
     
     if (!asset.cryptoConfig) {
-      this.logger.warn(
-        `Asset ${asset.symbol} missing cryptoConfig, using fallback path`
-      );
+      this.logger.warn(`Asset ${asset.symbol} missing cryptoConfig, using fallback path`);
       return `/crypto/${asset.symbol.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
     }
     
@@ -480,22 +465,12 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     
     this.logger.log('');
     this.logger.log('📊 ================================================');
-    this.logger.log('📊 CRYPTO SCHEDULER STATS');
+    this.logger.log('📊 CRYPTO SCHEDULER STATS (WEBSOCKET MODE)');
     this.logger.log('📊 ================================================');
     this.logger.log(`   Assets: ${this.cryptoAssets.length}`);
     this.logger.log(`   Updates: ${this.updateCount}`);
     this.logger.log(`   Errors: ${this.errorCount}`);
-    this.logger.log('');
-    this.logger.log('   🗑️ CLEANUP STATS:');
-    this.logger.log(`     Total Runs: ${this.cleanupStats.totalRuns}`);
-    this.logger.log(`     Total Deleted: ${this.cleanupStats.totalDeleted.toLocaleString()} bars`);
-    this.logger.log(`     Errors: ${this.cleanupStats.errors}`);
-    this.logger.log(`     Last Run: ${Math.floor((Date.now() - this.cleanupStats.lastRun) / 60000)}m ago`);
-    this.logger.log('');
-    this.logger.log('   📊 BY TIMEFRAME:');
-    Object.entries(this.cleanupStats.byTimeframe).forEach(([tf, count]) => {
-      this.logger.log(`     ${tf}: ${count.toLocaleString()} bars deleted`);
-    });
+    this.logger.log(`   📡 WebSocket: ENABLED`);
     this.logger.log('📊 ================================================');
     this.logger.log('');
   }
@@ -510,7 +485,6 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     await this.updateAllPrices();
   }
 
-  // ✅ NEW: Manual cleanup trigger
   async triggerCleanup(): Promise<void> {
     this.logger.log('🗑️ Manual cleanup triggered');
     await this.aggressiveCleanup1sBars();
@@ -536,6 +510,10 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       lastUpdate: this.lastUpdateTime > 0 
         ? `${Math.floor((Date.now() - this.lastUpdateTime) / 1000)}s ago`
         : 'Never',
+      websocket: {
+        enabled: true,
+        broadcasting: 'price:update events every 1s',
+      },
       cleanup: {
         aggressive1s: {
           interval: `${this.AGGRESSIVE_CLEANUP_INTERVAL / 60000} minutes`,

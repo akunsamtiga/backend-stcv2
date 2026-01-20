@@ -1,3 +1,4 @@
+//src/websocket/websocket.module.ts
 import { Module, forwardRef } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
