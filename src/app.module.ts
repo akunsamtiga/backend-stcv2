@@ -1,8 +1,10 @@
+// src/app.module.ts
+
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { ScheduleModule } from '@nestjs/schedule';
-import { EventEmitterModule } from '@nestjs/event-emitter'; // 🔥 NEW
+import { EventEmitterModule } from '@nestjs/event-emitter';
 import configuration from './config/configuration';
 import { validationSchema } from './config/validation.schema';
 import { AuthModule } from './auth/auth.module';
@@ -12,7 +14,7 @@ import { AssetsModule } from './assets/assets.module';
 import { BinaryOrdersModule } from './binary-orders/binary-orders.module';
 import { AdminModule } from './admin/admin.module';
 import { FirebaseModule } from './firebase/firebase.module';
-import { WebSocketModule } from './websocket/websocket.module'; // 🔥 NEW
+import { WebSocketModule } from './websocket/websocket.module';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -31,8 +33,6 @@ import { HealthController } from './health.controller';
       limit: 100,
     }]),
     ScheduleModule.forRoot(),
-    
-    // 🔥 NEW: Event Emitter untuk internal communication
     EventEmitterModule.forRoot({
       wildcard: false,
       delimiter: '.',
@@ -42,7 +42,6 @@ import { HealthController } from './health.controller';
       verboseMemoryLeak: true,
       ignoreErrors: false,
     }),
-    
     FirebaseModule,
     AuthModule,
     UserModule,
@@ -50,8 +49,6 @@ import { HealthController } from './health.controller';
     AssetsModule,
     BinaryOrdersModule,
     AdminModule,
-    
-    // 🔥 NEW: WebSocket Module
     WebSocketModule,
   ],
   controllers: [HealthController],

@@ -5,6 +5,7 @@ import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { FirebaseService } from './firebase/firebase.service';
 import { BinaryOrdersService } from './binary-orders/binary-orders.service';
 import { AssetsService } from './assets/assets.service';
+import { SimulatorPriceRelayService } from './assets/services/simulator-price-relay.service';
 import { TimezoneUtil } from './common/utils';
 
 @ApiTags('health')
@@ -14,6 +15,7 @@ export class HealthController {
     private firebaseService: FirebaseService,
     private binaryOrdersService: BinaryOrdersService,
     private assetsService: AssetsService,
+    private simulatorRelay: SimulatorPriceRelayService,
   ) {}
 
   @Get()
@@ -45,7 +47,7 @@ export class HealthController {
       },
       environment: process.env.NODE_ENV || 'development',
       service: 'Binary Option Trading System',
-      version: '3.2-timezone-sync',
+      version: '3.3-websocket-complete',
       nodeVersion: process.version,
     };
   }
@@ -59,10 +61,12 @@ export class HealthController {
         firebaseStats,
         orderStats,
         assetStats,
+        relayStatus,
       ] = await Promise.all([
         Promise.resolve(this.firebaseService.getPerformanceStats()),
         Promise.resolve(this.binaryOrdersService.getPerformanceStats()),
         Promise.resolve(this.assetsService.getPerformanceStats()),
+        Promise.resolve(this.simulatorRelay.getStatus()),
       ]);
 
       const memory = process.memoryUsage();
@@ -94,10 +98,15 @@ export class HealthController {
         },
 
         firebase: firebaseStats,
-
         binaryOrders: orderStats,
-
         assets: assetStats,
+        simulatorRelay: relayStatus,
+
+        websocket: {
+          cryptoAssets: 'Direct from Backend (Binance)',
+          normalAssets: relayStatus.isRunning ? 'Relayed from Simulator' : 'Not Running',
+          relayHealth: relayStatus.isHealthy ? 'Healthy' : 'Degraded',
+        },
 
         health: {
           overall: 'healthy',
@@ -105,11 +114,12 @@ export class HealthController {
             memory: memory.heapUsed / memory.heapTotal < 0.9 ? 'ok' : 'warning',
             firebase: firebaseStats.operations > 0 ? 'ok' : 'warning',
             orders: orderStats.ordersCreated > 0 ? 'ok' : 'not_tested',
+            simulatorRelay: relayStatus.isHealthy ? 'ok' : 'warning',
             timezone: orderStats.timezone ? 'synced' : 'unknown',
           },
         },
 
-        recommendations: this.getRecommendations(memory, orderStats, firebaseStats),
+        recommendations: this.getRecommendations(memory, orderStats, firebaseStats, relayStatus),
       };
     } catch (error) {
       return {
@@ -227,6 +237,7 @@ export class HealthController {
     memory: NodeJS.MemoryUsage,
     orderStats: any,
     firebaseStats: any,
+    relayStatus: any,
   ): string[] {
     const recommendations: string[] = [];
 
@@ -255,6 +266,14 @@ export class HealthController {
       recommendations.push('💡 Large order cache. Consider periodic cleanup.');
     }
 
+    if (!relayStatus.isRunning) {
+      recommendations.push('⚠️ Simulator price relay not running. Normal assets may not have WebSocket updates.');
+    }
+
+    if (relayStatus.isRunning && !relayStatus.isHealthy) {
+      recommendations.push('⚠️ Simulator price relay degraded. Check relay service logs.');
+    }
+
     if (!orderStats.timezone) {
       recommendations.push('⚠️ Timezone information missing. Check configuration.');
     }
@@ -262,6 +281,7 @@ export class HealthController {
     if (recommendations.length === 0) {
       recommendations.push('✅ All systems performing optimally!');
       recommendations.push('✅ Timezone synced with simulator (Asia/Jakarta)');
+      recommendations.push('✅ WebSocket relay active for all asset types');
     }
 
     return recommendations;

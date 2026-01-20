@@ -11,6 +11,7 @@ import { AssetsService } from './assets.service';
 import { CreateAssetDto } from './dto/create-asset.dto';
 import { UpdateAssetDto } from './dto/update-asset.dto';
 import { CryptoPriceSchedulerService } from './services/crypto-price-scheduler.service';
+import { SimulatorPriceRelayService } from './services/simulator-price-relay.service';
 
 @ApiTags('assets')
 @Controller('assets')
@@ -20,6 +21,7 @@ export class AssetsController {
   constructor(
     private assetsService: AssetsService,
     private cryptoScheduler: CryptoPriceSchedulerService,
+    private simulatorRelay: SimulatorPriceRelayService,
   ) {}
 
   @Get('types')
@@ -27,50 +29,7 @@ export class AssetsController {
     summary: 'Get available asset types',
     description: 'Returns list of supported asset types with metadata'
   })
-  @ApiResponse({ 
-    status: 200, 
-    description: 'Returns asset types information',
-    schema: {
-      example: {
-        success: true,
-        data: {
-          types: {
-            forex: {
-              label: 'Forex',
-              description: 'Foreign Exchange Currency Pairs',
-              examples: ['EUR/USD', 'GBP/USD', 'USD/JPY'],
-              icon: '💱'
-            },
-            stock: {
-              label: 'Stocks',
-              description: 'Company Shares & Equities',
-              examples: ['AAPL', 'GOOGL', 'TSLA'],
-              icon: '📈'
-            },
-            commodity: {
-              label: 'Commodities',
-              description: 'Raw Materials & Resources',
-              examples: ['Gold', 'Silver', 'Oil'],
-              icon: '🛢️'
-            },
-            crypto: {
-              label: 'Cryptocurrency',
-              description: 'Digital Currencies',
-              examples: ['BTC/USD', 'ETH/USD', 'BNB/USD'],
-              icon: '₿'
-            },
-            index: {
-              label: 'Indices',
-              description: 'Stock Market Indices',
-              examples: ['S&P 500', 'NASDAQ', 'Dow Jones'],
-              icon: '📊'
-            }
-          },
-          availableTypes: ['forex', 'stock', 'commodity', 'crypto', 'index']
-        }
-      }
-    }
-  })
+  @ApiResponse({ status: 200, description: 'Returns asset types information' })
   getAssetTypes() {
     return {
       success: true,
@@ -88,44 +47,7 @@ export class AssetsController {
     summary: 'Create new asset (Super Admin only)',
     description: 'Create asset with full control over type, simulator and trading settings'
   })
-  @ApiResponse({ 
-    status: 201, 
-    description: 'Asset created successfully',
-    schema: {
-      example: {
-        success: true,
-        data: {
-          message: 'forex normal asset created successfully',
-          asset: {
-            id: 'asset_id',
-            name: 'EUR/USD',
-            symbol: 'EUR_USD',
-            icon: 'https://via.placeholder.com/64?text=FX',
-            type: 'forex',
-            category: 'normal',
-            profitRate: 85,
-            isActive: true,
-            dataSource: 'realtime_db',
-            realtimeDbPath: '/forex/eur_usd',
-            simulatorSettings: {
-              initialPrice: 1.0922,
-              dailyVolatilityMin: 0.001,
-              dailyVolatilityMax: 0.005,
-              secondVolatilityMin: 0.00001,
-              secondVolatilityMax: 0.00008,
-              minPrice: 1.05,
-              maxPrice: 1.15
-            },
-            tradingSettings: {
-              minOrderAmount: 1000,
-              maxOrderAmount: 1000000,
-              allowedDurations: [0.0167, 1, 2, 3, 4, 5, 15, 30, 45, 60]
-            }
-          }
-        }
-      }
-    }
-  })
+  @ApiResponse({ status: 201, description: 'Asset created successfully' })
   createAsset(
     @Body() createAssetDto: CreateAssetDto,
     @CurrentUser('sub') userId: string,
@@ -141,10 +63,7 @@ export class AssetsController {
     description: 'Update any asset property including type, simulator and trading settings'
   })
   @ApiParam({ name: 'id', description: 'Asset ID' })
-  @ApiResponse({ 
-    status: 200, 
-    description: 'Asset updated successfully' 
-  })
+  @ApiResponse({ status: 200, description: 'Asset updated successfully' })
   updateAsset(
     @Param('id') assetId: string,
     @Body() updateAssetDto: UpdateAssetDto,
@@ -160,22 +79,7 @@ export class AssetsController {
     description: 'Permanently delete an asset and clean up associated Realtime Database data'
   })
   @ApiParam({ name: 'id', description: 'Asset ID' })
-  @ApiResponse({ 
-    status: 200, 
-    description: 'Asset deleted successfully with cleanup',
-    schema: {
-      example: {
-        success: true,
-        message: 'Asset deleted successfully',
-        data: {
-          symbol: 'BTC/USD',
-          type: 'crypto',
-          realtimeDbCleaned: true,
-          firestoreDeleted: true
-        }
-      }
-    }
-  })
+  @ApiResponse({ status: 200, description: 'Asset deleted successfully with cleanup' })
   async deleteAsset(@Param('id') assetId: string) {
     return this.assetsService.deleteAsset(assetId);
   }
@@ -188,45 +92,7 @@ export class AssetsController {
     description: 'Get complete asset configuration including all settings'
   })
   @ApiParam({ name: 'id', description: 'Asset ID' })
-  @ApiResponse({ 
-    status: 200, 
-    description: 'Returns complete asset configuration',
-    schema: {
-      example: {
-        success: true,
-        data: {
-          id: 'asset_id',
-          name: 'EUR/USD',
-          symbol: 'EUR_USD',
-          icon: 'https://via.placeholder.com/64?text=FX',
-          type: 'forex',
-          category: 'normal',
-          profitRate: 85,
-          isActive: true,
-          dataSource: 'realtime_db',
-          realtimeDbPath: '/forex/eur_usd',
-          description: 'Euro vs US Dollar',
-          simulatorSettings: {
-            initialPrice: 1.0922,
-            dailyVolatilityMin: 0.001,
-            dailyVolatilityMax: 0.005,
-            secondVolatilityMin: 0.00001,
-            secondVolatilityMax: 0.00008,
-            minPrice: 1.05,
-            maxPrice: 1.15
-          },
-          tradingSettings: {
-            minOrderAmount: 1000,
-            maxOrderAmount: 1000000,
-            allowedDurations: [0.0167, 1, 2, 3, 4, 5, 15, 30, 45, 60]
-          },
-          createdAt: '2024-01-01T00:00:00.000Z',
-          updatedAt: '2024-01-02T00:00:00.000Z',
-          createdBy: 'super_admin_id'
-        }
-      }
-    }
-  })
+  @ApiResponse({ status: 200, description: 'Returns complete asset configuration' })
   getAssetSettings(@Param('id') assetId: string) {
     return this.assetsService.getAssetSettings(assetId);
   }
@@ -238,10 +104,7 @@ export class AssetsController {
     summary: 'Get crypto price scheduler status (Admin only)',
     description: 'Returns scheduler status, active crypto assets, and performance metrics'
   })
-  @ApiResponse({
-    status: 200,
-    description: 'Scheduler status retrieved successfully'
-  })
+  @ApiResponse({ status: 200, description: 'Scheduler status retrieved successfully' })
   getCryptoSchedulerStatus() {
     return {
       success: true,
@@ -256,10 +119,7 @@ export class AssetsController {
     summary: 'Trigger manual crypto price update (Super Admin only)',
     description: 'Manually trigger crypto price fetch and OHLC generation'
   })
-  @ApiResponse({
-    status: 200,
-    description: 'Manual update triggered successfully'
-  })
+  @ApiResponse({ status: 200, description: 'Manual update triggered successfully' })
   async triggerCryptoUpdate() {
     await this.cryptoScheduler.triggerUpdate();
     return {
@@ -275,10 +135,7 @@ export class AssetsController {
     summary: 'Trigger manual crypto cleanup (Super Admin only)',
     description: 'Manually trigger aggressive cleanup for all crypto OHLC data'
   })
-  @ApiResponse({
-    status: 200,
-    description: 'Cleanup triggered successfully'
-  })
+  @ApiResponse({ status: 200, description: 'Cleanup triggered successfully' })
   async triggerCryptoCleanup() {
     await this.cryptoScheduler.triggerCleanup();
     return {
@@ -295,15 +152,27 @@ export class AssetsController {
     summary: 'Get crypto cleanup statistics (Admin only)',
     description: 'Returns cleanup statistics including runs, deleted bars, and timeframe breakdown'
   })
-  @ApiResponse({
-    status: 200,
-    description: 'Cleanup stats retrieved successfully'
-  })
+  @ApiResponse({ status: 200, description: 'Cleanup stats retrieved successfully' })
   getCleanupStats() {
     const status = this.cryptoScheduler.getStatus();
     return {
       success: true,
       data: status.cleanup,
+    };
+  }
+
+  @Get('simulator/relay/status')
+  @UseGuards(RolesGuard)
+  @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
+  @ApiOperation({ 
+    summary: 'Get simulator price relay status (Admin only)',
+    description: 'Returns relay service status for normal assets'
+  })
+  @ApiResponse({ status: 200, description: 'Relay status retrieved successfully' })
+  getSimulatorRelayStatus() {
+    return {
+      success: true,
+      data: this.simulatorRelay.getStatus(),
     };
   }
 
@@ -324,48 +193,7 @@ export class AssetsController {
     enum: ['forex', 'stock', 'commodity', 'crypto', 'index'],
     description: 'Filter by asset type'
   })
-  @ApiResponse({ 
-    status: 200, 
-    description: 'Returns list of assets',
-    schema: {
-      example: {
-        success: true,
-        data: {
-          assets: [
-            {
-              id: 'asset_1',
-              name: 'EUR/USD',
-              symbol: 'EUR_USD',
-              icon: 'https://via.placeholder.com/64?text=FX',
-              type: 'forex',
-              category: 'normal',
-              profitRate: 85,
-              isActive: true
-            },
-            {
-              id: 'asset_2',
-              name: 'Bitcoin',
-              symbol: 'BTC/USD',
-              icon: 'https://cryptologos.cc/logos/bitcoin-btc-logo.png',
-              type: 'crypto',
-              category: 'crypto',
-              profitRate: 85,
-              isActive: true
-            }
-          ],
-          total: 2,
-          byType: {
-            forex: 1,
-            crypto: 1
-          },
-          filters: {
-            activeOnly: false,
-            type: 'all'
-          }
-        }
-      }
-    }
-  })
+  @ApiResponse({ status: 200, description: 'Returns list of assets' })
   getAllAssets(
     @Query('activeOnly') activeOnly: boolean = false,
     @Query('type') type?: string,
@@ -379,30 +207,7 @@ export class AssetsController {
     description: 'Get detailed asset information including type and settings'
   })
   @ApiParam({ name: 'id', description: 'Asset ID' })
-  @ApiResponse({ 
-    status: 200, 
-    description: 'Returns asset details',
-    schema: {
-      example: {
-        success: true,
-        data: {
-          id: 'asset_id',
-          name: 'Bitcoin',
-          symbol: 'BTC/USD',
-          icon: 'https://cryptologos.cc/logos/bitcoin-btc-logo.png',
-          type: 'crypto',
-          category: 'crypto',
-          profitRate: 85,
-          isActive: true,
-          dataSource: 'binance',
-          cryptoConfig: {
-            baseCurrency: 'BTC',
-            quoteCurrency: 'USD'
-          }
-        }
-      }
-    }
-  })
+  @ApiResponse({ status: 200, description: 'Returns asset details' })
   getAssetById(@Param('id') assetId: string) {
     return this.assetsService.getAssetById(assetId);
   }
@@ -415,19 +220,7 @@ export class AssetsController {
     description: 'Upload or update icon/logo for asset'
   })
   @ApiParam({ name: 'id', description: 'Asset ID' })
-  @ApiResponse({ 
-    status: 200, 
-    description: 'Icon uploaded successfully',
-    schema: {
-      example: {
-        success: true,
-        message: 'Asset icon updated successfully',
-        data: {
-          icon: 'https://example.com/icons/btc.png'
-        }
-      }
-    }
-  })
+  @ApiResponse({ status: 200, description: 'Icon uploaded successfully' })
   async uploadIcon(
     @Param('id') assetId: string,
     @Body() body: { iconUrl: string },
@@ -441,28 +234,7 @@ export class AssetsController {
     description: 'Fetches real-time price with timeout and cache optimization'
   })
   @ApiParam({ name: 'id', description: 'Asset ID' })
-  @ApiResponse({ 
-    status: 200, 
-    description: 'Returns current price data',
-    schema: {
-      example: {
-        success: true,
-        data: {
-          asset: {
-            id: 'asset_id',
-            name: 'Bitcoin',
-            symbol: 'BTC/USD',
-            type: 'crypto',
-            category: 'crypto'
-          },
-          price: 45123.50,
-          timestamp: 1704067200,
-          datetime: '2024-01-01T00:00:00.000Z',
-          responseTime: 85
-        }
-      }
-    }
-  })
+  @ApiResponse({ status: 200, description: 'Returns current price data' })
   getCurrentPrice(@Param('id') assetId: string) {
     return this.assetsService.getCurrentPrice(assetId);
   }
@@ -474,32 +246,7 @@ export class AssetsController {
     summary: 'Get asset service performance stats (Admin only)',
     description: 'Returns cache statistics, asset distribution, and performance metrics'
   })
-  @ApiResponse({
-    status: 200,
-    description: 'Performance stats retrieved successfully',
-    schema: {
-      example: {
-        success: true,
-        data: {
-          cachedAssets: 10,
-          assetsByType: {
-            forex: 3,
-            stock: 2,
-            commodity: 1,
-            crypto: 4
-          },
-          allAssetsCached: true,
-          priceStats: {
-            totalFetches: 150,
-            cacheHits: 100,
-            cacheHitRate: '66%',
-            avgFetchTime: 45
-          },
-          cryptoApi: 'Binance FREE'
-        }
-      }
-    }
-  })
+  @ApiResponse({ status: 200, description: 'Performance stats retrieved successfully' })
   getPerformanceStats() {
     return {
       success: true,
