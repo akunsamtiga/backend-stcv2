@@ -11,16 +11,10 @@ import { Server, Socket } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { FirebaseService } from '../firebase/firebase.service';
-import * as admin from 'firebase-admin';
 
 interface AuthenticatedSocket extends Socket {
   userId: string;
   isAdmin: boolean;
-}
-
-interface FirebaseListener {
-  ref: admin.database.Reference;
-  unsubscribe: () => void;
 }
 
 @WebSocketGateway({
@@ -38,9 +32,6 @@ export class TradingGateway implements OnGatewayInit, OnGatewayConnection, OnGat
   @WebSocketServer()
   server: Server;
 
-  private assetListeners: Map<string, FirebaseListener> = new Map();
-  private clientSubscriptions: Map<string, Set<string>> = new Map();
-
   constructor(
     private jwtService: JwtService,
     private configService: ConfigService,
@@ -48,8 +39,8 @@ export class TradingGateway implements OnGatewayInit, OnGatewayConnection, OnGat
   ) {}
 
   afterInit(server: Server) {
-    this.logger.log('ðŸš€ WebSocket Gateway initialized');
-    this.logger.log('ðŸ"¡ Firebase Realtime DB listeners ready');
+    this.logger.log('🚀 WebSocket Gateway initialized');
+    this.logger.log('📡 Price & Order streaming ready');
   }
 
   async handleConnection(client: Socket) {
@@ -57,7 +48,7 @@ export class TradingGateway implements OnGatewayInit, OnGatewayConnection, OnGat
       const token = client.handshake.auth.token || client.handshake.query.token;
       
       if (!token) {
-        this.logger.warn(`âŒ Socket ${client.id} rejected: No token`);
+        this.logger.warn(`❌ Socket ${client.id} rejected: No token`);
         client.disconnect();
         return;
       }
@@ -69,120 +60,77 @@ export class TradingGateway implements OnGatewayInit, OnGatewayConnection, OnGat
       (client as AuthenticatedSocket).userId = decoded.sub;
       (client as AuthenticatedSocket).isAdmin = decoded.role === 'super_admin' || decoded.role === 'admin';
 
-      this.logger.log(`âœ… Socket connected: ${client.id} | User: ${decoded.sub}`);
+      client.join(`user:${decoded.sub}`);
       
-      this.clientSubscriptions.set(client.id, new Set());
+      this.logger.log(`✅ Socket connected: ${client.id} | User: ${decoded.sub}`);
+      
+      client.emit('connected', {
+        userId: decoded.sub,
+        timestamp: Date.now(),
+      });
 
     } catch (error) {
-      this.logger.error(`âŒ Socket ${client.id} authentication failed: ${error.message}`);
+      this.logger.error(`❌ Socket ${client.id} authentication failed: ${error.message}`);
       client.disconnect();
     }
   }
 
   handleDisconnect(client: Socket) {
     const authClient = client as AuthenticatedSocket;
+    this.logger.log(`🔴 Socket disconnected: ${client.id} | User: ${authClient.userId}`);
+  }
+
+  emitPriceUpdate(assetId: string, priceData: any) {
+    const payload = {
+      assetId,
+      ...priceData,
+      timestamp: Date.now(),
+    };
     
-    const subscriptions = this.clientSubscriptions.get(client.id);
-    if (subscriptions) {
-      subscriptions.forEach(assetId => {
-        this.unsubscribeFromAsset(assetId);
-      });
-      this.clientSubscriptions.delete(client.id);
-    }
-    
-    this.logger.log(`ðŸ"´ Socket disconnected: ${client.id} | User: ${authClient.userId}`);
+    this.server.to(`asset:${assetId}`).emit('price:update', payload);
+    this.logger.debug(`📡 Price pushed to asset:${assetId} - ${priceData.price}`);
   }
 
   @SubscribeMessage('price:subscribe')
   async handlePriceSubscribe(client: AuthenticatedSocket, payload: { assetIds: string[] }) {
     try {
-      const db = this.firebaseService.getFirestore();
-      const rtDb = this.firebaseService.getRealtimeDatabase();
-
-      for (const assetId of payload.assetIds) {
-        const assetDoc = await db.collection('assets').doc(assetId).get();
-        
-        if (!assetDoc.exists) {
-          this.logger.warn(`âš ï¸ Asset ${assetId} not found`);
-          continue;
-        }
-
-        const asset = assetDoc.data();
-        const path = this.getAssetRealtimePath(asset);
-
-        if (!this.assetListeners.has(assetId)) {
-          await this.setupFirebaseListener(assetId, path);
-        }
-
-        const clientSubs = this.clientSubscriptions.get(client.id);
-        if (clientSubs) {
-          clientSubs.add(assetId);
-        }
-
+      payload.assetIds.forEach(assetId => {
         client.join(`asset:${assetId}`);
-      }
+        this.logger.debug(`📌 ${client.userId} subscribed to asset:${assetId}`);
+      });
 
       client.emit('price:subscribed', { 
         assetIds: payload.assetIds,
-        method: 'firebase-realtime-listener'
+        timestamp: Date.now(),
       });
 
-      this.logger.log(`ðŸ"¡ Client ${client.id} subscribed to ${payload.assetIds.length} assets`);
-
+      for (const assetId of payload.assetIds) {
+        const priceData = await this.getCurrentPriceSnapshot(assetId);
+        if (priceData) {
+          client.emit('price:snapshot', { 
+            assetId, 
+            ...priceData,
+            timestamp: Date.now(),
+          });
+        }
+      }
     } catch (error) {
-      this.logger.error(`âŒ Price subscription error: ${error.message}`);
+      this.logger.error(`❌ Price subscription error: ${error.message}`);
       client.emit('error', { message: 'Failed to subscribe to prices' });
     }
   }
 
-  private async setupFirebaseListener(assetId: string, path: string): Promise<void> {
-    try {
-      const rtDb = this.firebaseService.getRealtimeDatabase();
-      const ref = rtDb.ref(`${path}/current_price`);
+  @SubscribeMessage('price:unsubscribe')
+  handlePriceUnsubscribe(client: AuthenticatedSocket, payload: { assetIds: string[] }) {
+    payload.assetIds.forEach(assetId => {
+      client.leave(`asset:${assetId}`);
+      this.logger.debug(`📍 ${client.userId} unsubscribed from asset:${assetId}`);
+    });
 
-      const listener = ref.on('value', (snapshot) => {
-        const priceData = snapshot.val();
-        
-        if (priceData) {
-          this.server.to(`asset:${assetId}`).emit('price:update', {
-            assetId,
-            ...priceData,
-            timestamp: Date.now(),
-            method: 'firebase-push',
-          });
-
-          this.logger.debug(`ðŸ"¡ Firebase pushed: ${assetId} = ${priceData.price}`);
-        }
-      });
-
-      this.assetListeners.set(assetId, {
-        ref,
-        unsubscribe: () => ref.off('value', listener),
-      });
-
-      this.logger.log(`âœ… Firebase listener setup: ${assetId} at ${path}`);
-
-    } catch (error) {
-      this.logger.error(`âŒ Failed to setup listener for ${assetId}: ${error.message}`);
-    }
-  }
-
-  private unsubscribeFromAsset(assetId: string): void {
-    let subscriberCount = 0;
-    for (const subs of this.clientSubscriptions.values()) {
-      if (subs.has(assetId)) {
-        subscriberCount++;
-      }
-    }
-
-    if (subscriberCount === 0) {
-      const listener = this.assetListeners.get(assetId);
-      if (listener) {
-        listener.unsubscribe();
-        this.assetListeners.delete(assetId);
-        this.logger.debug(`ðŸ—'ï¸ Removed Firebase listener: ${assetId}`);
-      }
-    }
+    client.emit('price:unsubscribed', { 
+      assetIds: payload.assetIds,
+      timestamp: Date.now(),
+    });
   }
 
   emitOrderCreated(userId: string, orderData: any) {
@@ -193,7 +141,7 @@ export class TradingGateway implements OnGatewayInit, OnGatewayConnection, OnGat
     };
     
     this.server.to(`user:${userId}`).emit('order:update', payload);
-    this.logger.debug(`ðŸ"¤ Order created pushed: ${orderData.order?.id || 'unknown'}`);
+    this.logger.debug(`📤 Order created pushed to user:${userId}`);
   }
 
   emitOrderSettled(userId: string, settlementData: any) {
@@ -204,19 +152,7 @@ export class TradingGateway implements OnGatewayInit, OnGatewayConnection, OnGat
     };
     
     this.server.to(`user:${userId}`).emit('order:update', payload);
-    this.logger.debug(`âš¡ Settlement pushed: ${settlementData.id} = ${settlementData.status}`);
-  }
-
-  @SubscribeMessage('user:subscribe')
-  handleUserSubscribe(client: AuthenticatedSocket, payload: { userId: string }) {
-    if (client.userId !== payload.userId) {
-      client.emit('error', { message: 'Unauthorized' });
-      return;
-    }
-
-    client.join(`user:${payload.userId}`);
-    this.logger.log(`ðŸ"' User ${payload.userId} subscribed to own room`);
-    client.emit('user:subscribed', { userId: payload.userId });
+    this.logger.debug(`⚡ Settlement pushed to user:${userId} - ${settlementData.id}`);
   }
 
   @SubscribeMessage('admin:subscribe')
@@ -227,12 +163,39 @@ export class TradingGateway implements OnGatewayInit, OnGatewayConnection, OnGat
     }
 
     client.join('room:admin');
-    this.logger.log(`ðŸ"' Admin ${client.userId} subscribed`);
-    client.emit('admin:subscribed', { role: 'admin' });
+    this.logger.log(`🔐 Admin ${client.userId} subscribed`);
+    client.emit('admin:subscribed', { role: 'admin', timestamp: Date.now() });
   }
 
   emitAdminUpdate(event: string, data: any) {
-    this.server.to('room:admin').emit(event, data);
+    this.server.to('room:admin').emit(event, {
+      ...data,
+      timestamp: Date.now(),
+    });
+  }
+
+  private async getCurrentPriceSnapshot(assetId: string): Promise<any | null> {
+    try {
+      const assetDoc = await this.firebaseService.getFirestore()
+        .collection('assets')
+        .doc(assetId)
+        .get();
+
+      if (!assetDoc.exists) return null;
+
+      const asset = assetDoc.data();
+      const path = this.getAssetRealtimePath(asset);
+      
+      const priceData = await this.firebaseService.getRealtimeDbValue(
+        `${path}/current_price`,
+        true
+      );
+
+      return priceData;
+    } catch (error) {
+      this.logger.debug(`Failed to get price snapshot for ${assetId}: ${error.message}`);
+      return null;
+    }
   }
 
   private getAssetRealtimePath(asset: any): string {

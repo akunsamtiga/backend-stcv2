@@ -20,11 +20,10 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
   
   private timeframeManagers: Map<string, CryptoTimeframeManager> = new Map();
   
-  // ✅ AGGRESSIVE CLEANUP SETTINGS
   private readonly UPDATE_INTERVAL = 1000;
-  private readonly REFRESH_INTERVAL = 600000;  // 10 minutes
-  private readonly CLEANUP_INTERVAL = 1800000; // 30 minutes
-  private readonly AGGRESSIVE_CLEANUP_INTERVAL = 600000; // 10 minutes for 1s bars
+  private readonly REFRESH_INTERVAL = 600000;
+  private readonly CLEANUP_INTERVAL = 1800000;
+  private readonly AGGRESSIVE_CLEANUP_INTERVAL = 600000;
   
   private lastCleanupTime = 0;
   private lastAggressiveCleanupTime = 0;
@@ -49,7 +48,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     private assetsService: AssetsService,
     private schedulerRegistry: SchedulerRegistry,
     @Inject(forwardRef(() => TradingGateway))
-    private readonly tradingGateway: TradingGateway, // 🔥 WebSocket gateway with forwardRef
+    private readonly tradingGateway: TradingGateway,
   ) {}
 
   async onModuleInit() {
@@ -160,12 +159,10 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
   }
 
   private startCleanupSchedulers(): void {
-    // Aggressive cleanup for 1s bars (every 10 minutes)
     setInterval(async () => {
       await this.aggressiveCleanup1sBars();
     }, this.AGGRESSIVE_CLEANUP_INTERVAL);
     
-    // Regular cleanup for all timeframes (every 30 minutes)
     setInterval(async () => {
       await this.regularCleanup();
     }, this.CLEANUP_INTERVAL);
@@ -337,7 +334,6 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
           successCount++;
           await this.generateOHLC(asset, cryptoPrice);
           
-          // 🔥 **EMIT REAL-TIME PRICE UPDATE VIA WEBSOCKET**
           try {
             this.tradingGateway.emitPriceUpdate(asset.id, {
               price: cryptoPrice.price,
@@ -396,7 +392,6 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       
       const path = this.getAssetPath(asset);
       
-      // Write current bars
       for (const [timeframe, bar] of currentBars.entries()) {
         const barPath = `${path}/ohlc_${timeframe}/${bar.timestamp}`;
         
@@ -407,7 +402,6 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
         );
       }
       
-      // Write completed bars
       for (const [timeframe, bar] of completedBars.entries()) {
         const barPath = `${path}/ohlc_${timeframe}/${bar.timestamp}`;
         
@@ -423,7 +417,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     }
   }
 
-  private cleanBarData(bar: CryptoBar): any {
+  private cleanBarData(bar: any): any {
     return {
       timestamp: bar.timestamp,
       datetime: bar.datetime,
@@ -557,3 +551,4 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     await this.stopScheduler();
   }
 }
+

@@ -16,11 +16,7 @@ import { TimezoneUtil } from './common/utils';
 process.env.TZ = 'Asia/Jakarta';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, {
-    bodyParser: true,
-    bufferLogs: true,
-    abortOnError: false,
-  });
+  const app = await NestFactory.create(AppModule);
 
   const configService = app.get(ConfigService);
   const logger = new Logger('Bootstrap');

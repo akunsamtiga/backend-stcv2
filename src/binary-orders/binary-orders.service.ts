@@ -48,17 +48,17 @@ export class BinaryOrdersService {
     private assetsService: AssetsService,
     private priceFetcherService: PriceFetcherService,
     private userStatusService: UserStatusService,
-    private readonly tradingGateway: TradingGateway,
+    private readonly tradingGateway: TradingGateway, // 🔥 WebSocket gateway
   ) {
     setInterval(() => this.cleanupStaleCache(), 10000);
     
-    this.logger.log(`ðŸŒ Timezone: Asia/Jakarta (WIB = UTC+7)`);
-    this.logger.log(`â° Current time: ${TimezoneUtil.formatDateTime()}`);
-    this.logger.log(`ðŸ'¡ Status-Based Profit Bonus:`);
-    this.logger.log(`   â€¢ Standard: +0%`);
-    this.logger.log(`   â€¢ Gold: +5%`);
-    this.logger.log(`   â€¢ VIP: +10%`);
-    this.logger.log(`âš¡ 1 Second Trading Support Enabled`);
+    this.logger.log(`🌍 Timezone: Asia/Jakarta (WIB = UTC+7)`);
+    this.logger.log(`⏰ Current time: ${TimezoneUtil.formatDateTime()}`);
+    this.logger.log(`💡 Status-Based Profit Bonus:`);
+    this.logger.log(`   • Standard: +0%`);
+    this.logger.log(`   • Gold: +5%`);
+    this.logger.log(`   • VIP: +10%`);
+    this.logger.log(`⚡ NEW: 1 Second Trading Support Enabled`);
   }
 
   private isValidDuration(duration: number): duration is ValidDuration {
@@ -80,7 +80,7 @@ export class BinaryOrdersService {
     if (age < this.ACTIVE_ORDERS_CACHE_TTL) {
       const cached = this.activeOrdersCache.get(accountType);
       if (cached) {
-        this.logger.debug(`âš¡ Using cached active orders for ${accountType} (${age}ms old)`);
+        this.logger.debug(`⚡ Using cached active orders for ${accountType} (${age}ms old)`);
         return cached;
       }
     }
@@ -90,7 +90,7 @@ export class BinaryOrdersService {
     this.activeOrdersCache.set(accountType, orders);
     this.lastActiveOrdersFetch.set(accountType, now);
     
-    this.logger.debug(`ðŸ"Š Fetched ${orders.length} active ${accountType} orders from Firestore`);
+    this.logger.debug(`📊 Fetched ${orders.length} active ${accountType} orders from Firestore`);
     
     return orders;
   }
@@ -116,7 +116,7 @@ export class BinaryOrdersService {
 
         if (priceData && priceData.price) {
           if (attempt > 0) {
-            this.logger.log(`âœ… Price fetch succeeded on retry ${attempt + 1}`);
+            this.logger.log(`✅ Price fetch succeeded on retry ${attempt + 1}`);
           }
           return priceData;
         }
@@ -126,13 +126,13 @@ export class BinaryOrdersService {
         
         if (attempt < maxRetries - 1) {
           const delay = 200 * (attempt + 1);
-          this.logger.warn(`âš ï¸ Price fetch attempt ${attempt + 1} failed, retrying in ${delay}ms...`);
+          this.logger.warn(`⚠️ Price fetch attempt ${attempt + 1} failed, retrying in ${delay}ms...`);
           await new Promise(resolve => setTimeout(resolve, delay));
         }
       }
     }
 
-    this.logger.error(`âŒ All ${maxRetries} price fetch attempts failed: ${lastError?.message}`);
+    this.logger.error(`❌ All ${maxRetries} price fetch attempts failed: ${lastError?.message}`);
     return null;
   }
 
@@ -155,7 +155,7 @@ export class BinaryOrdersService {
         throw new BadRequestException('Minimum order amount is Rp 1,000');
       }
 
-      this.logger.log(`ðŸ"¡ Fetching asset ${createOrderDto.asset_id}...`);
+      this.logger.log(`📡 Fetching asset ${createOrderDto.asset_id}...`);
       const asset = await this.getCachedAssetFast(createOrderDto.asset_id);
 
       if (!asset.isActive) {
@@ -173,7 +173,7 @@ export class BinaryOrdersService {
         }
       }
 
-      this.logger.log(`ðŸ"¡ Fetching price for ${asset.symbol}...`);
+      this.logger.log(`📡 Fetching price for ${asset.symbol}...`);
       const priceData = await this.getFastPriceWithRetry(createOrderDto.asset_id, 3);
 
       if (!priceData || !priceData.price) {
@@ -187,11 +187,11 @@ export class BinaryOrdersService {
       
       if (dataAge > 10) {
         this.logger.warn(
-          `âš ï¸ Price data is ${dataAge}s old for ${asset.symbol} - simulator may be lagging`
+          `⚠️ Price data is ${dataAge}s old for ${asset.symbol} - simulator may be lagging`
         );
       }
 
-      this.logger.log(`âœ… Got price for ${asset.symbol}: ${priceData.price} (${dataAge}s old)`);
+      this.logger.log(`✅ Got price for ${asset.symbol}: ${priceData.price} (${dataAge}s old)`);
 
       const userStatus = await this.userStatusService.getUserStatus(userId);
       const statusBonus = this.userStatusService.getProfitBonus(userStatus);
@@ -200,11 +200,11 @@ export class BinaryOrdersService {
       const finalProfitRate = baseProfitRate + statusBonus;
 
       const durationDisplay = this.getDurationDisplay(duration);
-      this.logger.log(`ðŸ'¤ User ${userId} status: ${userStatus.toUpperCase()}`);
-      this.logger.log(`ðŸ'° Base profit: ${baseProfitRate}% + Status bonus: ${statusBonus}% = ${finalProfitRate}%`);
-      this.logger.log(`â±ï¸ Duration: ${durationDisplay}`);
+      this.logger.log(`👤 User ${userId} status: ${userStatus.toUpperCase()}`);
+      this.logger.log(`💰 Base profit: ${baseProfitRate}% + Status bonus: ${statusBonus}% = ${finalProfitRate}%`);
+      this.logger.log(`⏱️ Duration: ${durationDisplay}`);
 
-      this.logger.log(`ðŸ'° Checking ${accountType} balance for user ${userId}...`);
+      this.logger.log(`💰 Checking ${accountType} balance for user ${userId}...`);
       
       const currentBalance = await this.balanceService.getCurrentBalanceStrict(
         userId, 
@@ -212,7 +212,7 @@ export class BinaryOrdersService {
       );
 
       this.logger.log(
-        `ðŸ'° User ${userId} - ${accountType} balance: ${currentBalance}, Required: ${amount}`
+        `💰 User ${userId} - ${accountType} balance: ${currentBalance}, Required: ${amount}`
       );
 
       if (currentBalance < amount) {
@@ -230,16 +230,19 @@ export class BinaryOrdersService {
       const orderId = await this.firebaseService.generateId(COLLECTIONS.ORDERS);
       
       const entryTimestamp = TimezoneUtil.getCurrentTimestamp();
+      
+      // ✅ MODIFIED: Gunakan calculateExpiryTimestamp yang baru
       const expiryTimestamp = CalculationUtil.calculateExpiryTimestamp(entryTimestamp, duration);
       
+      // ✅ NEW: Log informasi expiry adjustment
       const remainingSeconds = TimezoneUtil.getRemainingSecondsInMinute(entryTimestamp);
       const isAdjusted = remainingSeconds <= 20;
 
       if (isAdjusted) {
         this.logger.warn(
-          `âš ï¸ [END-OF-CANDLE] ${asset.symbol} - ` +
-          `Entry: ${TimezoneUtil.formatDateTime()} (${remainingSeconds}s left), ` +
-          `Expiry: ${TimezoneUtil.formatTimestamp(expiryTimestamp)} (ADJUSTED +1 min)`
+          `⚠️ [END-OF-CANDLE DETECTED] ${asset.symbol} - ` +
+          `Entry: ${TimezoneUtil.formatDateTime()} (${remainingSeconds} detik tersisa), ` +
+          `Expiry: ${TimezoneUtil.formatTimestamp(expiryTimestamp)} (ADJUSTED +1 menit)`
         );
       }
 
@@ -282,13 +285,14 @@ export class BinaryOrdersService {
       
       await db.collection(COLLECTIONS.ORDERS).doc(orderId).set(orderData);
 
-      this.logger.log(`âœ… Order ${orderId} created, now debiting balance...`);
-      this.logger.log(`ðŸ"… Entry: ${entryDateTimeInfo.datetime} WIB (${entryTimestamp})`);
-      this.logger.log(`ðŸ"… Expiry: ${expiryDateTimeInfo.datetime} WIB (${expiryTimestamp})`);
+      this.logger.log(`✅ Order ${orderId} created, now debiting balance...`);
+      this.logger.log(`📅 Entry: ${entryDateTimeInfo.datetime} WIB (${entryTimestamp})`);
+      this.logger.log(`📅 Expiry: ${expiryDateTimeInfo.datetime} WIB (${expiryTimestamp})`);
+      // ✅ NEW: Log jika di-adjust
       if (isAdjusted) {
-        this.logger.warn(`âš ï¸ Expiry ADJUSTED to end of next candle (${remainingSeconds}s remaining)`);
+        this.logger.warn(`⚠️ Expiry ADJUSTED to end of next candle due to late entry (${remainingSeconds}s remaining)`);
       }
-      this.logger.log(`â±ï¸ Duration: ${durationDisplay}`);
+      this.logger.log(`⏱️ Duration: ${durationDisplay}`);
 
       try {
         await this.balanceService.createBalanceEntry(userId, {
@@ -298,10 +302,10 @@ export class BinaryOrdersService {
           description: `[${accountType.toUpperCase()}] Order #${orderId.slice(-8)} - ${asset.symbol} ${createOrderDto.direction} (${durationDisplay})`,
         }, true);
 
-        this.logger.log(`âœ… Balance debited successfully`);
+        this.logger.log(`✅ Balance debited successfully`);
 
       } catch (debitError) {
-        this.logger.error(`âŒ Balance debit failed, rolling back order: ${debitError.message}`);
+        this.logger.error(`❌ Balance debit failed, rolling back order: ${debitError.message}`);
         
         await db.collection(COLLECTIONS.ORDERS).doc(orderId).delete();
         
@@ -318,13 +322,14 @@ export class BinaryOrdersService {
       const newBalance = await this.balanceService.getCurrentBalance(userId, accountType, true);
       
       this.logger.log(
-        `âœ… Order complete - New ${accountType} balance: ${newBalance} (deducted ${amount})`
+        `✅ Order complete - New ${accountType} balance: ${newBalance} (deducted ${amount})`
       );
 
       const executionTime = Date.now() - startTime;
       this.orderCreateCount++;
       this.avgCreateTime = (this.avgCreateTime * 0.9) + (executionTime * 0.1);
 
+      // 🔥 **EMIT ORDER CREATED VIA WEBSOCKET**
       this.tradingGateway.emitOrderCreated(userId, {
         order: orderData,
         accountType,
@@ -344,6 +349,7 @@ export class BinaryOrdersService {
           expiryTimestamp,
           durationSeconds: Math.round((isAdjusted ? createOrderDto.duration + 1 : createOrderDto.duration) * 60),
           timezone: 'Asia/Jakarta (WIB)',
+          // ✅ NEW: Info adjustment
           expiryAdjusted: isAdjusted,
           originalDuration: createOrderDto.duration,
           adjustedDuration: isAdjusted ? createOrderDto.duration + 1 : createOrderDto.duration,
@@ -352,7 +358,7 @@ export class BinaryOrdersService {
       });
 
       this.logger.log(
-        `âš¡ [${accountType.toUpperCase()}] Order created in ${executionTime}ms - ${asset.symbol} ${createOrderDto.direction} ${durationDisplay} (Profit: ${finalProfitRate}%)`
+        `⚡ [${accountType.toUpperCase()}] Order created in ${executionTime}ms - ${asset.symbol} ${createOrderDto.direction} ${durationDisplay} (Profit: ${finalProfitRate}%)`
       );
 
       return {
@@ -375,6 +381,7 @@ export class BinaryOrdersService {
           expiryTimestamp,
           durationSeconds: Math.round((isAdjusted ? createOrderDto.duration + 1 : createOrderDto.duration) * 60),
           timezone: 'Asia/Jakarta (WIB)',
+          // ✅ NEW: Info adjustment
           expiryAdjusted: isAdjusted,
           originalDuration: createOrderDto.duration,
           adjustedDuration: isAdjusted ? createOrderDto.duration + 1 : createOrderDto.duration,
@@ -384,7 +391,7 @@ export class BinaryOrdersService {
 
     } catch (error) {
       const duration = Date.now() - startTime;
-      this.logger.error(`âŒ Order creation failed after ${duration}ms: ${error.message}`);
+      this.logger.error(`❌ Order creation failed after ${duration}ms: ${error.message}`);
       throw error;
     }
   }
@@ -421,14 +428,14 @@ export class BinaryOrdersService {
       if (totalExpired === 0) {
         if (this.settlementRunCount % 60 === 0) {
           this.logger.debug(
-            `â° Settlement check #${this.settlementRunCount}: No expired orders (${realOrders.length + demoOrders.length} active)`
+            `⏰ Settlement check #${this.settlementRunCount}: No expired orders (${realOrders.length + demoOrders.length} active)`
           );
         }
         return;
       }
 
       this.logger.log(
-        `âš¡ [${currentDateTime} WIB] Processing ${totalExpired} expired orders (Real: ${expiredRealOrders.length}, Demo: ${expiredDemoOrders.length})`
+        `⚡ [${currentDateTime} WIB] Processing ${totalExpired} expired orders (Real: ${expiredRealOrders.length}, Demo: ${expiredDemoOrders.length})`
       );
 
       const PARALLEL_LIMIT = 20;
@@ -442,7 +449,7 @@ export class BinaryOrdersService {
       this.clearAllCache();
 
       const duration = Date.now() - startTime;
-      this.logger.log(`âš¡ Settled ${totalExpired} orders in ${duration}ms`);
+      this.logger.log(`⚡ Settled ${totalExpired} orders in ${duration}ms`);
 
     } catch (error) {
       this.logger.error(`Settlement error: ${error.message}`);
@@ -490,7 +497,7 @@ export class BinaryOrdersService {
       }
 
       if (!priceData?.price) {
-        this.logger.warn(`âš ï¸ No price for order ${order.id} after ${maxAttempts} attempts, retrying next cycle`);
+        this.logger.warn(`⚠️ No price for order ${order.id} after ${maxAttempts} attempts, retrying next cycle`);
         return;
       }
 
@@ -531,6 +538,7 @@ export class BinaryOrdersService {
 
       this.orderCache.delete(order.id);
 
+      // 🔥 **EMIT SETTLEMENT RESULT VIA WEBSOCKET**
       this.tradingGateway.emitOrderSettled(order.user_id, {
         id: order.id,
         status: result,
@@ -547,7 +555,7 @@ export class BinaryOrdersService {
       this.avgSettleTime = (this.avgSettleTime * 0.9) + (duration * 0.1);
 
       this.logger.log(
-        `âš¡ [${settlementDateTime} WIB] [${order.accountType.toUpperCase()}] Settled ${order.id.slice(-8)} in ${duration}ms - ${durationDisplay} ${result} ${profit > 0 ? '+' : ''}${profit.toFixed(2)} (${order.profitRate}%)`
+        `⚡ [${settlementDateTime} WIB] [${order.accountType.toUpperCase()}] Settled ${order.id.slice(-8)} in ${duration}ms - ${durationDisplay} ${result} ${profit > 0 ? '+' : ''}${profit.toFixed(2)} (${order.profitRate}%)`
       );
 
     } catch (error) {
@@ -568,7 +576,10 @@ export class BinaryOrdersService {
     return snapshot.docs.map(doc => doc.data() as BinaryOrder);
   }
 
-  async getOrders(userId: string, queryDto: QueryBinaryOrderDto) {
+  async getOrders(
+    userId: string, 
+    queryDto: QueryBinaryOrderDto
+  ) {
     const startTime = Date.now();
     
     try {
@@ -606,7 +617,7 @@ export class BinaryOrdersService {
         const orders = allOrders.slice(startIndex, startIndex + limit);
 
         const duration = Date.now() - startTime;
-        this.logger.debug(`âœ… Got ${orders.length} orders in ${duration}ms (optimized query)`);
+        this.logger.debug(`✅ Got ${orders.length} orders in ${duration}ms (optimized query)`);
 
         return {
           orders,
@@ -625,7 +636,7 @@ export class BinaryOrdersService {
         };
 
       } catch (indexError) {
-        this.logger.warn(`âš ï¸ Index error, using fallback query: ${indexError.message}`);
+        this.logger.warn(`⚠️ Index error, using fallback query: ${indexError.message}`);
         
         const snapshot = await db.collection(COLLECTIONS.ORDERS)
           .where('user_id', '==', userId)
@@ -658,7 +669,7 @@ export class BinaryOrdersService {
         const orders = allOrders.slice(startIndex, startIndex + limit);
 
         const duration = Date.now() - startTime;
-        this.logger.log(`âœ… Got ${orders.length} orders in ${duration}ms (fallback query)`);
+        this.logger.log(`✅ Got ${orders.length} orders in ${duration}ms (fallback query)`);
 
         return {
           orders,
@@ -680,7 +691,7 @@ export class BinaryOrdersService {
 
     } catch (error) {
       const duration = Date.now() - startTime;
-      this.logger.error(`âŒ Get orders failed after ${duration}ms: ${error.message}`);
+      this.logger.error(`❌ Get orders failed after ${duration}ms: ${error.message}`);
       this.logger.error(error.stack);
       
       return {
@@ -768,7 +779,7 @@ export class BinaryOrdersService {
   clearAllCache(): void {
     this.orderCache.clear();
     this.clearActiveOrdersCache();
-    this.logger.debug('âš¡ All caches cleared');
+    this.logger.debug('⚡ All caches cleared');
   }
 
   getPerformanceStats() {

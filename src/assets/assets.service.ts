@@ -957,57 +957,50 @@ export class AssetsService {
   }
 
   async getCurrentPrice(assetId: string) {
-    const startTime = Date.now();
-    try {
-      const asset = await this.getAssetById(assetId);
+  const startTime = Date.now();
+  try {
+    const asset = await this.getAssetById(assetId);
 
-      const priceData = await Promise.race([
-        this.priceFetcherService.getCurrentPrice(asset, true),
-        new Promise<never>((_, reject) => 
-          setTimeout(() => reject(new Error('Price timeout')), 2000)
-        ),
-      ]);
+    const priceData = await Promise.race([
+      this.priceFetcherService.getCurrentPrice(asset, true),
+      new Promise<never>((_, reject) => 
+        setTimeout(() => reject(new Error('Price timeout')), 2000)
+      ),
+    ]);
 
-      if (!priceData) {
-        throw new NotFoundException(`Price unavailable for ${asset.symbol}`);
-      }
-
-      const duration = Date.now() - startTime;
-      this.logger.debug(`⚡ Got price for ${asset.symbol} in ${duration}ms`);
-
-      // 🔥 **EMIT PRICE UPDATE EVENT FOR NORMAL ASSETS**
-      if (asset.category !== ASSET_CATEGORY.CRYPTO) {
-        this.eventEmitter.emit('simulator.price.update', {
-          assetId,
-          priceData,
-        });
-      }
-
-      return {
-        asset: {
-          id: asset.id,
-          name: asset.name,
-          symbol: asset.symbol,
-          type: asset.type,
-          category: asset.category,
-        },
-        price: priceData.price,
-        timestamp: priceData.timestamp,
-        datetime: priceData.datetime,
-        responseTime: duration,
-      };
-
-    } catch (error) {
-      const duration = Date.now() - startTime;
-      this.logger.error(`Price fetch failed after ${duration}ms: ${error.message}`);
-      
-      if (error.message.includes('timeout')) {
-        throw new RequestTimeoutException('Price service timeout');
-      }
-      
-      throw error;
+    if (!priceData) {
+      throw new NotFoundException(`Price unavailable for ${asset.symbol}`);
     }
+
+    const duration = Date.now() - startTime;
+    this.logger.debug(`⚡ Got price for ${asset.symbol} in ${duration}ms`);
+
+    return {
+      asset: {
+        id: asset.id,
+        name: asset.name,
+        symbol: asset.symbol,
+        type: asset.type,
+        category: asset.category,
+      },
+      price: priceData.price,
+      timestamp: priceData.timestamp,
+      datetime: priceData.datetime,
+      responseTime: duration,
+    };
+
+  } catch (error) {
+    const duration = Date.now() - startTime;
+    this.logger.error(`Price fetch failed after ${duration}ms: ${error.message}`);
+    
+    if (error.message.includes('timeout')) {
+      throw new RequestTimeoutException('Price service timeout');
+    }
+    
+    throw error;
   }
+}
+
 
   async getAssetSettings(assetId: string): Promise<Asset> {
     return this.getAssetById(assetId);
