@@ -1,10 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { FirebaseService } from '../../firebase/firebase.service';
 import { BinanceService } from './binance.service';
-import { TradingGateway } from '../../websocket/trading.gateway';
-import { OnEvent } from '@nestjs/event-emitter';
 import { Asset, RealtimePrice } from '../../common/interfaces';
-import { ASSET_CATEGORY, ASSET_DATA_SOURCE } from '../../common/constants';
+import { ASSET_CATEGORY } from '../../common/constants';
 
 @Injectable()
 export class PriceFetcherService {
@@ -30,7 +28,6 @@ export class PriceFetcherService {
   constructor(
     private firebaseService: FirebaseService,
     private binanceService: BinanceService,
-    private readonly tradingGateway: TradingGateway, // 🔥 WebSocket gateway
   ) {
     setInterval(() => this.cleanupStaleCache(), 5000);
   }
@@ -48,7 +45,7 @@ export class PriceFetcherService {
       if (cached) {
         this.cacheHits++;
         const duration = Date.now() - startTime;
-        this.logger.debug(`⚡ Cache hit for ${asset.symbol} (${duration}ms)`);
+        this.logger.debug(`âš¡ Cache hit for ${asset.symbol} (${duration}ms)`);
         return cached;
       }
 
@@ -59,7 +56,6 @@ export class PriceFetcherService {
           price,
           timestamp: Date.now(),
         });
-
         this.consecutiveFailures = 0;
       }
 
@@ -68,9 +64,9 @@ export class PriceFetcherService {
       this.avgFetchTime = (this.avgFetchTime + duration) / 2;
 
       if (duration > 1000) {
-        this.logger.warn(`⚠️ Slow fetch for ${asset.symbol}: ${duration}ms`);
+        this.logger.warn(`âš ï¸ Slow fetch for ${asset.symbol}: ${duration}ms`);
       } else {
-        this.logger.debug(`⚡ Fetched ${asset.symbol} in ${duration}ms`);
+        this.logger.debug(`âš¡ Fetched ${asset.symbol} in ${duration}ms`);
       }
       
       return price;
@@ -80,17 +76,17 @@ export class PriceFetcherService {
       this.consecutiveFailures++;
       
       this.logger.error(
-        `❌ Price fetch failed after ${duration}ms (failure ${this.consecutiveFailures}/${this.MAX_CONSECUTIVE_FAILURES}): ${error.message}`
+        `âŒ Price fetch failed after ${duration}ms (failure ${this.consecutiveFailures}/${this.MAX_CONSECUTIVE_FAILURES}): ${error.message}`
       );
       
       const staleCache = this.getStaleCache(asset.id);
       if (staleCache) {
-        this.logger.warn(`⚠️ Using stale cache for ${asset.symbol} (${this.getStaleAge(asset.id)}s old)`);
+        this.logger.warn(`âš ï¸ Using stale cache for ${asset.symbol} (${this.getStaleAge(asset.id)}s old)`);
         return staleCache;
       }
 
       if (this.consecutiveFailures >= this.MAX_CONSECUTIVE_FAILURES) {
-        this.logger.error('❌ Too many consecutive failures, cache might need warming');
+        this.logger.error('âŒ Too many consecutive failures, cache might need warming');
         this.consecutiveFailures = 0;
       }
       
@@ -107,7 +103,7 @@ export class PriceFetcherService {
         
         if (price) {
           if (attempt > 0) {
-            this.logger.log(`✅ ${asset.symbol} fetch succeeded on retry ${attempt}`);
+            this.logger.log(`âœ… ${asset.symbol} fetch succeeded on retry ${attempt}`);
           }
           return price;
         }
@@ -141,13 +137,13 @@ export class PriceFetcherService {
     }
 
     switch (asset.dataSource) {
-      case ASSET_DATA_SOURCE.REALTIME_DB:
+      case 'realtime_db':
         return await this.fetchFromRealtimeDb(asset);
       
-      case ASSET_DATA_SOURCE.API:
+      case 'api':
         return await this.fetchFromApi(asset);
       
-      case ASSET_DATA_SOURCE.MOCK:
+      case 'mock':
         return this.generateMockPrice(asset);
       
       default:
@@ -173,7 +169,7 @@ export class PriceFetcherService {
       return realtimePrice;
 
     } catch (error) {
-      this.logger.error(`❌ Crypto price fetch error for ${asset.symbol}: ${error.message}`);
+      this.logger.error(`âŒ Crypto price fetch error for ${asset.symbol}: ${error.message}`);
       return null;
     }
   }
@@ -187,15 +183,12 @@ export class PriceFetcherService {
     try {
       const fullPath = `${asset.realtimeDbPath}/current_price`;
       
-      this.logger.debug(`📡 Fetching price from: ${fullPath}`);
+      this.logger.debug(`ðŸ"¡ Fetching price from: ${fullPath}`);
       
-      const data = await this.firebaseService.getRealtimeDbValue(
-        fullPath,
-        true
-      );
+      const data = await this.firebaseService.getRealtimeDbValue(fullPath, true);
 
       if (!data || !data.price) {
-        this.logger.warn(`⚠️ No price at ${fullPath}`);
+        this.logger.warn(`âš ï¸ No price at ${fullPath}`);
         return null;
       }
 
@@ -205,7 +198,7 @@ export class PriceFetcherService {
       
       if (dataAge > 30) {
         this.logger.warn(
-          `⚠️ Price for ${asset.symbol} is ${dataAge}s old - simulator may be slow`
+          `âš ï¸ Price for ${asset.symbol} is ${dataAge}s old - simulator may be slow`
         );
       }
 
@@ -222,13 +215,13 @@ export class PriceFetcherService {
       };
 
       this.logger.debug(
-        `✅ Got price for ${asset.symbol}: ${price} (${dataAge}s old) from ${fullPath}`
+        `âœ… Got price for ${asset.symbol}: ${price} (${dataAge}s old) from ${fullPath}`
       );
 
       return result;
 
     } catch (error) {
-      this.logger.error(`❌ Realtime DB error for ${asset.symbol}: ${error.message}`);
+      this.logger.error(`âŒ Realtime DB error for ${asset.symbol}: ${error.message}`);
       throw error;
     }
   }
@@ -251,18 +244,11 @@ export class PriceFetcherService {
     const variation = (Math.random() - 0.5) * 2 * basePrice * volatility;
     const price = basePrice + variation;
 
-    const priceData = {
+    return {
       price: Math.round(price * 1000000) / 1000000,
       timestamp: Math.floor(Date.now() / 1000),
       datetime: new Date().toISOString(),
     };
-
-    // 🔥 **EMIT PRICE UPDATE FOR NORMAL ASSETS**
-    if (asset.category !== ASSET_CATEGORY.CRYPTO) {
-      this.tradingGateway.emitPriceUpdate(asset.id, priceData);
-    }
-
-    return priceData;
   }
 
   private getCachedPrice(assetId: string, maxAge: number): RealtimePrice | null {
@@ -310,7 +296,7 @@ export class PriceFetcherService {
     }
 
     if (cleaned > 0) {
-      this.logger.debug(`🗑️ Cleaned ${cleaned} stale cache entries`);
+      this.logger.debug(`ðŸ—'ï¸ Cleaned ${cleaned} stale cache entries`);
     }
   }
 
@@ -327,7 +313,7 @@ export class PriceFetcherService {
     }
 
     const duration = Date.now() - startTime;
-    this.logger.log(`⚡ Prefetched ${assets.length} prices in ${duration}ms`);
+    this.logger.log(`âš¡ Prefetched ${assets.length} prices in ${duration}ms`);
   }
 
   async batchFetchPrices(assets: Asset[]): Promise<Map<string, RealtimePrice | null>> {
@@ -381,24 +367,18 @@ export class PriceFetcherService {
       consecutiveFailures: this.consecutiveFailures,
       isHealthy: this.consecutiveFailures < this.MAX_CONSECUTIVE_FAILURES,
       cryptoStats: this.binanceService.getStats(),
+      websocketMethod: 'firebase-realtime-listeners',
     };
   }
 
   clearCache(): void {
     this.priceCache.clear();
     this.binanceService.clearCache();
-    this.logger.log('🗑️ Price cache cleared');
+    this.logger.log('ðŸ—ï¸ Price cache cleared');
   }
 
   async warmUpCache(assets: Asset[]): Promise<void> {
-    this.logger.log(`⚡ Warming up cache for ${assets.length} assets...`);
+    this.logger.log(`âš¡ Warming up cache for ${assets.length} assets...`);
     await this.prefetchPrices(assets);
-  }
-
-  // 🔥 **LISTEN SIMULATOR EVENTS & BROADCAST VIA WEBSOCKET**
-  @OnEvent('simulator.price.update')
-  handleSimulatorPriceUpdate(payload: { assetId: string, priceData: RealtimePrice }) {
-    this.tradingGateway.emitPriceUpdate(payload.assetId, payload.priceData);
-    this.logger.debug(`📡 Simulator price broadcast: ${payload.assetId} = ${payload.priceData.price}`);
   }
 }

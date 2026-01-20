@@ -1,4 +1,3 @@
-//src/websocket/trading.gateway.ts
 import {
   WebSocketGateway,
   WebSocketServer,
@@ -7,21 +6,26 @@ import {
   OnGatewayDisconnect,
   SubscribeMessage,
 } from '@nestjs/websockets';
-import { Logger, UseGuards } from '@nestjs/common';
+import { Logger } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { FirebaseService } from '../firebase/firebase.service';
+import * as admin from 'firebase-admin';
 
-// Interface untuk autentikasi socket
 interface AuthenticatedSocket extends Socket {
   userId: string;
   isAdmin: boolean;
 }
 
+interface FirebaseListener {
+  ref: admin.database.Reference;
+  unsubscribe: () => void;
+}
+
 @WebSocketGateway({
   cors: {
-    origin: '*', // Sesuaikan dengan frontend domain
+    origin: '*',
     credentials: true,
   },
   transports: ['websocket', 'polling'],
@@ -34,6 +38,9 @@ export class TradingGateway implements OnGatewayInit, OnGatewayConnection, OnGat
   @WebSocketServer()
   server: Server;
 
+  private assetListeners: Map<string, FirebaseListener> = new Map();
+  private clientSubscriptions: Map<string, Set<string>> = new Map();
+
   constructor(
     private jwtService: JwtService,
     private configService: ConfigService,
@@ -41,21 +48,20 @@ export class TradingGateway implements OnGatewayInit, OnGatewayConnection, OnGat
   ) {}
 
   afterInit(server: Server) {
-    this.logger.log('🚀 WebSocket Gateway initialized');
-    this.logger.log('📡 Price & Order streaming ready');
+    this.logger.log('ðŸš€ WebSocket Gateway initialized');
+    this.logger.log('ðŸ"¡ Firebase Realtime DB listeners ready');
   }
 
-  async handleConnection(client: Socket, ...args: any[]) {
+  async handleConnection(client: Socket) {
     try {
       const token = client.handshake.auth.token || client.handshake.query.token;
       
       if (!token) {
-        this.logger.warn(`❌ Socket ${client.id} rejected: No token`);
+        this.logger.warn(`âŒ Socket ${client.id} rejected: No token`);
         client.disconnect();
         return;
       }
 
-      // Verify JWT
       const decoded = this.jwtService.verify(token, {
         secret: this.configService.get('jwt.secret'),
       });
@@ -63,77 +69,122 @@ export class TradingGateway implements OnGatewayInit, OnGatewayConnection, OnGat
       (client as AuthenticatedSocket).userId = decoded.sub;
       (client as AuthenticatedSocket).isAdmin = decoded.role === 'super_admin' || decoded.role === 'admin';
 
-      this.logger.log(`✅ Socket connected: ${client.id} | User: ${decoded.sub}`);
+      this.logger.log(`âœ… Socket connected: ${client.id} | User: ${decoded.sub}`);
       
-      // Kirim snapshot asset prices saat connect
-      await this.sendInitialPriceSnapshot(client);
+      this.clientSubscriptions.set(client.id, new Set());
 
     } catch (error) {
-      this.logger.error(`❌ Socket ${client.id} authentication failed: ${error.message}`);
+      this.logger.error(`âŒ Socket ${client.id} authentication failed: ${error.message}`);
       client.disconnect();
     }
   }
 
   handleDisconnect(client: Socket) {
     const authClient = client as AuthenticatedSocket;
-    this.logger.log(`🔴 Socket disconnected: ${client.id} | User: ${authClient.userId}`);
-  }
-
-  // ============================================
-  // PRICE EVENTS
-  // ============================================
-
-  /**
-   * Emit price update ke semua client yang terhubung
-   */
-  emitPriceUpdate(assetId: string, priceData: any) {
-    const payload = {
-      assetId,
-      ...priceData,
-      timestamp: Date.now(),
-    };
     
-    this.server.emit('price:update', payload);
-    this.logger.debug(`📡 Price pushed: ${assetId} = ${priceData.price}`);
+    const subscriptions = this.clientSubscriptions.get(client.id);
+    if (subscriptions) {
+      subscriptions.forEach(assetId => {
+        this.unsubscribeFromAsset(assetId);
+      });
+      this.clientSubscriptions.delete(client.id);
+    }
+    
+    this.logger.log(`ðŸ"´ Socket disconnected: ${client.id} | User: ${authClient.userId}`);
   }
 
-  /**
-   * Client subscribe ke specific assets
-   */
   @SubscribeMessage('price:subscribe')
   async handlePriceSubscribe(client: AuthenticatedSocket, payload: { assetIds: string[] }) {
     try {
-      const assets = await this.firebaseService.getFirestore()
-        .collection('assets')
-        .where('id', 'in', payload.assetIds)
-        .get();
+      const db = this.firebaseService.getFirestore();
+      const rtDb = this.firebaseService.getRealtimeDatabase();
 
-      assets.docs.forEach(doc => {
-        client.join(`asset:${doc.id}`);
+      for (const assetId of payload.assetIds) {
+        const assetDoc = await db.collection('assets').doc(assetId).get();
+        
+        if (!assetDoc.exists) {
+          this.logger.warn(`âš ï¸ Asset ${assetId} not found`);
+          continue;
+        }
+
+        const asset = assetDoc.data();
+        const path = this.getAssetRealtimePath(asset);
+
+        if (!this.assetListeners.has(assetId)) {
+          await this.setupFirebaseListener(assetId, path);
+        }
+
+        const clientSubs = this.clientSubscriptions.get(client.id);
+        if (clientSubs) {
+          clientSubs.add(assetId);
+        }
+
+        client.join(`asset:${assetId}`);
+      }
+
+      client.emit('price:subscribed', { 
+        assetIds: payload.assetIds,
+        method: 'firebase-realtime-listener'
       });
 
-      client.emit('price:subscribed', { assetIds: payload.assetIds });
+      this.logger.log(`ðŸ"¡ Client ${client.id} subscribed to ${payload.assetIds.length} assets`);
 
-      // Langsung kirim snapshot
-      for (const assetId of payload.assetIds) {
-        const priceData = await this.getCurrentPriceSnapshot(assetId);
-        if (priceData) {
-          client.emit('price:update', { assetId, ...priceData });
-        }
-      }
     } catch (error) {
-      this.logger.error(`❌ Price subscription error: ${error.message}`);
+      this.logger.error(`âŒ Price subscription error: ${error.message}`);
       client.emit('error', { message: 'Failed to subscribe to prices' });
     }
   }
 
-  // ============================================
-  // ORDER EVENTS
-  // ============================================
+  private async setupFirebaseListener(assetId: string, path: string): Promise<void> {
+    try {
+      const rtDb = this.firebaseService.getRealtimeDatabase();
+      const ref = rtDb.ref(`${path}/current_price`);
 
-  /**
-   * Emit order yang baru dibuat
-   */
+      const listener = ref.on('value', (snapshot) => {
+        const priceData = snapshot.val();
+        
+        if (priceData) {
+          this.server.to(`asset:${assetId}`).emit('price:update', {
+            assetId,
+            ...priceData,
+            timestamp: Date.now(),
+            method: 'firebase-push',
+          });
+
+          this.logger.debug(`ðŸ"¡ Firebase pushed: ${assetId} = ${priceData.price}`);
+        }
+      });
+
+      this.assetListeners.set(assetId, {
+        ref,
+        unsubscribe: () => ref.off('value', listener),
+      });
+
+      this.logger.log(`âœ… Firebase listener setup: ${assetId} at ${path}`);
+
+    } catch (error) {
+      this.logger.error(`âŒ Failed to setup listener for ${assetId}: ${error.message}`);
+    }
+  }
+
+  private unsubscribeFromAsset(assetId: string): void {
+    let subscriberCount = 0;
+    for (const subs of this.clientSubscriptions.values()) {
+      if (subs.has(assetId)) {
+        subscriberCount++;
+      }
+    }
+
+    if (subscriberCount === 0) {
+      const listener = this.assetListeners.get(assetId);
+      if (listener) {
+        listener.unsubscribe();
+        this.assetListeners.delete(assetId);
+        this.logger.debug(`ðŸ—'ï¸ Removed Firebase listener: ${assetId}`);
+      }
+    }
+  }
+
   emitOrderCreated(userId: string, orderData: any) {
     const payload = {
       ...orderData,
@@ -141,14 +192,10 @@ export class TradingGateway implements OnGatewayInit, OnGatewayConnection, OnGat
       timestamp: Date.now(),
     };
     
-    // Hanya kirim ke user yang bersangkutan (room)
     this.server.to(`user:${userId}`).emit('order:update', payload);
-    this.logger.debug(`📤 Order created pushed: ${orderData.order?.id || 'unknown'}`);
+    this.logger.debug(`ðŸ"¤ Order created pushed: ${orderData.order?.id || 'unknown'}`);
   }
 
-  /**
-   * Emit settlement result
-   */
   emitOrderSettled(userId: string, settlementData: any) {
     const payload = {
       ...settlementData,
@@ -157,16 +204,9 @@ export class TradingGateway implements OnGatewayInit, OnGatewayConnection, OnGat
     };
     
     this.server.to(`user:${userId}`).emit('order:update', payload);
-    this.logger.debug(`⚡ Settlement pushed: ${settlementData.id} = ${settlementData.status}`);
+    this.logger.debug(`âš¡ Settlement pushed: ${settlementData.id} = ${settlementData.status}`);
   }
 
-  // ============================================
-  // USER SUBSCRIPTION
-  // ============================================
-
-  /**
-   * Client subscribe ke room user
-   */
   @SubscribeMessage('user:subscribe')
   handleUserSubscribe(client: AuthenticatedSocket, payload: { userId: string }) {
     if (client.userId !== payload.userId) {
@@ -175,17 +215,10 @@ export class TradingGateway implements OnGatewayInit, OnGatewayConnection, OnGat
     }
 
     client.join(`user:${payload.userId}`);
-    this.logger.log(`🔒 User ${payload.userId} subscribed to own room`);
+    this.logger.log(`ðŸ"' User ${payload.userId} subscribed to own room`);
     client.emit('user:subscribed', { userId: payload.userId });
   }
 
-  // ============================================
-  // ADMIN EVENTS
-  // ============================================
-
-  /**
-   * Admin subscribe
-   */
   @SubscribeMessage('admin:subscribe')
   handleAdminSubscribe(client: AuthenticatedSocket) {
     if (!client.isAdmin) {
@@ -194,50 +227,12 @@ export class TradingGateway implements OnGatewayInit, OnGatewayConnection, OnGat
     }
 
     client.join('room:admin');
-    this.logger.log(`🔒 Admin ${client.userId} subscribed`);
+    this.logger.log(`ðŸ"' Admin ${client.userId} subscribed`);
     client.emit('admin:subscribed', { role: 'admin' });
   }
 
-  /**
-   * Emit update untuk admin
-   */
   emitAdminUpdate(event: string, data: any) {
     this.server.to('room:admin').emit(event, data);
-  }
-
-  // ============================================
-  // HELPER METHODS
-  // ============================================
-
-  private async sendInitialPriceSnapshot(client: Socket) {
-    try {
-      // Bisa diexpand untuk kirim snapshot market
-      this.logger.debug(`📊 Initial snapshot sent to ${client.id}`);
-    } catch (error) {
-      this.logger.error(`❌ Failed to send snapshot: ${error.message}`);
-    }
-  }
-
-  private async getCurrentPriceSnapshot(assetId: string): Promise<any | null> {
-    try {
-      const assetDoc = await this.firebaseService.getFirestore()
-        .collection('assets')
-        .doc(assetId)
-        .get();
-
-      if (!assetDoc.exists) return null;
-
-      const asset = assetDoc.data();
-      const path = this.getAssetRealtimePath(asset);
-      
-      const snapshot = await this.firebaseService.getRealtimeDatabase()
-        .ref(`${path}/current_price`)
-        .once('value');
-
-      return snapshot.val();
-    } catch {
-      return null;
-    }
   }
 
   private getAssetRealtimePath(asset: any): string {
