@@ -767,6 +767,40 @@ export class FirebaseService implements OnModuleInit {
     }
   }
 
+  async batchDeleteRealtimeDb(paths: string[]): Promise<void> {
+  if (!this.isConnected) {
+    throw new Error('Firebase not connected');
+  }
+
+  if (paths.length === 0) return;
+
+  try {
+    // Gunakan update dengan null values untuk batch delete
+    const updates: any = {};
+    paths.forEach(path => {
+      updates[path] = null;
+    });
+
+    if (this.useRestForRealtimeDb) {
+      await this.getNextConnection().patch('/.json', updates);
+    } else if (this.realtimeDbAdmin) {
+      await this.realtimeDbAdmin.ref().update(updates);
+    }
+    
+    this.writeStats.success += paths.length;
+  } catch (error) {
+    this.writeStats.failed += paths.length;
+    throw error;
+  }
+}
+
+/**
+ * ✅ NEW: Cek apakah Admin SDK untuk RTDB tersedia
+ */
+isRealtimeDbAdminAvailable(): boolean {
+  return this.realtimeDbAdmin !== null && !this.useRestForRealtimeDb;
+}
+
   async runTransaction<T>(
     updateFunction: (transaction: admin.firestore.Transaction) => Promise<T>,
   ): Promise<T> {

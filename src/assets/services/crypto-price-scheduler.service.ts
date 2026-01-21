@@ -178,14 +178,27 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
 
     try {
       let totalDeleted = 0;
+      const PARALLEL_ASSETS = 3; // Cleanup 3 assets secara parallel
 
-      for (const asset of this.cryptoAssets) {
-        try {
-          const deleted = await this.cleanupAssetTimeframe(asset, '1s', 0.0417);
-          totalDeleted += deleted;
-        } catch (error) {
-          this.logger.error(`❌ 1s cleanup error for ${asset.symbol}: ${error.message}`);
-          this.cleanupStats.errors++;
+      // Process assets in parallel tapi terkontrol
+      for (let i = 0; i < this.cryptoAssets.length; i += PARALLEL_ASSETS) {
+        const batch = this.cryptoAssets.slice(i, i + PARALLEL_ASSETS);
+        
+        const results = await Promise.allSettled(
+          batch.map(asset => this.cleanupAssetTimeframe(asset, '1s', 0.0417))
+        );
+        
+        results.forEach((result, index) => {
+          if (result.status === 'fulfilled') {
+            totalDeleted += result.value;
+          } else {
+            this.logger.error(`❌ Cleanup failed for ${batch[index].symbol}: ${result.reason}`);
+          }
+        });
+
+        // Rate limiting antar batch asset
+        if (i + PARALLEL_ASSETS < this.cryptoAssets.length) {
+          await new Promise(resolve => setTimeout(resolve, 200));
         }
       }
 
@@ -243,50 +256,114 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     }
   }
 
+  /**
+   * ✅ OPTIMIZED: Stream-based batch processing untuk cleanup
+   * Menggunakan Admin SDK query untuk membaca data dalam batch
+   */
   private async cleanupAssetTimeframe(
     asset: Asset,
     timeframe: string,
     retentionDays: number
   ): Promise<number> {
+    const startTime = Date.now();
+    const cutoffTimestamp = Math.floor(Date.now() / 1000) - (retentionDays * 86400);
+    const path = this.getAssetPath(asset);
+    const ohlcPath = `${path}/ohlc_${timeframe}`;
+
+    this.logger.debug(`🗑️ Starting cleanup for ${asset.symbol} ${timeframe} (cutoff: ${cutoffTimestamp})`);
+
+    let totalDeleted = 0;
+    const BATCH_DELETE_SIZE = 100;
+    const QUERY_BATCH_SIZE = 500; // Baca 500 key per query
+
     try {
-      const path = this.getAssetPath(asset);
-      const cutoffTimestamp = Math.floor(Date.now() / 1000) - (retentionDays * 86400);
-      const ohlcPath = `${path}/ohlc_${timeframe}`;
-
-      const snapshot = await this.firebaseService.getRealtimeDbValue(ohlcPath);
-
-      if (!snapshot) {
-        return 0;
-      }
-
-      const oldKeys = Object.keys(snapshot).filter(timestamp => {
-        return parseInt(timestamp) < cutoffTimestamp;
-      });
-
-      if (oldKeys.length === 0) {
-        return 0;
-      }
-
-      this.logger.log(`  🗑️ Deleting ${oldKeys.length} old ${timeframe} bars for ${asset.symbol}`);
-
-      const BATCH_SIZE = 50;
-      for (let i = 0; i < oldKeys.length; i += BATCH_SIZE) {
-        const batch = oldKeys.slice(i, i + BATCH_SIZE);
-        const updates: any = {};
+      // Gunakan Firebase Admin SDK untuk query yang efisien
+      if (this.firebaseService.isRealtimeDbAdminAvailable()) {
+        const dbRef = this.firebaseService.getRealtimeDatabase().ref(ohlcPath);
         
-        batch.forEach(key => {
-          updates[`${ohlcPath}/${key}`] = null;
-        });
+        // Loop hingga tidak ada data lama lagi
+        while (true) {
+          // Query: Ambil key yang lebih tua dari cutoff, batasi QUERY_BATCH_SIZE
+          const snapshot = await dbRef
+            .orderByKey()
+            .endAt(String(cutoffTimestamp))
+            .limitToFirst(QUERY_BATCH_SIZE)
+            .once('value');
 
-        for (const [deletePath, value] of Object.entries(updates)) {
-          await this.firebaseService.setRealtimeDbValue(deletePath, value, false);
+          const keysToDelete: string[] = [];
+          snapshot.forEach((childSnapshot) => {
+            const key = childSnapshot.key;
+            if (key && parseInt(key) < cutoffTimestamp) {
+              keysToDelete.push(key);
+            }
+            return false; // Continue iteration
+          });
+
+          if (keysToDelete.length === 0) {
+            break; // Tidak ada data lama lagi
+          }
+
+          this.logger.debug(`  📊 Found ${keysToDelete.length} old keys for ${asset.symbol} ${timeframe}`);
+
+          // Hapus dalam batch parallel
+          const deletePromises = [];
+          for (let i = 0; i < keysToDelete.length; i += BATCH_DELETE_SIZE) {
+            const batch = keysToDelete.slice(i, i + BATCH_DELETE_SIZE);
+            const updates: any = {};
+            batch.forEach(key => {
+              updates[`${ohlcPath}/${key}`] = null;
+            });
+            deletePromises.push(this.firebaseService.batchDeleteRealtimeDb(Object.keys(updates)));
+          }
+
+          await Promise.allSettled(deletePromises);
+          totalDeleted += keysToDelete.length;
+
+          // Rate limiting: pause 100ms setiap 500 deletions
+          if (totalDeleted % 500 === 0) {
+            this.logger.log(`  ⏸️  Rate limit pause 100ms...`);
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+
+          // Jika kurang dari QUERY_BATCH_SIZE, berarti sudah habis
+          if (keysToDelete.length < QUERY_BATCH_SIZE) {
+            break;
+          }
         }
+      } else {
+        // Fallback: Gunakan REST API dengan shallow query (lebih ringan)
+        const shallowKeys = await this.firebaseService.getRealtimeDbValue(`${ohlcPath}.json?shallow=true`);
+        
+        if (!shallowKeys) return 0;
+
+        const allKeys = Object.keys(shallowKeys);
+        const oldKeys = allKeys.filter(key => parseInt(key) < cutoffTimestamp);
+        
+        if (oldKeys.length === 0) return 0;
+
+        this.logger.log(`  🗑️ Deleting ${oldKeys.length} old ${timeframe} bars for ${asset.symbol}`);
+
+        // Hapus dalam batch
+        for (let i = 0; i < oldKeys.length; i += BATCH_DELETE_SIZE) {
+          const batch = oldKeys.slice(i, i + BATCH_DELETE_SIZE);
+          const updates: any = {};
+          batch.forEach(key => {
+            updates[`${ohlcPath}/${key}`] = null;
+          });
+          
+          await this.firebaseService.batchDeleteRealtimeDb(Object.keys(updates));
+        }
+
+        totalDeleted = oldKeys.length;
       }
 
-      return oldKeys.length;
+      const duration = Date.now() - startTime;
+      this.logger.debug(`✅ Cleanup ${asset.symbol} ${timeframe}: ${totalDeleted} bars in ${duration}ms`);
+
+      return totalDeleted;
 
     } catch (error) {
-      this.logger.debug(`No ${timeframe} data to cleanup for ${asset.symbol}`);
+      this.logger.error(`❌ Cleanup error for ${asset.symbol} ${timeframe}: ${error.message}`);
       return 0;
     }
   }
@@ -551,4 +628,3 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     await this.stopScheduler();
   }
 }
-
