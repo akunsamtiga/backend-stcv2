@@ -1,3 +1,4 @@
+// src/common/utils/timezone.util.ts
 export class TimezoneUtil {
   static getCurrentTimestamp(): number {
     return Math.floor(Date.now() / 1000);
@@ -55,9 +56,9 @@ export class TimezoneUtil {
     return this.toTimestamp(date);
   }
 
-  static getEndOfNthMinute(timestamp: number, durationMinutes: number): number {
+  static getEndOfNextMinute(timestamp: number): number {
     const date = this.fromTimestamp(timestamp);
-    date.setMinutes(date.getMinutes() + durationMinutes + 1, 0, 0);
+    date.setMinutes(date.getMinutes() + 2, 0, 0);
     return this.toTimestamp(date);
   }
 

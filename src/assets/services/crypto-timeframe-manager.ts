@@ -158,14 +158,14 @@ export class CryptoTimeframeManager {
   
   getRetentionDays(): Record<string, number> {
     return {
-      '1s': 0.0417,   
-      '1m': 1,        
-      '5m': 2,        // 2 days
-      '15m': 3,       // 3 days
-      '30m': 4,       // 4 days
-      '1h': 5,        // 5 days
-      '4h': 7,        // 7 days
-      '1d': 14,       // 14 days
+      '1s': 0.00347,   // 5 minutes
+      '1m': 0.0833,    // 2 hours
+      '5m': 0.25,      // 6 hours
+      '15m': 0.5,      // 12 hours
+      '30m': 1,        // 1 day
+      '1h': 2,         // 2 days
+      '4h': 7,         // 7 days
+      '1d': 14,        // 14 days
     };
   }
 }

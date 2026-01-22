@@ -1,3 +1,4 @@
+// src/common/utils/calculation.util.ts
 import TimezoneUtil from './timezone.util';
 
 export class CalculationUtil {
@@ -20,22 +21,17 @@ export class CalculationUtil {
   static calculateExpiryTimestamp(
     entryTimestamp: number,
     durationMinutes: number,
-    endOfCandleThreshold: number = 20
+    thresholdSeconds: number = 20
   ): number {
-    const remainingSeconds = TimezoneUtil.getRemainingSecondsInMinute(entryTimestamp);
-    const isEndOfCandle = remainingSeconds <= endOfCandleThreshold;
-
-    if (isEndOfCandle) {
-      const nextCandleEnd = TimezoneUtil.getEndOfCurrentMinute(entryTimestamp);
-      const entryDate = TimezoneUtil.fromTimestamp(nextCandleEnd);
-      entryDate.setMinutes(entryDate.getMinutes() + durationMinutes, 0, 0);
-      return TimezoneUtil.toTimestamp(entryDate);
-    } else {
-      const currentCandleEnd = TimezoneUtil.getEndOfCurrentMinute(entryTimestamp);
-      const entryDate = TimezoneUtil.fromTimestamp(currentCandleEnd);
-      entryDate.setMinutes(entryDate.getMinutes() + durationMinutes, 0, 0);
-      return TimezoneUtil.toTimestamp(entryDate);
-    }
+    const date = TimezoneUtil.fromTimestamp(entryTimestamp);
+    const secondsFromStart = date.getSeconds();
+    
+    const needsExtraMinute = secondsFromStart > thresholdSeconds;
+    const totalMinutesToAdd = durationMinutes + (needsExtraMinute ? 1 : 0);
+    
+    date.setMinutes(date.getMinutes() + totalMinutesToAdd, 0, 0);
+    
+    return TimezoneUtil.toTimestamp(date);
   }
 
   static getCurrentTimestamp(): number {
