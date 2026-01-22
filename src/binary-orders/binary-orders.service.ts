@@ -14,8 +14,7 @@ import {
   BALANCE_TYPES, 
   ALL_DURATIONS, 
   ValidDuration, 
-  BALANCE_ACCOUNT_TYPE, 
-  DURATION_CONFIG 
+  BALANCE_ACCOUNT_TYPE,
 } from '../common/constants';
 import { CalculationUtil, TimezoneUtil } from '../common/utils';
 import { BinaryOrder, Asset } from '../common/interfaces';
@@ -30,7 +29,6 @@ export class BinaryOrdersService {
   private readonly ACTIVE_ORDERS_CACHE_TTL = 5000;
   
   private assetCache: Map<string, { asset: Asset; timestamp: number }> = new Map();
-  
   private readonly ORDER_CACHE_TTL = 1000;
   private readonly ASSET_CACHE_TTL = 20000;
   
@@ -48,17 +46,14 @@ export class BinaryOrdersService {
     private assetsService: AssetsService,
     private priceFetcherService: PriceFetcherService,
     private userStatusService: UserStatusService,
-    private readonly tradingGateway: TradingGateway, // 🔥 WebSocket gateway
+    private readonly tradingGateway: TradingGateway,
   ) {
     setInterval(() => this.cleanupStaleCache(), 10000);
     
     this.logger.log(`🌍 Timezone: Asia/Jakarta (WIB = UTC+7)`);
     this.logger.log(`⏰ Current time: ${TimezoneUtil.formatDateTime()}`);
-    this.logger.log(`💡 Status-Based Profit Bonus:`);
-    this.logger.log(`   • Standard: +0%`);
-    this.logger.log(`   • Gold: +5%`);
-    this.logger.log(`   • VIP: +10%`);
-    this.logger.log(`⚡ NEW: 1 Second Trading Support Enabled`);
+    this.logger.log(`💡 Status-Based Profit Bonus: Standard +0%, Gold +5%, VIP +10%`);
+    this.logger.log(`⚡ 1 Second Trading Support Enabled`);
   }
 
   private isValidDuration(duration: number): duration is ValidDuration {
@@ -86,10 +81,8 @@ export class BinaryOrdersService {
     }
 
     const orders = await this.getActiveOrdersFromDB(accountType);
-    
     this.activeOrdersCache.set(accountType, orders);
     this.lastActiveOrdersFetch.set(accountType, now);
-    
     this.logger.debug(`📊 Fetched ${orders.length} active ${accountType} orders from Firestore`);
     
     return orders;
@@ -120,10 +113,8 @@ export class BinaryOrdersService {
           }
           return priceData;
         }
-
       } catch (error) {
         lastError = error;
-        
         if (attempt < maxRetries - 1) {
           const delay = 200 * (attempt + 1);
           this.logger.warn(`⚠️ Price fetch attempt ${attempt + 1} failed, retrying in ${delay}ms...`);
@@ -178,7 +169,7 @@ export class BinaryOrdersService {
 
       if (!priceData || !priceData.price) {
         throw new BadRequestException(
-          `Price unavailable for ${asset.symbol}. The price simulator may be loading or experiencing connectivity issues. Please wait a moment and try again.`
+          `Price unavailable for ${asset.symbol}. Please wait a moment and try again.`
         );
       }
 
@@ -186,9 +177,7 @@ export class BinaryOrdersService {
       const dataAge = now - (priceData.timestamp || 0);
       
       if (dataAge > 10) {
-        this.logger.warn(
-          `⚠️ Price data is ${dataAge}s old for ${asset.symbol} - simulator may be lagging`
-        );
+        this.logger.warn(`⚠️ Price data is ${dataAge}s old for ${asset.symbol}`);
       }
 
       this.logger.log(`✅ Got price for ${asset.symbol}: ${priceData.price} (${dataAge}s old)`);
@@ -206,14 +195,9 @@ export class BinaryOrdersService {
 
       this.logger.log(`💰 Checking ${accountType} balance for user ${userId}...`);
       
-      const currentBalance = await this.balanceService.getCurrentBalanceStrict(
-        userId, 
-        accountType
-      );
+      const currentBalance = await this.balanceService.getCurrentBalanceStrict(userId, accountType);
 
-      this.logger.log(
-        `💰 User ${userId} - ${accountType} balance: ${currentBalance}, Required: ${amount}`
-      );
+      this.logger.log(`💰 ${accountType} balance: ${currentBalance}, Required: ${amount}`);
 
       if (currentBalance < amount) {
         throw new BadRequestException(
@@ -222,27 +206,22 @@ export class BinaryOrdersService {
       }
 
       if (currentBalance === 0) {
-        throw new BadRequestException(
-          `Cannot create order with zero balance. Please deposit first.`
-        );
+        throw new BadRequestException('Cannot create order with zero balance. Please deposit first.');
       }
 
       const orderId = await this.firebaseService.generateId(COLLECTIONS.ORDERS);
       
       const entryTimestamp = TimezoneUtil.getCurrentTimestamp();
-      
-      // ✅ MODIFIED: Gunakan calculateExpiryTimestamp yang baru
       const expiryTimestamp = CalculationUtil.calculateExpiryTimestamp(entryTimestamp, duration);
       
-      // ✅ NEW: Log informasi expiry adjustment
       const remainingSeconds = TimezoneUtil.getRemainingSecondsInMinute(entryTimestamp);
       const isAdjusted = remainingSeconds <= 20;
 
       if (isAdjusted) {
         this.logger.warn(
-          `⚠️ [END-OF-CANDLE DETECTED] ${asset.symbol} - ` +
-          `Entry: ${TimezoneUtil.formatDateTime()} (${remainingSeconds} detik tersisa), ` +
-          `Expiry: ${TimezoneUtil.formatTimestamp(expiryTimestamp)} (ADJUSTED +1 menit)`
+          `⚠️ [END-OF-CANDLE] ${asset.symbol} - ` +
+          `Entry: ${TimezoneUtil.formatDateTime()} (${remainingSeconds}s remaining), ` +
+          `Expiry: ${TimezoneUtil.formatTimestamp(expiryTimestamp)} (ADJUSTED +1min)`
         );
       }
 
@@ -282,16 +261,16 @@ export class BinaryOrdersService {
       };
 
       const db = this.firebaseService.getFirestore();
-      
       await db.collection(COLLECTIONS.ORDERS).doc(orderId).set(orderData);
 
-      this.logger.log(`✅ Order ${orderId} created, now debiting balance...`);
+      this.logger.log(`✅ Order ${orderId} created, debiting balance...`);
       this.logger.log(`📅 Entry: ${entryDateTimeInfo.datetime} WIB (${entryTimestamp})`);
       this.logger.log(`📅 Expiry: ${expiryDateTimeInfo.datetime} WIB (${expiryTimestamp})`);
-      // ✅ NEW: Log jika di-adjust
+      
       if (isAdjusted) {
-        this.logger.warn(`⚠️ Expiry ADJUSTED to end of next candle due to late entry (${remainingSeconds}s remaining)`);
+        this.logger.warn(`⚠️ Expiry adjusted due to late entry (${remainingSeconds}s remaining)`);
       }
+      
       this.logger.log(`⏱️ Duration: ${durationDisplay}`);
 
       try {
@@ -303,33 +282,24 @@ export class BinaryOrdersService {
         }, true);
 
         this.logger.log(`✅ Balance debited successfully`);
-
       } catch (debitError) {
         this.logger.error(`❌ Balance debit failed, rolling back order: ${debitError.message}`);
-        
         await db.collection(COLLECTIONS.ORDERS).doc(orderId).delete();
-        
-        throw new BadRequestException(
-          `Failed to debit balance: ${debitError.message}`
-        );
+        throw new BadRequestException(`Failed to debit balance: ${debitError.message}`);
       }
 
       this.balanceService.clearUserCache(userId);
       this.orderCache.set(orderId, orderData);
-      
       this.clearActiveOrdersCache();
 
       const newBalance = await this.balanceService.getCurrentBalance(userId, accountType, true);
       
-      this.logger.log(
-        `✅ Order complete - New ${accountType} balance: ${newBalance} (deducted ${amount})`
-      );
+      this.logger.log(`✅ Order complete - New ${accountType} balance: ${newBalance} (deducted ${amount})`);
 
       const executionTime = Date.now() - startTime;
       this.orderCreateCount++;
       this.avgCreateTime = (this.avgCreateTime * 0.9) + (executionTime * 0.1);
 
-      // 🔥 **EMIT ORDER CREATED VIA WEBSOCKET**
       this.tradingGateway.emitOrderCreated(userId, {
         order: orderData,
         accountType,
@@ -347,9 +317,8 @@ export class BinaryOrdersService {
           expiry: expiryDateTimeInfo.datetime,
           entryTimestamp,
           expiryTimestamp,
-          durationSeconds: Math.round((isAdjusted ? createOrderDto.duration + 1 : createOrderDto.duration) * 60),
+          durationSeconds: expiryTimestamp - entryTimestamp,
           timezone: 'Asia/Jakarta (WIB)',
-          // ✅ NEW: Info adjustment
           expiryAdjusted: isAdjusted,
           originalDuration: createOrderDto.duration,
           adjustedDuration: isAdjusted ? createOrderDto.duration + 1 : createOrderDto.duration,
@@ -358,7 +327,8 @@ export class BinaryOrdersService {
       });
 
       this.logger.log(
-        `⚡ [${accountType.toUpperCase()}] Order created in ${executionTime}ms - ${asset.symbol} ${createOrderDto.direction} ${durationDisplay} (Profit: ${finalProfitRate}%)`
+        `⚡ [${accountType.toUpperCase()}] Order created in ${executionTime}ms - ` +
+        `${asset.symbol} ${createOrderDto.direction} ${durationDisplay} (Profit: ${finalProfitRate}%)`
       );
 
       return {
@@ -379,16 +349,14 @@ export class BinaryOrdersService {
           expiry: expiryDateTimeInfo.datetime,
           entryTimestamp,
           expiryTimestamp,
-          durationSeconds: Math.round((isAdjusted ? createOrderDto.duration + 1 : createOrderDto.duration) * 60),
+          durationSeconds: expiryTimestamp - entryTimestamp,
           timezone: 'Asia/Jakarta (WIB)',
-          // ✅ NEW: Info adjustment
           expiryAdjusted: isAdjusted,
           originalDuration: createOrderDto.duration,
           adjustedDuration: isAdjusted ? createOrderDto.duration + 1 : createOrderDto.duration,
           remainingSecondsInMinute: remainingSeconds,
         },
       };
-
     } catch (error) {
       const duration = Date.now() - startTime;
       this.logger.error(`❌ Order creation failed after ${duration}ms: ${error.message}`);
@@ -428,18 +396,19 @@ export class BinaryOrdersService {
       if (totalExpired === 0) {
         if (this.settlementRunCount % 60 === 0) {
           this.logger.debug(
-            `⏰ Settlement check #${this.settlementRunCount}: No expired orders (${realOrders.length + demoOrders.length} active)`
+            `⏰ Settlement check #${this.settlementRunCount}: No expired orders ` +
+            `(${realOrders.length + demoOrders.length} active)`
           );
         }
         return;
       }
 
       this.logger.log(
-        `⚡ [${currentDateTime} WIB] Processing ${totalExpired} expired orders (Real: ${expiredRealOrders.length}, Demo: ${expiredDemoOrders.length})`
+        `⚡ [${currentDateTime} WIB] Processing ${totalExpired} expired orders ` +
+        `(Real: ${expiredRealOrders.length}, Demo: ${expiredDemoOrders.length})`
       );
 
       const PARALLEL_LIMIT = 20;
-      
       await Promise.all([
         this.settleBatch(expiredRealOrders, PARALLEL_LIMIT),
         this.settleBatch(expiredDemoOrders, PARALLEL_LIMIT),
@@ -450,7 +419,6 @@ export class BinaryOrdersService {
 
       const duration = Date.now() - startTime;
       this.logger.log(`⚡ Settled ${totalExpired} orders in ${duration}ms`);
-
     } catch (error) {
       this.logger.error(`Settlement error: ${error.message}`);
     } finally {
@@ -461,9 +429,7 @@ export class BinaryOrdersService {
   private async settleBatch(orders: BinaryOrder[], batchSize: number): Promise<void> {
     for (let i = 0; i < orders.length; i += batchSize) {
       const batch = orders.slice(i, i + batchSize);
-      await Promise.allSettled(
-        batch.map(order => this.settleOrderInstant(order))
-      );
+      await Promise.allSettled(batch.map(order => this.settleOrderInstant(order)));
     }
   }
 
@@ -487,7 +453,6 @@ export class BinaryOrdersService {
           ]);
 
           if (priceData?.price) break;
-
         } catch (error) {
           attempts++;
           if (attempts < maxAttempts) {
@@ -516,14 +481,12 @@ export class BinaryOrdersService {
       const settlementDateTime = TimezoneUtil.formatDateTime();
       const durationDisplay = this.getDurationDisplay(order.duration);
       
-      await db.collection(COLLECTIONS.ORDERS)
-        .doc(order.id)
-        .update({
-          exit_price: priceData.price,
-          status: result,
-          profit,
-          settled_at: TimezoneUtil.toISOString(),
-        });
+      await db.collection(COLLECTIONS.ORDERS).doc(order.id).update({
+        exit_price: priceData.price,
+        status: result,
+        profit,
+        settled_at: TimezoneUtil.toISOString(),
+      });
 
       if (result === 'WON') {
         const totalReturn = order.amount + profit;
@@ -538,7 +501,6 @@ export class BinaryOrdersService {
 
       this.orderCache.delete(order.id);
 
-      // 🔥 **EMIT SETTLEMENT RESULT VIA WEBSOCKET**
       this.tradingGateway.emitOrderSettled(order.user_id, {
         id: order.id,
         status: result,
@@ -555,9 +517,10 @@ export class BinaryOrdersService {
       this.avgSettleTime = (this.avgSettleTime * 0.9) + (duration * 0.1);
 
       this.logger.log(
-        `⚡ [${settlementDateTime} WIB] [${order.accountType.toUpperCase()}] Settled ${order.id.slice(-8)} in ${duration}ms - ${durationDisplay} ${result} ${profit > 0 ? '+' : ''}${profit.toFixed(2)} (${order.profitRate}%)`
+        `⚡ [${settlementDateTime} WIB] [${order.accountType.toUpperCase()}] ` +
+        `Settled ${order.id.slice(-8)} in ${duration}ms - ${durationDisplay} ${result} ` +
+        `${profit > 0 ? '+' : ''}${profit.toFixed(2)} (${order.profitRate}%)`
       );
-
     } catch (error) {
       this.logger.error(`Settlement failed for ${order.id}: ${error.message}`);
     }
@@ -576,20 +539,15 @@ export class BinaryOrdersService {
     return snapshot.docs.map(doc => doc.data() as BinaryOrder);
   }
 
-  async getOrders(
-    userId: string, 
-    queryDto: QueryBinaryOrderDto
-  ) {
+  async getOrders(userId: string, queryDto: QueryBinaryOrderDto) {
     const startTime = Date.now();
     
     try {
       const { status, page = 1, limit = 20, accountType } = queryDto;
-
       const db = this.firebaseService.getFirestore();
       
       try {
-        let query = db.collection(COLLECTIONS.ORDERS)
-          .where('user_id', '==', userId);
+        let query = db.collection(COLLECTIONS.ORDERS).where('user_id', '==', userId);
 
         if (accountType && (accountType === 'real' || accountType === 'demo')) {
           query = query.where('accountType', '==', accountType) as any;
@@ -617,7 +575,7 @@ export class BinaryOrdersService {
         const orders = allOrders.slice(startIndex, startIndex + limit);
 
         const duration = Date.now() - startTime;
-        this.logger.debug(`✅ Got ${orders.length} orders in ${duration}ms (optimized query)`);
+        this.logger.debug(`✅ Got ${orders.length} orders in ${duration}ms`);
 
         return {
           orders,
@@ -634,7 +592,6 @@ export class BinaryOrdersService {
           currentTime: TimezoneUtil.formatDateTime(),
           timezone: 'Asia/Jakarta (WIB)',
         };
-
       } catch (indexError) {
         this.logger.warn(`⚠️ Index error, using fallback query: ${indexError.message}`);
         
@@ -688,11 +645,9 @@ export class BinaryOrdersService {
           usingFallback: true,
         };
       }
-
     } catch (error) {
       const duration = Date.now() - startTime;
       this.logger.error(`❌ Get orders failed after ${duration}ms: ${error.message}`);
-      this.logger.error(error.stack);
       
       return {
         orders: [],

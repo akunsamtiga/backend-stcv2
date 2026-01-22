@@ -34,25 +34,36 @@ export class TimezoneUtil {
     return Math.floor(date.getTime() / 1000);
   }
 
-  static addMinutes(date: Date, minutes: number): Date {
-    return new Date(date.getTime() + minutes * 60 * 1000);
-  }
-
-  static isSameSecond(timestamp1: number, timestamp2: number): boolean {
-    return timestamp1 === timestamp2;
+  static formatTimestamp(timestamp: number): string {
+    const date = this.fromTimestamp(timestamp);
+    return this.formatDateTime(date);
   }
 
   static isExpired(expiryTimestamp: number): boolean {
     return this.getCurrentTimestamp() >= expiryTimestamp;
   }
 
-  static getDifferenceInSeconds(timestamp1: number, timestamp2: number): number {
-    return Math.abs(timestamp1 - timestamp2);
+  static getRemainingSecondsInMinute(timestamp: number): number {
+    const date = this.fromTimestamp(timestamp);
+    const seconds = date.getSeconds();
+    return 60 - seconds;
   }
 
-  static formatTimestamp(timestamp: number): string {
+  static getEndOfCurrentMinute(timestamp: number): number {
     const date = this.fromTimestamp(timestamp);
-    return this.formatDateTime(date);
+    date.setMinutes(date.getMinutes() + 1, 0, 0);
+    return this.toTimestamp(date);
+  }
+
+  static getEndOfNthMinute(timestamp: number, durationMinutes: number): number {
+    const date = this.fromTimestamp(timestamp);
+    date.setMinutes(date.getMinutes() + durationMinutes + 1, 0, 0);
+    return this.toTimestamp(date);
+  }
+
+  static isEntryAtEndOfCandle(timestamp: number, thresholdSeconds: number = 20): boolean {
+    const remainingSeconds = this.getRemainingSecondsInMinute(timestamp);
+    return remainingSeconds <= thresholdSeconds;
   }
 
   static getDateTimeInfo(date: Date = new Date()): {
@@ -69,31 +80,6 @@ export class TimezoneUtil {
     };
   }
 
-  static isValidTimestamp(timestamp: number): boolean {
-    const now = this.getCurrentTimestamp();
-    const diff = Math.abs(now - timestamp);
-    
-    return diff <= 3600;
-  }
-
-  static getStartOfDay(date: Date = new Date()): number {
-    const jakartaDate = new Date(date.toLocaleString('en-US', { 
-      timeZone: 'Asia/Jakarta' 
-    }));
-    
-    jakartaDate.setHours(0, 0, 0, 0);
-    return this.toTimestamp(jakartaDate);
-  }
-
-  static getEndOfDay(date: Date = new Date()): number {
-    const jakartaDate = new Date(date.toLocaleString('en-US', { 
-      timeZone: 'Asia/Jakarta' 
-    }));
-    
-    jakartaDate.setHours(23, 59, 59, 999);
-    return this.toTimestamp(jakartaDate);
-  }
-
   static formatDuration(seconds: number): string {
     const hours = Math.floor(seconds / 3600);
     const minutes = Math.floor((seconds % 3600) / 60);
@@ -108,39 +94,49 @@ export class TimezoneUtil {
     }
   }
 
+  static addMinutes(date: Date, minutes: number): Date {
+    return new Date(date.getTime() + minutes * 60 * 1000);
+  }
+
+  static isSameSecond(timestamp1: number, timestamp2: number): boolean {
+    return timestamp1 === timestamp2;
+  }
+
+  static getDifferenceInSeconds(timestamp1: number, timestamp2: number): number {
+    return Math.abs(timestamp1 - timestamp2);
+  }
+
+  static isValidTimestamp(timestamp: number): boolean {
+    const now = this.getCurrentTimestamp();
+    const diff = Math.abs(now - timestamp);
+    return diff <= 3600;
+  }
+
+  static getStartOfDay(date: Date = new Date()): number {
+    const jakartaDate = new Date(date.toLocaleString('en-US', { 
+      timeZone: 'Asia/Jakarta' 
+    }));
+    jakartaDate.setHours(0, 0, 0, 0);
+    return this.toTimestamp(jakartaDate);
+  }
+
+  static getEndOfDay(date: Date = new Date()): number {
+    const jakartaDate = new Date(date.toLocaleString('en-US', { 
+      timeZone: 'Asia/Jakarta' 
+    }));
+    jakartaDate.setHours(23, 59, 59, 999);
+    return this.toTimestamp(jakartaDate);
+  }
+
   static isWithinTradingHours(date: Date = new Date()): boolean {
     const jakartaDate = new Date(date.toLocaleString('en-US', { 
       timeZone: 'Asia/Jakarta' 
     }));
-    
     const hour = jakartaDate.getHours();
     const day = jakartaDate.getDay();
     
-    if (day === 0 || day === 6) {
-      return false;
-    }
-    
+    if (day === 0 || day === 6) return false;
     return hour >= 9 && hour < 16;
-  }
-
-  // ✅ NEW: Hitung sisa waktu di candle/menit saat ini (dalam detik)
-  static getRemainingSecondsInMinute(timestamp: number): number {
-    const date = this.fromTimestamp(timestamp);
-    return 60 - date.getSeconds();
-  }
-
-  // ✅ NEW: Hitung akhir menit berikutnya untuk timestamp yang diberikan
-  static getNextEndOfMinuteTimestamp(timestamp: number): number {
-    const date = this.fromTimestamp(timestamp);
-    const nextMinute = new Date(date);
-    nextMinute.setMinutes(nextMinute.getMinutes() + 1, 59, 999);
-    return this.toTimestamp(nextMinute);
-  }
-
-  // ✅ NEW: Periksa apakah entry terjadi di detik akhir candle (≤20 detik tersisa)
-  static isEntryAtEndOfCandle(timestamp: number): boolean {
-    const remainingSeconds = this.getRemainingSecondsInMinute(timestamp);
-    return remainingSeconds <= 20;
   }
 }
 

@@ -1,10 +1,7 @@
 import TimezoneUtil from './timezone.util';
 
 export class CalculationUtil {
-  static calculateBinaryProfit(
-    amount: number,
-    profitRate: number,
-  ): number {
+  static calculateBinaryProfit(amount: number, profitRate: number): number {
     return (amount * profitRate) / 100;
   }
 
@@ -20,42 +17,25 @@ export class CalculationUtil {
     }
   }
 
-  static calculateBalance(transactions: Array<{ type: string; amount: number }>): number {
-    return transactions.reduce((sum, t) => {
-      if (t.type === 'deposit' || t.type === 'order_profit' || t.type === 'win') {
-        return sum + t.amount;
-      } 
-      else if (t.type === 'withdrawal' || t.type === 'order_debit' || t.type === 'lose') {
-        return sum - t.amount;
-      }
-      return sum;
-    }, 0);
-  }
+  static calculateExpiryTimestamp(
+    entryTimestamp: number,
+    durationMinutes: number,
+    endOfCandleThreshold: number = 20
+  ): number {
+    const remainingSeconds = TimezoneUtil.getRemainingSecondsInMinute(entryTimestamp);
+    const isEndOfCandle = remainingSeconds <= endOfCandleThreshold;
 
-  static calculateExpiryTime(startTime: Date, durationMinutes: number): Date {
-    const durationMs = durationMinutes * 60 * 1000;
-    return new Date(startTime.getTime() + durationMs);
-  }
-
-  /**
-   * ✅ MODIFIED: Calculate expiry timestamp dengan aturan "akhir candle"
-   * Jika entry di detik akhir (≤20 detik tersisa), expiry akan di akhir candle berikutnya
-   */
-  static calculateExpiryTimestamp(startTimestamp: number, durationMinutes: number): number {
-    const now = this.getCurrentTimestamp();
-    
-    // ✅ NEW: Cek apakah entry di detik akhir candle
-    const isEndOfCandle = TimezoneUtil.isEntryAtEndOfCandle(startTimestamp);
-    
     if (isEndOfCandle) {
-      // Jika di detik akhir, tambahkan 1 menit agar expiry di akhir candle berikutnya
-      const durationInSeconds = Math.round((durationMinutes + 1) * 60);
-      return startTimestamp + durationInSeconds;
+      const nextCandleEnd = TimezoneUtil.getEndOfCurrentMinute(entryTimestamp);
+      const entryDate = TimezoneUtil.fromTimestamp(nextCandleEnd);
+      entryDate.setMinutes(entryDate.getMinutes() + durationMinutes, 0, 0);
+      return TimezoneUtil.toTimestamp(entryDate);
+    } else {
+      const currentCandleEnd = TimezoneUtil.getEndOfCurrentMinute(entryTimestamp);
+      const entryDate = TimezoneUtil.fromTimestamp(currentCandleEnd);
+      entryDate.setMinutes(entryDate.getMinutes() + durationMinutes, 0, 0);
+      return TimezoneUtil.toTimestamp(entryDate);
     }
-    
-    // Normal expiry calculation
-    const durationInSeconds = Math.round(durationMinutes * 60);
-    return startTimestamp + durationInSeconds;
   }
 
   static getCurrentTimestamp(): number {
@@ -117,14 +97,10 @@ export class CalculationUtil {
     const numValue = parseInt(value);
 
     switch (unit) {
-      case 's':
-        return numValue / 60;
-      case 'm':
-        return numValue;
-      case 'h':
-        return numValue * 60;
-      default:
-        throw new Error('Invalid duration unit');
+      case 's': return numValue / 60;
+      case 'm': return numValue;
+      case 'h': return numValue * 60;
+      default: throw new Error('Invalid duration unit');
     }
   }
 
@@ -133,6 +109,22 @@ export class CalculationUtil {
     return allowedDurations.some(allowed => 
       Math.abs(allowed - durationMinutes) < tolerance
     );
+  }
+
+  static calculateBalance(transactions: Array<{ type: string; amount: number }>): number {
+    return transactions.reduce((sum, t) => {
+      if (t.type === 'deposit' || t.type === 'order_profit' || t.type === 'win') {
+        return sum + t.amount;
+      } else if (t.type === 'withdrawal' || t.type === 'order_debit' || t.type === 'lose') {
+        return sum - t.amount;
+      }
+      return sum;
+    }, 0);
+  }
+
+  static calculateExpiryTime(startTime: Date, durationMinutes: number): Date {
+    const durationMs = durationMinutes * 60 * 1000;
+    return new Date(startTime.getTime() + durationMs);
   }
 }
 
