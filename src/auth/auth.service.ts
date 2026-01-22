@@ -42,21 +42,15 @@ export class AuthService implements OnModuleInit {
     }, 2000);
   }
 
-  /**
-   * ✅ Initialize all collections with placeholder documents
-   * This ensures all collections appear in Firestore Console
-   */
   private async initializeCollections() {
     try {
       const db = this.firebaseService.getFirestore();
       
-      // Check if affiliates collection exists
       const affiliatesSnapshot = await db.collection(COLLECTIONS.AFFILIATES)
         .limit(1)
         .get();
 
       if (affiliatesSnapshot.empty) {
-        // Create placeholder document in affiliates collection
         const placeholderId = '_placeholder';
         
         await db.collection(COLLECTIONS.AFFILIATES).doc(placeholderId).set({
@@ -68,7 +62,6 @@ export class AuthService implements OnModuleInit {
 
         this.logger.log('✅ Affiliates collection initialized with placeholder');
 
-        // Delete placeholder after 5 seconds (optional)
         setTimeout(async () => {
           try {
             await db.collection(COLLECTIONS.AFFILIATES).doc(placeholderId).delete();
@@ -83,67 +76,6 @@ export class AuthService implements OnModuleInit {
 
     } catch (error) {
       this.logger.warn(`⚠️ Failed to initialize collections: ${error.message}`);
-      // Don't throw - this is not critical
-    }
-  }
-
-  private async createDefaultAssetIfNotExists() {
-    try {
-      const db = this.firebaseService.getFirestore();
-      
-      const assetSnapshot = await db.collection(COLLECTIONS.ASSETS)
-        .where('symbol', '==', 'IDX_STC')
-        .limit(1)
-        .get();
-
-      if (!assetSnapshot.empty) {
-        this.logger.log('ℹ️ Default asset IDX_STC already exists');
-        return;
-      }
-
-      const assetId = await this.firebaseService.generateId(COLLECTIONS.ASSETS);
-      const timestamp = new Date().toISOString();
-
-      const defaultAsset = {
-        id: assetId,
-        name: 'IDX STC',
-        symbol: 'IDX_STC',
-        profitRate: 85,
-        isActive: true,
-        dataSource: 'realtime_db',
-        realtimeDbPath: '/idx_stc',
-        description: 'Indonesian Stock Index - Default Asset',
-        
-        simulatorSettings: {
-          initialPrice: 40.022,
-          dailyVolatilityMin: 0.001,
-          dailyVolatilityMax: 0.005,
-          secondVolatilityMin: 0.00001,
-          secondVolatilityMax: 0.00008,
-          minPrice: 20.011,
-          maxPrice: 80.044,
-        },
-        
-        tradingSettings: {
-          minOrderAmount: 1000,
-          maxOrderAmount: 1000000,
-          allowedDurations: [1, 2, 3, 4, 5, 15, 30, 45, 60],
-        },
-        
-        createdAt: timestamp,
-        updatedAt: timestamp,
-        createdBy: 'system',
-      };
-
-      await db.collection(COLLECTIONS.ASSETS).doc(assetId).set(defaultAsset);
-
-      this.logger.log('✅ Default asset IDX_STC created successfully');
-      this.logger.log('   Initial Price: 40.022');
-      this.logger.log('   Volatility: 0.00001 - 0.00008');
-      this.logger.log('   Profit Rate: 85%');
-
-    } catch (error) {
-      this.logger.error(`❌ Failed to create default asset: ${error.message}`);
     }
   }
 
@@ -231,11 +163,8 @@ export class AuthService implements OnModuleInit {
 
         this.logger.log(`✅ Super admin created: ${email} (Status: VIP, Real: Rp 0, Demo: Rp 10,000,000)`);
         
-        await this.createDefaultAssetIfNotExists();
-        
       } else {
         this.logger.log(`ℹ️ Super admin already exists: ${email}`);
-        await this.createDefaultAssetIfNotExists();
       }
     } catch (error) {
       this.logger.error(`❌ Failed to create super admin: ${error.message}`);
@@ -262,7 +191,6 @@ export class AuthService implements OnModuleInit {
         throw new ConflictException('Email already registered');
       }
 
-      // ✅ FIXED: Better referral validation with proper null handling
       let referrerUser: any = null;
       let referrerUserId: string | undefined = undefined;
       
@@ -274,7 +202,6 @@ export class AuthService implements OnModuleInit {
 
         if (referrerSnapshot.empty) {
           this.logger.warn(`⚠️ Invalid referral code provided: ${referralCode}`);
-          // ✅ Don't fail registration, just log warning
         } else {
           referrerUser = referrerSnapshot.docs[0].data();
           referrerUserId = referrerUser.id;
@@ -355,12 +282,10 @@ export class AuthService implements OnModuleInit {
         }),
       ]);
 
-      // ✅ CRITICAL FIX: Always create affiliate record if referral code exists
       if (referrerUserId && referrerUser) {
         try {
           const affiliateId = await this.firebaseService.generateId(COLLECTIONS.AFFILIATES);
           
-          // ✅ Create affiliate record immediately
           await db.collection(COLLECTIONS.AFFILIATES).doc(affiliateId).set({
             id: affiliateId,
             referrer_id: referrerUserId,
@@ -372,11 +297,9 @@ export class AuthService implements OnModuleInit {
           });
 
           this.logger.log(
-            `🎁 Affiliate record created: ${referrerUser.email} referred ${email} ` +
-            `(Commission pending first deposit)`
+            `🎁 Affiliate record created: ${referrerUser.email} referred ${email} (Commission pending first deposit)`
           );
         } catch (affiliateError) {
-          // ✅ Log error but don't fail registration
           this.logger.error(`⚠️ Failed to create affiliate record: ${affiliateError.message}`);
           this.logger.error(affiliateError.stack);
         }
@@ -403,33 +326,30 @@ export class AuthService implements OnModuleInit {
       this.logger.log(`✅ Registration completed in ${duration}ms`);
 
       return {
-  message: 'Registration successful with real and demo accounts',
-  user: {
-    id: userId,
-    email,
-    role: USER_ROLES.USER,
-    status: USER_STATUS.STANDARD,
-    referralCode: newUserReferralCode,
-    profileCompletion,
-    
-    // ✅ TAMBAHKAN INI:
-    isNewUser: true,              // User baru = true
-    tutorialCompleted: false,     // Belum selesai tutorial
-    loginCount: 0,                // Belum pernah login
-  },
-  initialBalances: {
-    real: 0,
-    demo: 10000000,
-  },
-  affiliate: referrerUserId && referrerUser ? {
-    referredBy: referrerUser.email,
-    referrerId: referrerUserId,
-    commissionPending: true,
-    message: 'Commission will be calculated on first deposit',
-  } : null,
-  token,
-};
-
+        message: 'Registration successful with real and demo accounts',
+        user: {
+          id: userId,
+          email,
+          role: USER_ROLES.USER,
+          status: USER_STATUS.STANDARD,
+          referralCode: newUserReferralCode,
+          profileCompletion,
+          isNewUser: true,
+          tutorialCompleted: false,
+          loginCount: 0,
+        },
+        initialBalances: {
+          real: 0,
+          demo: 10000000,
+        },
+        affiliate: referrerUserId && referrerUser ? {
+          referredBy: referrerUser.email,
+          referrerId: referrerUserId,
+          commissionPending: true,
+          message: 'Commission will be calculated on first deposit',
+        } : null,
+        token,
+      };
 
     } catch (error) {
       const duration = Date.now() - startTime;
@@ -493,10 +413,7 @@ export class AuthService implements OnModuleInit {
       updates.isNewUser = false
     }
 
-    await db.collection(COLLECTIONS.USERS).doc(user.id).update({
-      lastLoginAt,
-      loginCount,
-    });
+    await db.collection(COLLECTIONS.USERS).doc(user.id).update(updates);
 
     const token = this.generateToken(user.id, user.email, user.role);
     this.cacheUser(user.id, user);
