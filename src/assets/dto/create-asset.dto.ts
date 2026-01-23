@@ -1,5 +1,3 @@
-// src/assets/dto/create-asset.dto.ts
-
 import { 
   IsString, IsNumber, IsBoolean, IsEnum, IsOptional, 
   Min, Max, IsArray, ValidateNested, IsInt, IsUrl 
@@ -10,64 +8,64 @@ import { ASSET_CATEGORY, ASSET_DATA_SOURCE, ASSET_TYPE } from '../../common/cons
 
 export class SimulatorSettingsDto {
   @ApiProperty({ 
-    example: 40.022, 
-    description: 'Initial price for simulator' 
+    example: 640.0225387, 
+    description: 'Initial price for simulator (supports high precision up to 10 decimal places)' 
   })
-  @IsNumber()
-  @Min(0.001)
+  @IsNumber({ maxDecimalPlaces: 10 }) // ✅ Support up to 10 decimal places
+  @Min(0.0000000001) // ✅ Support very small numbers
   initialPrice: number;
 
   @ApiProperty({ 
-    example: 0.001, 
-    description: 'Minimum daily volatility (percentage)' 
+    example: 0.00001, 
+    description: 'Minimum daily volatility (percentage, supports high precision)' 
   })
-  @IsNumber()
+  @IsNumber({ maxDecimalPlaces: 10 })
   @Min(0)
   @Max(1)
   dailyVolatilityMin: number;
 
   @ApiProperty({ 
-    example: 0.005, 
-    description: 'Maximum daily volatility (percentage)' 
+    example: 0.00002, 
+    description: 'Maximum daily volatility (percentage, supports high precision)' 
   })
-  @IsNumber()
+  @IsNumber({ maxDecimalPlaces: 10 })
   @Min(0)
   @Max(1)
   dailyVolatilityMax: number;
 
   @ApiProperty({ 
-    example: 0.00001, 
-    description: 'Minimum second volatility (percentage)' 
+    example: 0.00000001, 
+    description: 'Minimum second volatility (percentage, supports very high precision)' 
   })
-  @IsNumber()
+  @IsNumber({ maxDecimalPlaces: 10 })
   @Min(0)
   @Max(0.01)
   secondVolatilityMin: number;
 
   @ApiProperty({ 
-    example: 0.00008, 
-    description: 'Maximum second volatility (percentage)' 
+    example: 0.00000002, 
+    description: 'Maximum second volatility (percentage, supports very high precision)' 
   })
-  @IsNumber()
+  @IsNumber({ maxDecimalPlaces: 10 })
   @Min(0)
   @Max(0.01)
   secondVolatilityMax: number;
 
   @ApiPropertyOptional({ 
-    example: 20.0, 
-    description: 'Minimum allowed price (optional)' 
+    example: 640.0220, 
+    description: 'Minimum allowed price (optional, high precision supported)' 
   })
   @IsOptional()
-  @IsNumber()
+  @IsNumber({ maxDecimalPlaces: 10 })
   @Min(0)
   minPrice?: number;
 
   @ApiPropertyOptional({ 
-    example: 80.0, 
-    description: 'Maximum allowed price (optional)' 
+    example: 640.0229, 
+    description: 'Maximum allowed price (optional, high precision supported)' 
   })
   @IsOptional()
-  @IsNumber()
+  @IsNumber({ maxDecimalPlaces: 10 })
   @Min(0)
   maxPrice?: number;
 }
@@ -140,14 +138,13 @@ export class CreateAssetDto {
   symbol: string;
 
   @ApiPropertyOptional({ 
-    example: 'https://example.com/icons/btc.png OR data:image/png;base64,...',
+    example: 'https://example.com/icons/btc.png  OR data:image/png;base64,...',
     description: 'Asset icon - URL or base64 image (max 2MB)' 
   })
   @IsOptional()
   @IsString()
   icon?: string;
 
-  // ✅ NEW: Asset Type Field
   @ApiProperty({ 
     enum: ASSET_TYPE,
     example: 'forex',
@@ -197,7 +194,7 @@ export class CreateAssetDto {
   realtimeDbPath?: string;
 
   @ApiPropertyOptional({ 
-    example: 'https://api.example.com/price',
+    example: 'https://api.example.com/price ',
     description: 'API endpoint URL (for api data source only, not for crypto)'
   })
   @IsOptional()
@@ -223,7 +220,7 @@ export class CreateAssetDto {
 
   @ApiPropertyOptional({ 
     type: SimulatorSettingsDto,
-    description: 'Simulator settings (for normal assets only)'
+    description: 'Simulator settings (for normal assets only) - Supports high precision numbers'
   })
   @IsOptional()
   @ValidateNested()

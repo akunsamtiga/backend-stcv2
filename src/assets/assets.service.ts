@@ -42,7 +42,7 @@ export class AssetsService {
     private firebaseService: FirebaseService,
     private priceFetcherService: PriceFetcherService,
     private binanceService: BinanceService,
-    private readonly eventEmitter: EventEmitter2, // 🔥 EventEmitter for WebSocket
+    private readonly eventEmitter: EventEmitter2,
   ) {
     setTimeout(async () => {
       try {
@@ -86,6 +86,76 @@ export class AssetsService {
     }
     
     return obj;
+  }
+
+  // ✅ Helper function untuk preserve high precision numbers
+  private preserveHighPrecision(value: number | undefined, defaultValue?: number): number | undefined {
+    if (value === undefined || value === null) {
+      return defaultValue;
+    }
+    
+    // Don't round, preserve original precision
+    return value;
+  }
+
+  // ✅ Helper untuk validate simulator settings dengan high precision
+  private validateSimulatorSettingsHighPrecision(settings: any): void {
+    if (!settings) return;
+    
+    // Validate volatility range
+    if (settings.dailyVolatilityMin > settings.dailyVolatilityMax) {
+      throw new BadRequestException(
+        'dailyVolatilityMin must be <= dailyVolatilityMax'
+      );
+    }
+    
+    if (settings.secondVolatilityMin > settings.secondVolatilityMax) {
+      throw new BadRequestException(
+        'secondVolatilityMin must be <= secondVolatilityMax'
+      );
+    }
+    
+    // Validate price range
+    if (settings.minPrice !== undefined && settings.maxPrice !== undefined) {
+      if (settings.minPrice >= settings.maxPrice) {
+        throw new BadRequestException(
+          `minPrice (${settings.minPrice}) must be < maxPrice (${settings.maxPrice})`
+        );
+      }
+      
+      const priceRange = settings.maxPrice - settings.minPrice;
+      
+      // ✅ IMPORTANT: Allow very small ranges for high precision assets
+      // Old check was too strict: if (priceRange < 0.01)
+      // Now we allow ranges as small as 0.0000001
+      if (priceRange < 0.0000001) {
+        throw new BadRequestException(
+          `Price range too small: ${priceRange.toExponential()}. Minimum range is 0.0000001`
+        );
+      }
+      
+      // Validate initialPrice is within range
+      if (settings.initialPrice < settings.minPrice || settings.initialPrice > settings.maxPrice) {
+        throw new BadRequestException(
+          `initialPrice (${settings.initialPrice}) must be between minPrice (${settings.minPrice}) and maxPrice (${settings.maxPrice})`
+        );
+      }
+    }
+    
+    // Validate volatility makes sense for the price range
+    if (settings.minPrice !== undefined && settings.maxPrice !== undefined && settings.secondVolatilityMax !== undefined) {
+      const priceRange = settings.maxPrice - settings.minPrice;
+      const maxPriceChange = settings.initialPrice * settings.secondVolatilityMax;
+      
+      // Warn if volatility can cause price to jump outside range in one update
+      if (maxPriceChange > priceRange) {
+        this.logger.warn(
+          `⚠️ High volatility: Max price change per second (${maxPriceChange.toExponential()}) ` +
+          `exceeds price range (${priceRange.toExponential()}). ` +
+          `Price may hit boundaries frequently.`
+        );
+      }
+    }
   }
 
   async createAsset(createAssetDto: CreateAssetDto, createdBy: string) {
@@ -239,13 +309,25 @@ export class AssetsService {
           }
         }
 
+        // ✅ PRESERVE HIGH PRECISION for simulator settings
         const baseSimulatorSettings = createAssetDto.simulatorSettings || this.DEFAULT_SIMULATOR_SETTINGS;
+        
         const plainSimulatorSettings = this.toPlainObject({
-          ...this.DEFAULT_SIMULATOR_SETTINGS,
-          ...baseSimulatorSettings,
-          minPrice: baseSimulatorSettings.minPrice || (baseSimulatorSettings.initialPrice * 0.5),
-          maxPrice: baseSimulatorSettings.maxPrice || (baseSimulatorSettings.initialPrice * 2.0),
+          initialPrice: this.preserveHighPrecision(baseSimulatorSettings.initialPrice, this.DEFAULT_SIMULATOR_SETTINGS.initialPrice),
+          dailyVolatilityMin: this.preserveHighPrecision(baseSimulatorSettings.dailyVolatilityMin, this.DEFAULT_SIMULATOR_SETTINGS.dailyVolatilityMin),
+          dailyVolatilityMax: this.preserveHighPrecision(baseSimulatorSettings.dailyVolatilityMax, this.DEFAULT_SIMULATOR_SETTINGS.dailyVolatilityMax),
+          secondVolatilityMin: this.preserveHighPrecision(baseSimulatorSettings.secondVolatilityMin, this.DEFAULT_SIMULATOR_SETTINGS.secondVolatilityMin),
+          secondVolatilityMax: this.preserveHighPrecision(baseSimulatorSettings.secondVolatilityMax, this.DEFAULT_SIMULATOR_SETTINGS.secondVolatilityMax),
+          minPrice: baseSimulatorSettings.minPrice !== undefined 
+            ? this.preserveHighPrecision(baseSimulatorSettings.minPrice) 
+            : baseSimulatorSettings.initialPrice * 0.5,
+          maxPrice: baseSimulatorSettings.maxPrice !== undefined 
+            ? this.preserveHighPrecision(baseSimulatorSettings.maxPrice) 
+            : baseSimulatorSettings.initialPrice * 2.0,
         });
+
+        // ✅ Validate high precision settings
+        this.validateSimulatorSettingsHighPrecision(plainSimulatorSettings);
 
         const plainTradingSettings = this.toPlainObject(
           createAssetDto.tradingSettings || this.DEFAULT_TRADING_SETTINGS
@@ -307,9 +389,14 @@ export class AssetsService {
       } else {
         this.logger.log(`   🔗 RT DB Path: ${createAssetDto.realtimeDbPath || 'N/A'}`);
         this.logger.log(`   ⚡ Simulator: WILL BE SIMULATED`);
-        this.logger.log(`   💰 Initial Price: ${plainAssetData.simulatorSettings?.initialPrice}`);
-        this.logger.log(`   📊 Volatility: ${plainAssetData.simulatorSettings?.secondVolatilityMin} - ${plainAssetData.simulatorSettings?.secondVolatilityMax}`);
-        this.logger.log(`   📉 Price Range: ${plainAssetData.simulatorSettings?.minPrice} - ${plainAssetData.simulatorSettings?.maxPrice}`);
+        if (plainAssetData.simulatorSettings) {
+          this.logger.log(`   💰 Initial Price: ${plainAssetData.simulatorSettings.initialPrice}`);
+          this.logger.log(`   📉 Min Price: ${plainAssetData.simulatorSettings.minPrice}`);
+          this.logger.log(`   📈 Max Price: ${plainAssetData.simulatorSettings.maxPrice}`);
+          this.logger.log(`   📊 Price Range: ${(plainAssetData.simulatorSettings.maxPrice - plainAssetData.simulatorSettings.minPrice).toExponential()}`);
+          this.logger.log(`   🔄 Second Volatility: ${plainAssetData.simulatorSettings.secondVolatilityMin} - ${plainAssetData.simulatorSettings.secondVolatilityMax}`);
+        }
+        this.logger.log(`   💰 Price Range: ${plainAssetData.simulatorSettings?.minPrice} - ${plainAssetData.simulatorSettings?.maxPrice}`);
       }
       
       this.logger.log(`   📈 Profit Rate: ${createAssetDto.profitRate}%`);
@@ -642,25 +729,7 @@ export class AssetsService {
     }
 
     if (dto.simulatorSettings) {
-      const s = dto.simulatorSettings;
-      
-      if (s.dailyVolatilityMin > s.dailyVolatilityMax) {
-        throw new BadRequestException(
-          'dailyVolatilityMin must be <= dailyVolatilityMax'
-        );
-      }
-
-      if (s.secondVolatilityMin > s.secondVolatilityMax) {
-        throw new BadRequestException(
-          'secondVolatilityMin must be <= secondVolatilityMax'
-        );
-      }
-
-      if (s.minPrice && s.maxPrice && s.minPrice >= s.maxPrice) {
-        throw new BadRequestException(
-          'minPrice must be < maxPrice'
-        );
-      }
+      this.validateSimulatorSettingsHighPrecision(dto.simulatorSettings);
     }
 
     if (dto.tradingSettings) {
@@ -957,50 +1026,49 @@ export class AssetsService {
   }
 
   async getCurrentPrice(assetId: string) {
-  const startTime = Date.now();
-  try {
-    const asset = await this.getAssetById(assetId);
+    const startTime = Date.now();
+    try {
+      const asset = await this.getAssetById(assetId);
 
-    const priceData = await Promise.race([
-      this.priceFetcherService.getCurrentPrice(asset, true),
-      new Promise<never>((_, reject) => 
-        setTimeout(() => reject(new Error('Price timeout')), 2000)
-      ),
-    ]);
+      const priceData = await Promise.race([
+        this.priceFetcherService.getCurrentPrice(asset, true),
+        new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error('Price timeout')), 2000)
+        ),
+      ]);
 
-    if (!priceData) {
-      throw new NotFoundException(`Price unavailable for ${asset.symbol}`);
+      if (!priceData) {
+        throw new NotFoundException(`Price unavailable for ${asset.symbol}`);
+      }
+
+      const duration = Date.now() - startTime;
+      this.logger.debug(`⚡ Got price for ${asset.symbol} in ${duration}ms`);
+
+      return {
+        asset: {
+          id: asset.id,
+          name: asset.name,
+          symbol: asset.symbol,
+          type: asset.type,
+          category: asset.category,
+        },
+        price: priceData.price,
+        timestamp: priceData.timestamp,
+        datetime: priceData.datetime,
+        responseTime: duration,
+      };
+
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      this.logger.error(`Price fetch failed after ${duration}ms: ${error.message}`);
+      
+      if (error.message.includes('timeout')) {
+        throw new RequestTimeoutException('Price service timeout');
+      }
+      
+      throw error;
     }
-
-    const duration = Date.now() - startTime;
-    this.logger.debug(`⚡ Got price for ${asset.symbol} in ${duration}ms`);
-
-    return {
-      asset: {
-        id: asset.id,
-        name: asset.name,
-        symbol: asset.symbol,
-        type: asset.type,
-        category: asset.category,
-      },
-      price: priceData.price,
-      timestamp: priceData.timestamp,
-      datetime: priceData.datetime,
-      responseTime: duration,
-    };
-
-  } catch (error) {
-    const duration = Date.now() - startTime;
-    this.logger.error(`Price fetch failed after ${duration}ms: ${error.message}`);
-    
-    if (error.message.includes('timeout')) {
-      throw new RequestTimeoutException('Price service timeout');
-    }
-    
-    throw error;
   }
-}
-
 
   async getAssetSettings(assetId: string): Promise<Asset> {
     return this.getAssetById(assetId);
