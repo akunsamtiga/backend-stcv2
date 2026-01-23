@@ -1,5 +1,3 @@
-// src/assets/services/crypto-price-scheduler.service.ts
-
 import { Injectable, Logger, OnModuleInit, Inject, forwardRef } from '@nestjs/common';
 import { Cron, SchedulerRegistry } from '@nestjs/schedule';
 import { FirebaseService } from '../../firebase/firebase.service';
@@ -43,7 +41,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
   private initAttempts = 0;
   private readonly MAX_INIT_ATTEMPTS = 10;
 
-  private readonly MAX_1S_BARS_PER_ASSET = 100;
+  private readonly MAX_1S_BARS_PER_ASSET = 60;
 
   constructor(
     private firebaseService: FirebaseService,
@@ -171,11 +169,11 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     if (this.cryptoAssets.length === 0) return;
 
     const startTime = Date.now();
-    this.logger.log('HARDCORE 1S CLEANUP STARTED...');
+    this.logger.log('HARDCORE 1S CLEANUP STARTED (1-min retention, 60 bars max)...');
 
     try {
       let totalDeleted = 0;
-      const PARALLEL_ASSETS = 10;
+      const PARALLEL_ASSETS = 5;
 
       for (let i = 0; i < this.cryptoAssets.length; i += PARALLEL_ASSETS) {
         const batch = this.cryptoAssets.slice(i, i + PARALLEL_ASSETS);
@@ -189,14 +187,14 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
             totalDeleted += result.value.deleted;
             this.logger.log(
               `${batch[index].symbol}: ${result.value.deleted} deleted, ` +
-              `${result.value.remaining} remaining (oldest: ${result.value.oldestAge}s ago)`
+              `${result.value.remaining} remaining (max 60 bars, oldest: ${result.value.oldestAge}s)`
             );
           } else {
             this.logger.error(`Cleanup failed for ${batch[index].symbol}: ${result.reason}`);
           }
         });
 
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, 50));
       }
 
       const duration = Date.now() - startTime;
@@ -204,11 +202,12 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       this.cleanupStats.totalRuns++;
       this.cleanupStats.totalDeleted += totalDeleted;
       this.cleanupStats.lastRun = Date.now();
+      this.cleanupStats.byTimeframe['1s'] = (this.cleanupStats.byTimeframe['1s'] || 0) + totalDeleted;
 
-      this.logger.log(`HARDCORE 1S DONE: ${totalDeleted} bars deleted in ${duration}ms`);
+      this.logger.log(`HARDCORE 1S DONE: ${totalDeleted} bars deleted in ${duration}ms (60-bar limit enforced)`);
 
     } catch (error) {
-      this.logger.error(`Aggressive cleanup failed: ${error.message}`);
+      this.logger.error(`Aggressive 1s cleanup failed: ${error.message}`);
       this.cleanupStats.errors++;
     }
   }
@@ -216,12 +215,14 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
   private async cleanupAsset1sHardcore(asset: Asset) {
     const path = this.getAssetPath(asset);
     const ohlcPath = `${path}/ohlc_1s`;
+    const now = Math.floor(Date.now() / 1000);
+    const SIXTY_SECONDS_AGO = now - 60;
 
     try {
       const snapshot = await this.firebaseService.getRealtimeDatabase()
         .ref(ohlcPath)
         .orderByKey()
-        .limitToLast(500)
+        .limitToLast(200)
         .once('value');
 
       const allKeys: string[] = [];
@@ -231,17 +232,24 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       });
 
       if (allKeys.length <= this.MAX_1S_BARS_PER_ASSET) {
+        const oldestAge = allKeys.length > 0 ? now - parseInt(allKeys[0]) : 0;
         return {
           deleted: 0,
           remaining: allKeys.length,
-          oldestAge: 0
+          oldestAge
         };
       }
 
-      const keysToDelete = allKeys.slice(0, -(this.MAX_1S_BARS_PER_ASSET));
-      const oldestAge = Math.floor(Date.now() / 1000) - parseInt(keysToDelete[0]);
+      const keysToDelete = allKeys.filter(key => parseInt(key) < SIXTY_SECONDS_AGO);
+      
+      if (keysToDelete.length === 0 && allKeys.length > this.MAX_1S_BARS_PER_ASSET) {
+        const excessCount = allKeys.length - this.MAX_1S_BARS_PER_ASSET;
+        keysToDelete.push(...allKeys.slice(0, excessCount));
+      }
 
-      const BATCH_SIZE = 100;
+      const oldestAge = keysToDelete.length > 0 ? now - parseInt(keysToDelete[0]) : 0;
+
+      const BATCH_SIZE = 50;
       let deleted = 0;
 
       for (let i = 0; i < keysToDelete.length; i += BATCH_SIZE) {
@@ -255,9 +263,11 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
         deleted += batch.length;
       }
 
+      const remaining = Math.min(allKeys.length - deleted, this.MAX_1S_BARS_PER_ASSET);
+
       return {
         deleted,
-        remaining: this.MAX_1S_BARS_PER_ASSET,
+        remaining,
         oldestAge
       };
 
@@ -282,6 +292,8 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       for (const asset of this.cryptoAssets) {
         try {
           for (const [timeframe, days] of Object.entries(retentionDays)) {
+            if (timeframe === '1s') continue;
+            
             const deleted = await this.cleanupAssetTimeframe(asset, timeframe, days);
             totalDeleted += deleted;
             
