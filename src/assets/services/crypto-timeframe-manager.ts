@@ -24,7 +24,6 @@ export class CryptoTimeframeManager {
   private readonly logger = new Logger(CryptoTimeframeManager.name);
   
   private readonly timeframes: TimeframeConfig[] = [
-    { timeframe: '1s', seconds: 1 },
     { timeframe: '1m', seconds: 60 },
     { timeframe: '5m', seconds: 300 },
     { timeframe: '15m', seconds: 900 },
@@ -158,7 +157,6 @@ export class CryptoTimeframeManager {
   
   getRetentionDays(): Record<string, number> {
     return {
-      '1s': 0.00347,   // 5 minutes
       '1m': 0.0833,    // 2 hours
       '5m': 0.25,      // 6 hours
       '15m': 0.5,      // 12 hours
