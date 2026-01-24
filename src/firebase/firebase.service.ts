@@ -801,6 +801,38 @@ isRealtimeDbAdminAvailable(): boolean {
   return this.realtimeDbAdmin !== null && !this.useRestForRealtimeDb;
 }
 
+async batchDeleteRealtimeDbRelative(
+  basePath: string,
+  keys: string[]
+): Promise<number> {
+  if (!this.isConnected || keys.length === 0) {
+    return 0;
+  }
+
+  try {
+    const updates: Record<string, null> = {};
+    keys.forEach(key => {
+      updates[key] = null;
+    });
+
+    if (this.useRestForRealtimeDb) {
+      // REST API: use PATCH to basePath
+      await this.getNextConnection().patch(`${basePath}.json`, updates);
+    } else if (this.realtimeDbAdmin) {
+      // Admin SDK: use ref().update()
+      await this.realtimeDbAdmin.ref(basePath).update(updates);
+    }
+
+    this.writeStats.success += keys.length;
+    return keys.length;
+  } catch (error) {
+    this.writeStats.failed += keys.length;
+    this.logger.error(`Batch delete failed at ${basePath}: ${error.message}`);
+    return 0;
+  }
+}
+
+
   async runTransaction<T>(
     updateFunction: (transaction: admin.firestore.Transaction) => Promise<T>,
   ): Promise<T> {
