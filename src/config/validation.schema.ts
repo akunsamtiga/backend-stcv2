@@ -23,4 +23,9 @@ export const validationSchema = Joi.object({
 
   SUPER_ADMIN_EMAIL: Joi.string().email().required(),
   SUPER_ADMIN_PASSWORD: Joi.string().min(8).required(),
+
+  MIDTRANS_IS_PRODUCTION: Joi.boolean().default(false),
+  MIDTRANS_SERVER_KEY: Joi.string().required(),
+  MIDTRANS_CLIENT_KEY: Joi.string().required(),
+  MIDTRANS_MERCHANT_ID: Joi.string().required(),
 });

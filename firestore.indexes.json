@@ -187,6 +187,31 @@
         { "fieldPath": "reviewedBy", "order": "ASCENDING" },
         { "fieldPath": "reviewedAt", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "deposit_transactions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "user_id", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "deposit_transactions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "user_id", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "deposit_transactions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "order_id", "order": "ASCENDING" },
+        { "fieldPath": "user_id", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []
