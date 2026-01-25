@@ -1,4 +1,3 @@
-// src/config/validation.schema.ts
 import * as Joi from 'joi';
 
 export const validationSchema = Joi.object({
@@ -16,6 +15,8 @@ export const validationSchema = Joi.object({
   JWT_EXPIRATION: Joi.string().default('7d'),
   
   CORS_ORIGIN: Joi.string().default('*'),
+  FRONTEND_URL: Joi.string().uri().required(),
+  
   RATE_LIMIT_TTL: Joi.number().default(60),
   RATE_LIMIT_LIMIT: Joi.number().default(100),
   

@@ -1,4 +1,3 @@
-// src/payment/payment.service.ts - FIXED VERSION with Better Error Handling
 import { Injectable, Logger, BadRequestException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as crypto from 'crypto';
@@ -52,7 +51,6 @@ export class PaymentService {
       const serverKey = this.configService.get('midtrans.serverKey');
       const clientKey = this.configService.get('midtrans.clientKey');
 
-      // ✅ Validate configuration
       if (!serverKey || !clientKey) {
         this.logger.error('❌ Midtrans configuration missing!');
         this.logger.error('Please set MIDTRANS_SERVER_KEY and MIDTRANS_CLIENT_KEY in .env');
@@ -83,24 +81,18 @@ export class PaymentService {
     }
   }
 
-  // ============================================
-  // CREATE DEPOSIT REQUEST - FIXED
-  // ============================================
-
   async createDeposit(userId: string, createDepositDto: CreateDepositDto) {
     const db = this.firebaseService.getFirestore();
 
     try {
-      this.logger.log('📥 Processing deposit request...');
+      this.logger.log('🔥 Processing deposit request...');
       this.logger.log(`   User: ${userId}`);
       this.logger.log(`   Amount: Rp ${createDepositDto.amount.toLocaleString()}`);
 
-      // ✅ Validate Midtrans is initialized
       if (!this.snap || !this.coreApi) {
         throw new Error('Payment service not initialized. Please contact support.');
       }
 
-      // ✅ Get user data with validation
       const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
       if (!userDoc.exists) {
         throw new NotFoundException('User not found');
@@ -114,11 +106,9 @@ export class PaymentService {
 
       this.logger.log(`   Email: ${user.email}`);
 
-      // ✅ Generate order ID
       const timestamp = Date.now();
       const orderId = `DEPOSIT-${userId.substring(0, 8)}-${timestamp}`;
 
-      // ✅ Create deposit record
       const depositId = await this.firebaseService.generateId('deposit_transactions');
       const depositTransaction: DepositTransaction = {
         id: depositId,
@@ -135,9 +125,8 @@ export class PaymentService {
       await db.collection('deposit_transactions').doc(depositId).set(depositTransaction);
       this.logger.log(`✅ Deposit record created: ${depositId}`);
 
-      // ✅ Prepare Midtrans transaction parameters
       const customerName = user.profile?.fullName || user.email.split('@')[0];
-      const customerPhone = user.profile?.phoneNumber || '081234567890'; // Fallback
+      const customerPhone = user.profile?.phoneNumber || '081234567890';
       
       const parameter = {
         transaction_details: {
@@ -164,11 +153,10 @@ export class PaymentService {
         },
       };
 
-      this.logger.log('🔄 Creating Midtrans transaction...');
+      this.logger.log('📄 Creating Midtrans transaction...');
       this.logger.log(`   Order ID: ${orderId}`);
       this.logger.log(`   Amount: Rp ${createDepositDto.amount.toLocaleString()}`);
 
-      // ✅ Call Midtrans with error handling
       let transaction: any;
       try {
         transaction = await this.snap.createTransaction(parameter);
@@ -177,7 +165,6 @@ export class PaymentService {
         this.logger.error('❌ Midtrans API Error:', midtransError.message);
         this.logger.error('   Response:', JSON.stringify(midtransError.ApiResponse || {}));
         
-        // Update deposit as failed
         await db.collection('deposit_transactions').doc(depositId).update({
           status: 'failed',
           updatedAt: new Date().toISOString(),
@@ -192,7 +179,6 @@ export class PaymentService {
         );
       }
 
-      // ✅ Update deposit with Midtrans response
       await db.collection('deposit_transactions').doc(depositId).update({
         snap_token: transaction.token,
         snap_redirect_url: transaction.redirect_url,
@@ -223,31 +209,22 @@ export class PaymentService {
     }
   }
 
-  // ============================================
-  // GET FRONTEND URL
-  // ============================================
-
   private getFrontendUrl(): string {
-    const corsOrigin = this.configService.get('cors.origin');
+    const frontendUrl = this.configService.get('frontend.url');
     
-    if (!corsOrigin) {
+    if (!frontendUrl) {
+      this.logger.warn('⚠️ FRONTEND_URL not configured, using fallback');
       return 'http://localhost:3000';
     }
-
-    // Get first origin from comma-separated list
-    const origins = corsOrigin.split(',').map((o: string) => o.trim());
-    return origins[0] || 'http://localhost:3000';
+    
+    this.logger.log(`📍 Frontend URL: ${frontendUrl}`);
+    return frontendUrl;
   }
-
-  // ============================================
-  // MIDTRANS WEBHOOK HANDLER - UNCHANGED
-  // ============================================
 
   async handleWebhook(notification: MidtransWebhookDto) {
     const db = this.firebaseService.getFirestore();
 
     try {
-      // 1. Verify signature
       if (!this.verifySignature(notification)) {
         throw new BadRequestException('Invalid signature');
       }
@@ -260,7 +237,6 @@ export class PaymentService {
         `🔥 Webhook received: ${orderId} - Status: ${transactionStatus}`
       );
 
-      // 2. Get deposit transaction
       const depositSnapshot = await db
         .collection('deposit_transactions')
         .where('order_id', '==', orderId)
@@ -274,13 +250,11 @@ export class PaymentService {
       const depositDoc = depositSnapshot.docs[0];
       const deposit = depositDoc.data() as DepositTransaction;
 
-      // 3. Prevent duplicate processing
       if (deposit.status === 'success') {
         this.logger.warn(`⚠️ Duplicate webhook: ${orderId} already processed`);
         return { message: 'Transaction already processed' };
       }
 
-      // 4. Process based on status
       if (transactionStatus === 'capture') {
         if (fraudStatus === 'accept') {
           await this.processSuccessfulDeposit(deposit, notification);
@@ -305,10 +279,6 @@ export class PaymentService {
     }
   }
 
-  // ============================================
-  // PROCESS SUCCESSFUL DEPOSIT - UNCHANGED
-  // ============================================
-
   private async processSuccessfulDeposit(
     deposit: DepositTransaction,
     notification: MidtransWebhookDto,
@@ -317,7 +287,6 @@ export class PaymentService {
     const timestamp = new Date().toISOString();
 
     try {
-      // 1. Update deposit status
       await db.collection('deposit_transactions').doc(deposit.id).update({
         status: 'success',
         transaction_id: notification.transaction_id,
@@ -327,7 +296,6 @@ export class PaymentService {
         midtrans_response: notification,
       });
 
-      // 2. Credit balance
       await this.balanceService.createBalanceEntry(
         deposit.user_id,
         {
@@ -339,7 +307,6 @@ export class PaymentService {
         true
       );
 
-      // 3. Update user status (if eligible)
       const statusUpdate = await this.userStatusService.updateUserStatus(deposit.user_id);
       
       if (statusUpdate.changed) {
@@ -361,10 +328,6 @@ export class PaymentService {
       throw error;
     }
   }
-
-  // ============================================
-  // PROCESS FAILED DEPOSIT
-  // ============================================
 
   private async processFailedDeposit(
     deposit: DepositTransaction,
@@ -395,10 +358,6 @@ export class PaymentService {
     }
   }
 
-  // ============================================
-  // PROCESS PENDING DEPOSIT
-  // ============================================
-
   private async processPendingDeposit(
     deposit: DepositTransaction,
     notification: MidtransWebhookDto,
@@ -421,10 +380,6 @@ export class PaymentService {
     }
   }
 
-  // ============================================
-  // VERIFY SIGNATURE
-  // ============================================
-
   private verifySignature(notification: MidtransWebhookDto): boolean {
     const serverKey = this.configService.get('midtrans.serverKey');
     const orderId = notification.order_id;
@@ -439,10 +394,6 @@ export class PaymentService {
 
     return hash === signatureKey;
   }
-
-  // ============================================
-  // GET USER DEPOSITS
-  // ============================================
 
   async getUserDeposits(userId: string) {
     const db = this.firebaseService.getFirestore();
@@ -484,10 +435,6 @@ export class PaymentService {
     }
   }
 
-  // ============================================
-  // CHECK DEPOSIT STATUS
-  // ============================================
-
   async checkDepositStatus(userId: string, orderId: string) {
     const db = this.firebaseService.getFirestore();
 
@@ -505,7 +452,6 @@ export class PaymentService {
 
       const deposit = snapshot.docs[0].data() as DepositTransaction;
 
-      // Check real-time status from Midtrans
       let midtransStatus: any;
       try {
         midtransStatus = await this.coreApi.transaction.status(orderId);
