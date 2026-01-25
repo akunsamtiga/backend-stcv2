@@ -42,22 +42,16 @@ export class BalanceService {
     this.userStatusService = service;
   }
 
-  // ============================================
-  // WITHDRAWAL REQUEST - NEW SYSTEM
-  // ============================================
-
   async requestWithdrawal(userId: string, amount: number, description?: string) {
     const db = this.firebaseService.getFirestore();
 
     try {
-      // 1. Validasi minimum amount
       if (amount < WITHDRAWAL_CONFIG.MIN_AMOUNT) {
         throw new BadRequestException(
           `Minimum withdrawal amount is Rp ${WITHDRAWAL_CONFIG.MIN_AMOUNT.toLocaleString()}`
         );
       }
 
-      // 2. Get user data
       const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
       if (!userDoc.exists) {
         throw new NotFoundException('User not found');
@@ -66,28 +60,24 @@ export class BalanceService {
       const user = userDoc.data() as User;
       const profile = user.profile || {};
 
-      // 3. Check KTP verification
       if (!profile.identityDocument?.isVerified) {
         throw new BadRequestException(
           'KTP/Identity verification required. Please upload and verify your KTP first.'
         );
       }
 
-      // 4. Check Selfie verification
       if (!profile.selfieVerification?.isVerified) {
         throw new BadRequestException(
           'Selfie verification required. Please upload and verify your selfie first.'
         );
       }
 
-      // 5. Check bank account
       if (!profile.bankAccount?.accountNumber) {
         throw new BadRequestException(
           'Bank account required. Please add your bank account details first.'
         );
       }
 
-      // 6. Check balance
       const currentBalance = await this.getCurrentBalance(userId, BALANCE_ACCOUNT_TYPE.REAL, true);
       
       if (currentBalance < amount) {
@@ -96,7 +86,6 @@ export class BalanceService {
         );
       }
 
-      // 7. Check pending withdrawal
       const pendingWithdrawal = await db.collection(COLLECTIONS.WITHDRAWAL_REQUESTS)
         .where('user_id', '==', userId)
         .where('status', '==', WITHDRAWAL_STATUS.PENDING)
@@ -109,7 +98,6 @@ export class BalanceService {
         );
       }
 
-      // 8. Create withdrawal request
       const requestId = await this.firebaseService.generateId(COLLECTIONS.WITHDRAWAL_REQUESTS);
       const timestamp = new Date().toISOString();
 
@@ -242,10 +230,6 @@ export class BalanceService {
     }
   }
 
-  // ============================================
-  // BALANCE ENTRY - MODIFIED
-  // ============================================
-
   async createBalanceEntry(
     userId: string, 
     createBalanceDto: CreateBalanceDto, 
@@ -260,10 +244,15 @@ export class BalanceService {
         throw new BadRequestException('Invalid account type. Must be "real" or "demo"');
       }
 
-      // ✅ BLOCK DIRECT WITHDRAWAL for REAL account
       if (type === BALANCE_TYPES.WITHDRAWAL && accountType === BALANCE_ACCOUNT_TYPE.REAL) {
         throw new BadRequestException(
           'Direct withdrawal not allowed for real account. Please use withdrawal request endpoint: POST /balance/withdrawal/request'
+        );
+      }
+
+      if (type === BALANCE_TYPES.DEPOSIT && accountType === BALANCE_ACCOUNT_TYPE.REAL) {
+        throw new BadRequestException(
+          'Direct deposit not allowed for real account. Please use Midtrans payment: POST /payment/deposit'
         );
       }
 
@@ -314,7 +303,6 @@ export class BalanceService {
             }
           }
           
-          // ✅ Withdrawal validation INSIDE transaction (for DEMO only)
           if (type === BALANCE_TYPES.WITHDRAWAL) {
             await db.runTransaction(async (transaction) => {
               const balanceSnapshot = await transaction.get(
@@ -350,7 +338,6 @@ export class BalanceService {
             this.logger.log(`✅ Withdrawal completed: ${userId} - ${accountType} - ${amount}`);
 
           } else {
-            // DEPOSIT or other types
             const balanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
             const balanceData = {
               id: balanceId,
@@ -366,7 +353,6 @@ export class BalanceService {
 
             this.logger.log(`✅ Balance entry created: ${balanceId}`);
 
-            // Update user status for REAL deposits
             if (accountType === BALANCE_ACCOUNT_TYPE.REAL && type === BALANCE_TYPES.DEPOSIT) {
               if (this.userStatusService) {
                 try {
@@ -383,7 +369,6 @@ export class BalanceService {
               }
             }
 
-            // Process affiliate commission
             if (affiliateInfo.hasPending && affiliateInfo.affiliateId && affiliateInfo.referrerId) {
               await this.processAffiliate(
                 userId,
@@ -395,7 +380,6 @@ export class BalanceService {
             }
           }
 
-          // Clear all caches
           this.invalidateAllUserCaches(userId);
 
           await new Promise(resolve => setTimeout(resolve, 100));
@@ -444,10 +428,6 @@ export class BalanceService {
   clearUserCache(userId: string): void {
     this.invalidateAllUserCaches(userId);
   }
-
-  // ============================================
-  // PRIVATE HELPER METHODS
-  // ============================================
 
   private invalidateCache(userId: string, accountType: 'real' | 'demo'): void {
     if (accountType === BALANCE_ACCOUNT_TYPE.REAL) {
@@ -662,7 +642,6 @@ export class BalanceService {
         return;
       }
 
-      // Update affiliate status
       await db.collection(COLLECTIONS.AFFILIATES)
         .doc(affiliateId)
         .update({
@@ -676,7 +655,6 @@ export class BalanceService {
       this.logger.log(`✅ Affiliate record updated: PENDING → COMPLETED`);
       this.logger.log(`   📌 This user will NOT trigger commission again!`);
 
-      // Create commission balance entry (as DEPOSIT to REAL account)
       const commissionBalanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
       
       await db.collection(COLLECTIONS.BALANCE).doc(commissionBalanceId).set({
@@ -691,7 +669,6 @@ export class BalanceService {
 
       this.logger.log(`✅ Commission deposited to REAL account: ${commissionBalanceId}`);
 
-      // Invalidate referrer's cache
       this.invalidateAllUserCaches(referrerId);
 
       this.logger.log(
