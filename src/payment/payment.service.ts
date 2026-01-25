@@ -1,4 +1,4 @@
-// src/payment/payment.service.ts
+// src/payment/payment.service.ts - FIXED VERSION with Better Error Handling
 import { Injectable, Logger, BadRequestException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as crypto from 'crypto';
@@ -47,45 +47,78 @@ export class PaymentService {
   }
 
   private initializeMidtrans() {
-    const isProduction = this.configService.get('midtrans.isProduction');
-    const serverKey = this.configService.get('midtrans.serverKey');
-    const clientKey = this.configService.get('midtrans.clientKey');
+    try {
+      const isProduction = this.configService.get('midtrans.isProduction');
+      const serverKey = this.configService.get('midtrans.serverKey');
+      const clientKey = this.configService.get('midtrans.clientKey');
 
-    this.snap = new midtransClient.Snap({
-      isProduction,
-      serverKey,
-      clientKey,
-    });
+      // ✅ Validate configuration
+      if (!serverKey || !clientKey) {
+        this.logger.error('❌ Midtrans configuration missing!');
+        this.logger.error('Please set MIDTRANS_SERVER_KEY and MIDTRANS_CLIENT_KEY in .env');
+        throw new Error('Midtrans configuration incomplete');
+      }
 
-    this.coreApi = new midtransClient.CoreApi({
-      isProduction,
-      serverKey,
-      clientKey,
-    });
+      this.logger.log('🔧 Initializing Midtrans...');
+      this.logger.log(`   Mode: ${isProduction ? 'PRODUCTION' : 'SANDBOX'}`);
+      this.logger.log(`   Server Key: ${serverKey.substring(0, 10)}...`);
+      this.logger.log(`   Client Key: ${clientKey.substring(0, 10)}...`);
 
-    this.logger.log(
-      `✅ Midtrans initialized (${isProduction ? 'PRODUCTION' : 'SANDBOX'})`
-    );
+      this.snap = new midtransClient.Snap({
+        isProduction,
+        serverKey,
+        clientKey,
+      });
+
+      this.coreApi = new midtransClient.CoreApi({
+        isProduction,
+        serverKey,
+        clientKey,
+      });
+
+      this.logger.log(`✅ Midtrans initialized (${isProduction ? 'PRODUCTION' : 'SANDBOX'})`);
+    } catch (error) {
+      this.logger.error('❌ Failed to initialize Midtrans:', error.message);
+      throw error;
+    }
   }
 
   // ============================================
-  // CREATE DEPOSIT REQUEST
+  // CREATE DEPOSIT REQUEST - FIXED
   // ============================================
 
   async createDeposit(userId: string, createDepositDto: CreateDepositDto) {
     const db = this.firebaseService.getFirestore();
 
     try {
+      this.logger.log('📥 Processing deposit request...');
+      this.logger.log(`   User: ${userId}`);
+      this.logger.log(`   Amount: Rp ${createDepositDto.amount.toLocaleString()}`);
+
+      // ✅ Validate Midtrans is initialized
+      if (!this.snap || !this.coreApi) {
+        throw new Error('Payment service not initialized. Please contact support.');
+      }
+
+      // ✅ Get user data with validation
       const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
       if (!userDoc.exists) {
         throw new NotFoundException('User not found');
       }
 
       const user = userDoc.data() as User;
+      
+      if (!user.email) {
+        throw new BadRequestException('User email is required for deposit');
+      }
 
+      this.logger.log(`   Email: ${user.email}`);
+
+      // ✅ Generate order ID
       const timestamp = Date.now();
       const orderId = `DEPOSIT-${userId.substring(0, 8)}-${timestamp}`;
 
+      // ✅ Create deposit record
       const depositId = await this.firebaseService.generateId('deposit_transactions');
       const depositTransaction: DepositTransaction = {
         id: depositId,
@@ -100,16 +133,21 @@ export class PaymentService {
       };
 
       await db.collection('deposit_transactions').doc(depositId).set(depositTransaction);
+      this.logger.log(`✅ Deposit record created: ${depositId}`);
 
+      // ✅ Prepare Midtrans transaction parameters
+      const customerName = user.profile?.fullName || user.email.split('@')[0];
+      const customerPhone = user.profile?.phoneNumber || '081234567890'; // Fallback
+      
       const parameter = {
         transaction_details: {
           order_id: orderId,
           gross_amount: createDepositDto.amount,
         },
         customer_details: {
-          first_name: user.profile?.fullName || user.email.split('@')[0],
+          first_name: customerName,
           email: user.email,
-          phone: user.profile?.phoneNumber || '',
+          phone: customerPhone,
         },
         item_details: [
           {
@@ -120,14 +158,41 @@ export class PaymentService {
           },
         ],
         callbacks: {
-          finish: `${this.configService.get('cors.origin').split(',')[0]}/deposit/success`,
-          error: `${this.configService.get('cors.origin').split(',')[0]}/deposit/failed`,
-          pending: `${this.configService.get('cors.origin').split(',')[0]}/deposit/pending`,
+          finish: `${this.getFrontendUrl()}/deposit/success`,
+          error: `${this.getFrontendUrl()}/deposit/failed`,
+          pending: `${this.getFrontendUrl()}/deposit/pending`,
         },
       };
 
-      const transaction = await this.snap.createTransaction(parameter);
+      this.logger.log('🔄 Creating Midtrans transaction...');
+      this.logger.log(`   Order ID: ${orderId}`);
+      this.logger.log(`   Amount: Rp ${createDepositDto.amount.toLocaleString()}`);
 
+      // ✅ Call Midtrans with error handling
+      let transaction: any;
+      try {
+        transaction = await this.snap.createTransaction(parameter);
+        this.logger.log('✅ Midtrans transaction created successfully');
+      } catch (midtransError: any) {
+        this.logger.error('❌ Midtrans API Error:', midtransError.message);
+        this.logger.error('   Response:', JSON.stringify(midtransError.ApiResponse || {}));
+        
+        // Update deposit as failed
+        await db.collection('deposit_transactions').doc(depositId).update({
+          status: 'failed',
+          updatedAt: new Date().toISOString(),
+          midtrans_response: {
+            error: midtransError.message,
+            response: midtransError.ApiResponse,
+          },
+        });
+
+        throw new BadRequestException(
+          `Payment gateway error: ${midtransError.message || 'Failed to create payment'}`
+        );
+      }
+
+      // ✅ Update deposit with Midtrans response
       await db.collection('deposit_transactions').doc(depositId).update({
         snap_token: transaction.token,
         snap_redirect_url: transaction.redirect_url,
@@ -151,14 +216,31 @@ export class PaymentService {
         },
       };
 
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`❌ createDeposit error: ${error.message}`);
+      this.logger.error(`   Stack: ${error.stack}`);
       throw error;
     }
   }
 
   // ============================================
-  // MIDTRANS WEBHOOK HANDLER
+  // GET FRONTEND URL
+  // ============================================
+
+  private getFrontendUrl(): string {
+    const corsOrigin = this.configService.get('cors.origin');
+    
+    if (!corsOrigin) {
+      return 'http://localhost:3000';
+    }
+
+    // Get first origin from comma-separated list
+    const origins = corsOrigin.split(',').map((o: string) => o.trim());
+    return origins[0] || 'http://localhost:3000';
+  }
+
+  // ============================================
+  // MIDTRANS WEBHOOK HANDLER - UNCHANGED
   // ============================================
 
   async handleWebhook(notification: MidtransWebhookDto) {
@@ -175,7 +257,7 @@ export class PaymentService {
       const fraudStatus = notification.fraud_status;
 
       this.logger.log(
-        `📥 Webhook received: ${orderId} - Status: ${transactionStatus}`
+        `🔥 Webhook received: ${orderId} - Status: ${transactionStatus}`
       );
 
       // 2. Get deposit transaction
@@ -224,7 +306,7 @@ export class PaymentService {
   }
 
   // ============================================
-  // PROCESS SUCCESSFUL DEPOSIT
+  // PROCESS SUCCESSFUL DEPOSIT - UNCHANGED
   // ============================================
 
   private async processSuccessfulDeposit(
@@ -424,7 +506,13 @@ export class PaymentService {
       const deposit = snapshot.docs[0].data() as DepositTransaction;
 
       // Check real-time status from Midtrans
-      const status = await this.coreApi.transaction.status(orderId);
+      let midtransStatus: any;
+      try {
+        midtransStatus = await this.coreApi.transaction.status(orderId);
+      } catch (error: any) {
+        this.logger.warn(`⚠️ Failed to get Midtrans status: ${error.message}`);
+        midtransStatus = { error: 'Failed to get status from payment gateway' };
+      }
 
       return {
         deposit: {
@@ -436,7 +524,7 @@ export class PaymentService {
           createdAt: deposit.createdAt,
           completedAt: deposit.completedAt,
         },
-        midtrans_status: status,
+        midtrans_status: midtransStatus,
       };
 
     } catch (error) {
