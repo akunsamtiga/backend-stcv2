@@ -1,6 +1,5 @@
 import { Injectable, Logger, BadRequestException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import * as midtransClient from 'midtrans-client';
 import * as crypto from 'crypto';
 import { FirebaseService } from '../firebase/firebase.service';
 import { BalanceService } from '../balance/balance.service';
@@ -9,6 +8,8 @@ import { CreateDepositDto } from './dto/create-deposit.dto';
 import { MidtransWebhookDto } from './dto/midtrans-webhook.dto';
 import { COLLECTIONS, BALANCE_TYPES, BALANCE_ACCOUNT_TYPE } from '../common/constants';
 import { User } from '../common/interfaces';
+
+const midtransClient = require('midtrans-client');
 
 interface DepositTransaction {
   id: string;
@@ -74,7 +75,6 @@ export class PaymentService {
     const db = this.firebaseService.getFirestore();
 
     try {
-      // 1. Get user data
       const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
       if (!userDoc.exists) {
         throw new NotFoundException('User not found');
@@ -82,11 +82,9 @@ export class PaymentService {
 
       const user = userDoc.data() as User;
 
-      // 2. Generate unique order ID
       const timestamp = Date.now();
       const orderId = `DEPOSIT-${userId.substring(0, 8)}-${timestamp}`;
 
-      // 3. Create deposit transaction record
       const depositId = await this.firebaseService.generateId('deposit_transactions');
       const depositTransaction: DepositTransaction = {
         id: depositId,
@@ -102,7 +100,6 @@ export class PaymentService {
 
       await db.collection('deposit_transactions').doc(depositId).set(depositTransaction);
 
-      // 4. Create Snap transaction
       const parameter = {
         transaction_details: {
           order_id: orderId,
@@ -122,15 +119,14 @@ export class PaymentService {
           },
         ],
         callbacks: {
-          finish: `${this.configService.get('cors.origin')}/deposit/success`,
-          error: `${this.configService.get('cors.origin')}/deposit/failed`,
-          pending: `${this.configService.get('cors.origin')}/deposit/pending`,
+          finish: `${this.configService.get('cors.origin').split(',')[0]}/deposit/success`,
+          error: `${this.configService.get('cors.origin').split(',')[0]}/deposit/failed`,
+          pending: `${this.configService.get('cors.origin').split(',')[0]}/deposit/pending`,
         },
       };
 
       const transaction = await this.snap.createTransaction(parameter);
 
-      // 5. Update deposit record with Snap data
       await db.collection('deposit_transactions').doc(depositId).update({
         snap_token: transaction.token,
         snap_redirect_url: transaction.redirect_url,
