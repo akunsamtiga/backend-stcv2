@@ -381,19 +381,30 @@ export class PaymentService {
   }
 
   private verifySignature(notification: MidtransWebhookDto): boolean {
-    const serverKey = this.configService.get('midtrans.serverKey');
-    const orderId = notification.order_id;
-    const statusCode = notification.status_code;
-    const grossAmount = notification.gross_amount;
-    const signatureKey = notification.signature_key;
+  const serverKey = this.configService.get('midtrans.serverKey');
+  const orderId = notification.order_id;
+  const statusCode = notification.status_code;
+  const grossAmount = notification.gross_amount;
+  const signatureKey = notification.signature_key;
 
-    const hash = crypto
-      .createHash('sha512')
-      .update(`${orderId}${statusCode}${grossAmount}${serverKey}`)
-      .digest('hex');
+  // ✅ TAMBAHKAN DEBUG LOG INI
+  console.log('=== SIGNATURE DEBUG ===');
+  console.log('Server Key from ENV:', serverKey);
+  console.log('Order ID:', orderId);
+  console.log('Status Code:', statusCode);
+  console.log('Gross Amount:', grossAmount);
+  console.log('Expected Hash:', crypto.createHash('sha512').update(`${orderId}${statusCode}${grossAmount}${serverKey}`).digest('hex'));
+  console.log('Received Sig:', signatureKey);
+  console.log('=======================');
 
-    return hash === signatureKey;
-  }
+  const hash = crypto
+    .createHash('sha512')
+    .update(`${orderId}${statusCode}${grossAmount}${serverKey}`)
+    .digest('hex');
+
+  return hash === signatureKey;
+}
+
 
   async getUserDeposits(userId: string) {
     const db = this.firebaseService.getFirestore();
