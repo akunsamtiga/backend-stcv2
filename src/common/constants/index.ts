@@ -1,5 +1,3 @@
-// src/common/constants/index.ts
-
 export const BALANCE_TYPES = {
   DEPOSIT: 'deposit',
   WITHDRAWAL: 'withdrawal',
@@ -8,6 +6,7 @@ export const BALANCE_TYPES = {
   WIN: 'win',
   LOSE: 'lose',
   AFFILIATE_COMMISSION: 'affiliate_commission',
+  VOUCHER_BONUS: 'voucher_bonus',
 } as const;
 
 export const BALANCE_ACCOUNT_TYPE = {
@@ -70,7 +69,7 @@ export const AFFILIATE_STATUS = {
 } as const;
 
 export const AFFILIATE_CONFIG = {
-  COMMISSION_AMOUNT: 25000, 
+  COMMISSION_AMOUNT: 25000,
   MIN_DEPOSIT_TO_ACTIVATE: 1,
   COMMISSION_BY_STATUS: {
     STANDARD: 25000,
@@ -78,10 +77,6 @@ export const AFFILIATE_CONFIG = {
     VIP: 400000,
   },
 } as const;
-
-// ============================================
-// WITHDRAWAL CONSTANTS (NEW)
-// ============================================
 
 export const WITHDRAWAL_STATUS = {
   PENDING: 'pending',
@@ -91,15 +86,11 @@ export const WITHDRAWAL_STATUS = {
 } as const;
 
 export const WITHDRAWAL_CONFIG = {
-  MIN_AMOUNT: 100000, // Minimum Rp 100,000
+  MIN_AMOUNT: 100000,
   REQUIRE_KTP: true,
   REQUIRE_SELFIE: true,
   REQUIRE_BANK_ACCOUNT: true,
 } as const;
-
-// ============================================
-// COLLECTIONS
-// ============================================
 
 export const COLLECTIONS = {
   USERS: 'users',
@@ -107,7 +98,9 @@ export const COLLECTIONS = {
   ORDERS: 'binary_orders',
   ASSETS: 'assets',
   AFFILIATES: 'affiliates',
-  WITHDRAWAL_REQUESTS: 'withdrawal_requests', // 👈 NEW COLLECTION
+  WITHDRAWAL_REQUESTS: 'withdrawal_requests',
+  VOUCHERS: 'vouchers',
+  VOUCHER_USAGES: 'voucher_usages',
 } as const;
 
 export const ASSET_TYPE = {
@@ -127,7 +120,7 @@ export const ASSET_DATA_SOURCE = {
   REALTIME_DB: 'realtime_db',
   API: 'api',
   MOCK: 'mock',
-  BINANCE: 'binance',  
+  BINANCE: 'binance',
 } as const;
 
 export const ASSET_TYPE_INFO = {
@@ -165,11 +158,11 @@ export const ASSET_TYPE_INFO = {
 
 export const BINANCE_CONFIG = {
   BASE_URL: 'https://api.binance.com/api/v3',
-  CACHE_TTL: 60000,       
-  STALE_CACHE_TTL: 300000, 
-  TIMEOUT: 10000,          
-  RATE_LIMIT_DELAY: 100,   
-  MIN_CALL_INTERVAL: 50,   
+  CACHE_TTL: 60000,
+  STALE_CACHE_TTL: 300000,
+  TIMEOUT: 10000,
+  RATE_LIMIT_DELAY: 100,
+  MIN_CALL_INTERVAL: 50,
 } as const;
 
 export const CRYPTO_SYMBOLS = {
@@ -220,7 +213,7 @@ export type ValidDuration = typeof ALL_DURATIONS[number];
 export type BalanceAccountType = typeof BALANCE_ACCOUNT_TYPE[keyof typeof BALANCE_ACCOUNT_TYPE];
 export type UserStatus = typeof USER_STATUS[keyof typeof USER_STATUS];
 export type AffiliateStatus = typeof AFFILIATE_STATUS[keyof typeof AFFILIATE_STATUS];
-export type WithdrawalStatus = typeof WITHDRAWAL_STATUS[keyof typeof WITHDRAWAL_STATUS]; // 👈 NEW TYPE
+export type WithdrawalStatus = typeof WITHDRAWAL_STATUS[keyof typeof WITHDRAWAL_STATUS];
 export type AssetType = typeof ASSET_TYPE[keyof typeof ASSET_TYPE];
 export type AssetCategory = typeof ASSET_CATEGORY[keyof typeof ASSET_CATEGORY];
 export type AssetDataSource = typeof ASSET_DATA_SOURCE[keyof typeof ASSET_DATA_SOURCE];

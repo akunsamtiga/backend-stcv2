@@ -1,5 +1,3 @@
-// src/common/interfaces/index.ts
-
 export interface ApiResponse<T = any> {
   success: boolean;
   message?: string;
@@ -39,7 +37,6 @@ export interface UserProfile {
     country?: string;
   };
   
-  // ✅ ENHANCED: Identity Document with Photos & Verification
   identityDocument?: {
     type?: 'ktp' | 'passport' | 'sim';
     number?: string;
@@ -47,10 +44,10 @@ export interface UserProfile {
     expiryDate?: string;
     isVerified?: boolean;
     verifiedAt?: string;
-    verifiedBy?: string; // ✅ NEW: Admin ID who verified
-    rejectionReason?: string; // ✅ NEW: Rejection reason
-    rejectedAt?: string; // ✅ NEW: When rejected
-    rejectedBy?: string; // ✅ NEW: Admin ID who rejected
+    verifiedBy?: string;
+    rejectionReason?: string;
+    rejectedAt?: string;
+    rejectedBy?: string;
     photoFront?: {
       url: string;
       uploadedAt: string;
@@ -73,7 +70,6 @@ export interface UserProfile {
     verifiedAt?: string;
   };
   
-  // ✅ ENHANCED: Avatar with metadata
   avatar?: {
     url: string;
     uploadedAt: string;
@@ -81,16 +77,15 @@ export interface UserProfile {
     mimeType?: string;
   };
   
-  // ✅ ENHANCED: Selfie Verification with Rejection Fields
   selfieVerification?: {
     photoUrl: string;
     uploadedAt: string;
     isVerified: boolean;
     verifiedAt?: string;
-    verifiedBy?: string; // ✅ NEW: Admin ID who verified
-    rejectionReason?: string; // ✅ NEW: Rejection reason
-    rejectedAt?: string; // ✅ NEW: When rejected
-    rejectedBy?: string; // ✅ NEW: Admin ID who rejected
+    verifiedBy?: string;
+    rejectionReason?: string;
+    rejectedAt?: string;
+    rejectedBy?: string;
     fileSize?: number;
     mimeType?: string;
   };
@@ -109,11 +104,10 @@ export interface UserProfile {
     phoneVerified?: boolean;
     identityVerified?: boolean;
     bankVerified?: boolean;
-    selfieVerified?: boolean; // ✅ NEW: Selfie verification status
+    selfieVerified?: boolean;
     verificationLevel?: 'unverified' | 'basic' | 'intermediate' | 'advanced';
   };
 }
-
 
 export interface User {
   id: string;
@@ -134,12 +128,11 @@ export interface User {
   loginCount?: number;
 }
 
-
 export interface Balance {
   id: string;
   user_id: string;
   accountType: 'real' | 'demo';
-  type: 'deposit' | 'withdrawal' | 'order_debit' | 'order_profit' | 'win' | 'lose' | 'affiliate_commission';
+  type: 'deposit' | 'withdrawal' | 'order_debit' | 'order_profit' | 'win' | 'lose' | 'affiliate_commission' | 'voucher_bonus';
   amount: number;
   description?: string;
   createdAt: string;
@@ -151,8 +144,6 @@ export interface WithdrawalRequest {
   amount: number;
   status: 'pending' | 'approved' | 'rejected' | 'completed';
   description?: string;
-  
-  // User info snapshot
   userEmail: string;
   userName?: string;
   bankAccount?: {
@@ -160,18 +151,13 @@ export interface WithdrawalRequest {
     accountNumber: string;
     accountHolderName: string;
   };
-  
-  // Verification proof
   ktpVerified: boolean;
   selfieVerified: boolean;
   currentBalance: number;
-  
-  // Admin action
   reviewedBy?: string;
   reviewedAt?: string;
   rejectionReason?: string;
   adminNotes?: string;
-  
   createdAt: string;
   updatedAt?: string;
 }
@@ -182,7 +168,7 @@ export interface Affiliate {
   referee_id: string;
   status: 'pending' | 'completed';
   commission_amount: number;
-  referee_status?: string; 
+  referee_status?: string;
   completed_at?: string;
   createdAt: string;
 }
@@ -199,29 +185,20 @@ export interface Asset {
   id: string;
   name: string;
   symbol: string;
-  
   icon?: string;
   type: 'forex' | 'stock' | 'commodity' | 'crypto' | 'index';
-
   category: 'normal' | 'crypto';
-  
   profitRate: number;
   isActive: boolean;
-  
   dataSource: 'realtime_db' | 'api' | 'mock' | 'binance';
-  
   realtimeDbPath?: string;
-  
   apiEndpoint?: string;
-  
   cryptoConfig?: {
-    baseCurrency: string;    
-    quoteCurrency: string;   
-    exchange?: string;       
+    baseCurrency: string;
+    quoteCurrency: string;
+    exchange?: string;
   };
-  
   description?: string;
-  
   simulatorSettings?: {
     initialPrice: number;
     dailyVolatilityMin: number;
@@ -231,13 +208,11 @@ export interface Asset {
     minPrice?: number;
     maxPrice?: number;
   };
-  
   tradingSettings?: {
     minOrderAmount: number;
     maxOrderAmount: number;
     allowedDurations: number[];
   };
-  
   createdAt: string;
   updatedAt?: string;
   createdBy?: string;
@@ -263,7 +238,6 @@ export interface BinaryOrder {
   statusBonus?: number;
   userStatus?: string;
   createdAt: string;
-  
   metadata?: {
     isEndOfCandleEntry: boolean;
     remainingSecondsInMinute: number;
@@ -316,4 +290,36 @@ export interface ProfileUpdateHistory {
   updatedBy: string;
   updatedAt: string;
   reason?: string;
+}
+
+export interface Voucher {
+  id: string;
+  code: string;
+  type: 'percentage' | 'fixed';
+  value: number;
+  minDeposit: number;
+  eligibleStatuses: string[];
+  maxUses?: number;
+  usedCount: number;
+  maxUsesPerUser: number;
+  maxBonusAmount?: number;
+  isActive: boolean;
+  validFrom: string;
+  validUntil: string;
+  description?: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface VoucherUsage {
+  id: string;
+  voucherId: string;
+  voucherCode: string;
+  userId: string;
+  userEmail: string;
+  depositId: string;
+  depositAmount: number;
+  bonusAmount: number;
+  usedAt: string;
 }

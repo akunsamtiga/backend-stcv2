@@ -17,6 +17,7 @@ import { FirebaseModule } from './firebase/firebase.module';
 import { WebSocketModule } from './websocket/websocket.module';
 import { HealthController } from './health.controller';
 import { PaymentModule } from './payment/payment.module';
+import { VoucherModule } from './voucher/voucher.module'; 
 
 @Module({
   imports: [
@@ -52,6 +53,7 @@ import { PaymentModule } from './payment/payment.module';
     AdminModule,
     WebSocketModule,
     PaymentModule,
+    VoucherModule, 
   ],
   controllers: [HealthController],
   

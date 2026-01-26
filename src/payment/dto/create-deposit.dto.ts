@@ -1,4 +1,3 @@
-// src/payment/dto/create-deposit.dto.ts
 import { IsNumber, IsPositive, IsString, IsOptional, Min } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
@@ -19,4 +18,12 @@ export class CreateDepositDto {
   @IsOptional()
   @IsString()
   description?: string;
+
+  @ApiPropertyOptional({ 
+    example: 'BONUS10',
+    description: 'Voucher code for bonus (optional)'
+  })
+  @IsOptional()
+  @IsString()
+  voucherCode?: string; // ✅ TAMBAHAN
 }
