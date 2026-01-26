@@ -55,11 +55,13 @@ export class PaymentController {
   // ============================================
 
   @Post('webhook/midtrans')
+  // ✅ FIX: Matikan ValidationPipe untuk webhook
   @UsePipes(new ValidationPipe({
-    whitelist: false,           // ✅ Allow extra fields
-    forbidNonWhitelisted: false, // ✅ Don't throw on extra fields
-    transform: true,
-    skipMissingProperties: true, // ✅ Skip if fields missing
+    whitelist: false,           // Allow extra fields
+    forbidNonWhitelisted: false, // Don't throw on extra fields
+    transform: false,            // Don't transform - terima raw data
+    skipMissingProperties: true, // Skip validation untuk field yang missing
+    validateCustomDecorators: false,
   }))
   @ApiOperation({ 
     summary: 'Midtrans webhook handler',
@@ -79,16 +81,16 @@ export class PaymentController {
     description: 'Invalid signature or bad request'
   })
   async handleMidtransWebhook(
-    @Body() notification: MidtransWebhookDto,
+    @Body() notification: any, // ✅ Terima as ANY dulu
     @Headers() headers: any
   ) {
     // ✅ LOG REQUEST untuk debugging
-    console.log('🔔 ========================================');
-    console.log('🔔 WEBHOOK REQUEST RECEIVED');
-    console.log('🔔 ========================================');
+    console.log('📢 ========================================');
+    console.log('📢 WEBHOOK REQUEST RECEIVED');
+    console.log('📢 ========================================');
     console.log('Headers:', JSON.stringify(headers, null, 2));
     console.log('Body:', JSON.stringify(notification, null, 2));
-    console.log('🔔 ========================================');
+    console.log('📢 ========================================');
 
     return this.paymentService.handleWebhook(notification);
   }
@@ -192,7 +194,7 @@ export class PaymentController {
       .update(`${orderId}200${grossAmount}${serverKey}`)
       .digest('hex');
 
-    const mockNotification: MidtransWebhookDto = {
+    const mockNotification = {
       transaction_time: new Date().toISOString(),
       transaction_status: 'settlement',
       transaction_id: `TEST-${Date.now()}`,
@@ -217,4 +219,3 @@ export class PaymentController {
     return this.paymentService.handleWebhook(mockNotification);
   }
 }
-
