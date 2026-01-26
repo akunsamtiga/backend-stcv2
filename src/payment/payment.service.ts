@@ -189,12 +189,18 @@ export class PaymentService {
       this.logger.log('🔔 ========================================');
       this.logger.log('🔔 MIDTRANS WEBHOOK RECEIVED');
       this.logger.log('🔔 ========================================');
-      this.logger.log(`   Order ID: ${notification.order_id}`);
-      this.logger.log(`   Transaction Status: ${notification.transaction_status}`);
-      this.logger.log(`   Payment Type: ${notification.payment_type}`);
-      this.logger.log(`   Gross Amount: ${notification.gross_amount}`);
-      this.logger.log(`   Transaction ID: ${notification.transaction_id}`);
+      this.logger.log(`   Order ID: ${notification.order_id || 'MISSING'}`);
+      this.logger.log(`   Transaction Status: ${notification.transaction_status || 'MISSING'}`);
+      this.logger.log(`   Payment Type: ${notification.payment_type || 'MISSING'}`);
+      this.logger.log(`   Gross Amount: ${notification.gross_amount || 'MISSING'}`);
+      this.logger.log(`   Transaction ID: ${notification.transaction_id || 'MISSING'}`);
       this.logger.log('🔔 ========================================');
+
+      // ✅ VALIDATE REQUIRED FIELDS
+      if (!notification.order_id || !notification.transaction_status || !notification.gross_amount || !notification.signature_key) {
+        this.logger.error('❌ Missing required webhook fields!');
+        throw new BadRequestException('Missing required webhook fields');
+      }
 
       const notificationData = this.dtoToPlainObject(notification);
 
@@ -207,7 +213,7 @@ export class PaymentService {
 
       const orderId = notification.order_id;
       const transactionStatus = notification.transaction_status;
-      const fraudStatus = notification.fraud_status;
+      const fraudStatus = notification.fraud_status || 'accept'; // ✅ Default value
 
       // ✅ FIND TRANSACTION
       const depositSnapshot = await db
@@ -271,6 +277,7 @@ export class PaymentService {
       throw error;
     }
   }
+
 
   private dtoToPlainObject(dto: MidtransWebhookDto): any {
     return {
@@ -421,6 +428,16 @@ export class PaymentService {
     const grossAmount = notification.gross_amount;
     const signatureKey = notification.signature_key;
 
+    // ✅ LOG DETAIL UNTUK DEBUG
+    this.logger.log('🔐 ========================================');
+    this.logger.log('🔐 VERIFYING SIGNATURE');
+    this.logger.log('🔐 ========================================');
+    this.logger.log(`   Order ID: ${orderId}`);
+    this.logger.log(`   Status Code: ${statusCode}`);
+    this.logger.log(`   Gross Amount: ${grossAmount}`);
+    this.logger.log(`   Server Key: ${serverKey ? serverKey.substring(0, 10) + '...' : 'MISSING'}`);
+    this.logger.log(`   Signature String: ${orderId}${statusCode}${grossAmount}${serverKey}`);
+
     const hash = crypto
       .createHash('sha512')
       .update(`${orderId}${statusCode}${grossAmount}${serverKey}`)
@@ -432,10 +449,16 @@ export class PaymentService {
       this.logger.error('❌ SIGNATURE MISMATCH!');
       this.logger.error(`   Expected: ${hash}`);
       this.logger.error(`   Received: ${signatureKey}`);
+    } else {
+      this.logger.log('✅ Signature valid!');
     }
+
+    this.logger.log('🔐 ========================================');
 
     return isValid;
   }
+
+
 
   async getUserDeposits(userId: string) {
     const db = this.firebaseService.getFirestore();

@@ -6,6 +6,7 @@ export class MidtransWebhookDto {
     example: '2024-01-26 10:30:00',
     description: 'Transaction time from Midtrans'
   })
+  @IsOptional()
   @IsString()
   transaction_time: string;
 
@@ -13,6 +14,7 @@ export class MidtransWebhookDto {
     example: 'settlement',
     description: 'Transaction status: capture, settlement, pending, deny, cancel, expire'
   })
+  @IsOptional()
   @IsString()
   transaction_status: string;
 
@@ -20,6 +22,7 @@ export class MidtransWebhookDto {
     example: 'abc123xyz',
     description: 'Unique transaction ID from Midtrans'
   })
+  @IsOptional()
   @IsString()
   transaction_id: string;
 
@@ -27,6 +30,7 @@ export class MidtransWebhookDto {
     example: 'midtrans payment notification',
     description: 'Status message from Midtrans'
   })
+  @IsOptional()
   @IsString()
   status_message: string;
 
@@ -34,6 +38,7 @@ export class MidtransWebhookDto {
     example: '200',
     description: 'HTTP status code'
   })
+  @IsOptional()
   @IsString()
   status_code: string;
 
@@ -41,6 +46,7 @@ export class MidtransWebhookDto {
     example: 'abc123...',
     description: 'SHA512 signature for verification'
   })
+  @IsOptional()
   @IsString()
   signature_key: string;
 
@@ -48,6 +54,7 @@ export class MidtransWebhookDto {
     example: 'gopay',
     description: 'Payment method: credit_card, gopay, bank_transfer, etc'
   })
+  @IsOptional()
   @IsString()
   payment_type: string;
 
@@ -55,6 +62,7 @@ export class MidtransWebhookDto {
     example: 'DEPOSIT-123-1234567890',
     description: 'Order ID from your system'
   })
+  @IsOptional()
   @IsString()
   order_id: string;
 
@@ -62,6 +70,7 @@ export class MidtransWebhookDto {
     example: 'G933954115',
     description: 'Your Midtrans merchant ID'
   })
+  @IsOptional()
   @IsString()
   merchant_id: string;
 
@@ -69,6 +78,7 @@ export class MidtransWebhookDto {
     example: '100000',
     description: 'Transaction amount'
   })
+  @IsOptional()
   @IsString()
   gross_amount: string;
 
@@ -103,4 +113,7 @@ export class MidtransWebhookDto {
   @IsOptional()
   @IsString()
   settlement_time?: string;
+
+  // ✅ Allow any additional fields from Midtrans
+  [key: string]: any;
 }

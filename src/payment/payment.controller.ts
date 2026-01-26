@@ -1,6 +1,4 @@
-// src/payment/payment.controller.ts - FIXED VERSION
-
-import { Controller, Post, Get, Body, Param, UseGuards, Headers } from '@nestjs/common';
+import { Controller, Post, Get, Body, Param, UseGuards, Headers, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiResponse, ApiBody, ApiExcludeEndpoint } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/user.decorator';
@@ -57,6 +55,12 @@ export class PaymentController {
   // ============================================
 
   @Post('webhook/midtrans')
+  @UsePipes(new ValidationPipe({
+    whitelist: false,           // ✅ Allow extra fields
+    forbidNonWhitelisted: false, // ✅ Don't throw on extra fields
+    transform: true,
+    skipMissingProperties: true, // ✅ Skip if fields missing
+  }))
   @ApiOperation({ 
     summary: 'Midtrans webhook handler',
     description: 'Receive payment notifications from Midtrans. This endpoint is PUBLIC and does not require authentication.'
@@ -158,7 +162,7 @@ export class PaymentController {
   // ============================================
 
   @Post('webhook/test/:orderId')
-  @ApiExcludeEndpoint() // Hide from Swagger in production
+  @ApiExcludeEndpoint()
   @ApiOperation({ 
     summary: '[DEV] Test webhook manually',
     description: 'Simulate Midtrans webhook for testing purposes'
@@ -213,3 +217,4 @@ export class PaymentController {
     return this.paymentService.handleWebhook(mockNotification);
   }
 }
+

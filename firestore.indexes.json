@@ -154,7 +154,6 @@
         { "fieldPath": "status", "order": "ASCENDING" }
       ]
     },
-    
     {
       "collectionGroup": "withdrawal_requests",
       "queryScope": "COLLECTION",
@@ -212,7 +211,16 @@
         { "fieldPath": "order_id", "order": "ASCENDING" },
         { "fieldPath": "user_id", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "deposit_transactions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []
 }
+
