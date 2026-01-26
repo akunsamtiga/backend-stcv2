@@ -230,33 +230,35 @@ export class BalanceService {
     }
   }
 
-  async createBalanceEntry(
-    userId: string, 
-    createBalanceDto: CreateBalanceDto, 
-    critical = true
-  ) {
-    const startTime = Date.now();
-    const { accountType, amount, type } = createBalanceDto;
-    const lockKey = `${userId}_${accountType}`;
-    
-    try {
-      if (accountType !== BALANCE_ACCOUNT_TYPE.REAL && accountType !== BALANCE_ACCOUNT_TYPE.DEMO) {
-        throw new BadRequestException('Invalid account type. Must be "real" or "demo"');
-      }
+async createBalanceEntry(
+  userId: string, 
+  createBalanceDto: CreateBalanceDto, 
+  critical = true,
+  fromMidtrans = false, // ✅ ADD THIS
+) {
+  const startTime = Date.now();
+  const { accountType, amount, type } = createBalanceDto;
+  const lockKey = `${userId}_${accountType}`;
+  
+  try {
+    if (accountType !== BALANCE_ACCOUNT_TYPE.REAL && accountType !== BALANCE_ACCOUNT_TYPE.DEMO) {
+      throw new BadRequestException('Invalid account type. Must be "real" or "demo"');
+    }
 
-      if (type === BALANCE_TYPES.WITHDRAWAL && accountType === BALANCE_ACCOUNT_TYPE.REAL) {
-        throw new BadRequestException(
-          'Direct withdrawal not allowed for real account. Please use withdrawal request endpoint: POST /balance/withdrawal/request'
-        );
-      }
+    if (type === BALANCE_TYPES.WITHDRAWAL && accountType === BALANCE_ACCOUNT_TYPE.REAL) {
+      throw new BadRequestException(
+        'Direct withdrawal not allowed for real account. Please use withdrawal request endpoint: POST /balance/withdrawal/request'
+      );
+    }
 
-      if (type === BALANCE_TYPES.DEPOSIT && accountType === BALANCE_ACCOUNT_TYPE.REAL) {
-        throw new BadRequestException(
-          'Direct deposit not allowed for real account. Please use Midtrans payment: POST /payment/deposit'
-        );
-      }
+    // ✅ CHANGE THIS CHECK - Add && !fromMidtrans
+    if (type === BALANCE_TYPES.DEPOSIT && accountType === BALANCE_ACCOUNT_TYPE.REAL && !fromMidtrans) {
+      throw new BadRequestException(
+        'Direct deposit not allowed for real account. Please use Midtrans payment: POST /payment/deposit'
+      );
+    }
 
-      await this.acquireTransactionLock(userId, accountType);
+    await this.acquireTransactionLock(userId, accountType);
       
       const operationPromise = (async () => {
         try {

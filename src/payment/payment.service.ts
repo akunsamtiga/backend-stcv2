@@ -307,55 +307,60 @@ export class PaymentService {
   }
 
   private async processSuccessfulDeposit(
-    deposit: DepositTransaction,
-    notificationData: any, // ✅ Changed from MidtransWebhookDto to any (plain object)
-  ) {
-    const db = this.firebaseService.getFirestore();
-    const timestamp = new Date().toISOString();
+  deposit: DepositTransaction,
+  notificationData: any,
+) {
+  const db = this.firebaseService.getFirestore();
+  const timestamp = new Date().toISOString();
 
-    try {
-      // ✅ FIX: Use plain object instead of DTO instance
-      await db.collection('deposit_transactions').doc(deposit.id).update({
-        status: 'success',
-        transaction_id: notificationData.transaction_id,
-        payment_type: notificationData.payment_type,
-        completedAt: timestamp,
-        updatedAt: timestamp,
-        midtrans_response: notificationData, // ✅ Plain object, not DTO
-      });
+  try {
+    // Step 1: Update deposit status
+    await db.collection('deposit_transactions').doc(deposit.id).update({
+      status: 'success',
+      transaction_id: notificationData.transaction_id,
+      payment_type: notificationData.payment_type,
+      completedAt: timestamp,
+      updatedAt: timestamp,
+      midtrans_response: notificationData,
+    });
 
-      await this.balanceService.createBalanceEntry(
-        deposit.user_id,
-        {
-          accountType: BALANCE_ACCOUNT_TYPE.REAL,
-          type: BALANCE_TYPES.DEPOSIT,
-          amount: deposit.amount,
-          description: `Credit via ${notificationData.payment_type} - ${deposit.order_id}`,
-        },
-        true
-      );
+    // Step 2: Create balance entry
+    // ✅ CHANGE THIS - Add 4th parameter: true
+    await this.balanceService.createBalanceEntry(
+      deposit.user_id,
+      {
+        accountType: BALANCE_ACCOUNT_TYPE.REAL,
+        type: BALANCE_TYPES.DEPOSIT,
+        amount: deposit.amount,
+        description: `Credit via ${notificationData.payment_type} - ${deposit.order_id}`,
+      },
+      true,  // critical
+      true   // ✅ ADD THIS: fromMidtrans = true
+    );
 
-      const statusUpdate = await this.userStatusService.updateUserStatus(deposit.user_id);
-      
-      if (statusUpdate.changed) {
-        this.logger.log(
-          `🎉 User status upgraded: ${statusUpdate.oldStatus.toUpperCase()} → ${statusUpdate.newStatus.toUpperCase()}`
-        );
-      }
-
+    // Step 3: Update user status
+    const statusUpdate = await this.userStatusService.updateUserStatus(deposit.user_id);
+    
+    if (statusUpdate.changed) {
       this.logger.log(
-        `✅ Payment SUCCESS: ${deposit.order_id}\n` +
-        `   User: ${deposit.userEmail}\n` +
-        `   Amount: Rp ${deposit.amount.toLocaleString()}\n` +
-        `   Payment: ${notificationData.payment_type}\n` +
-        `   Status Upgrade: ${statusUpdate.changed ? 'YES' : 'NO'}`
+        `🎉 User status upgraded: ${statusUpdate.oldStatus.toUpperCase()} → ${statusUpdate.newStatus.toUpperCase()}`
       );
-
-    } catch (error) {
-      this.logger.error(`❌ processSuccessfulDeposit error: ${error.message}`);
-      throw error;
     }
+
+    this.logger.log(
+      `✅ Payment SUCCESS: ${deposit.order_id}\n` +
+      `   User: ${deposit.userEmail}\n` +
+      `   Amount: Rp ${deposit.amount.toLocaleString()}\n` +
+      `   Payment: ${notificationData.payment_type}\n` +
+      `   Status Upgrade: ${statusUpdate.changed ? 'YES' : 'NO'}`
+    );
+
+  } catch (error) {
+    this.logger.error(`❌ processSuccessfulDeposit error: ${error.message}`);
+    throw error;
   }
+}
+
 
   private async processFailedDeposit(
     deposit: DepositTransaction,
