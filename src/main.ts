@@ -5,14 +5,13 @@ import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { Request, Response, NextFunction } from 'express';
 import helmet from 'helmet';
 import * as compression from 'compression';
-import { IoAdapter } from '@nestjs/platform-socket.io'; // 🔥 NEW
+import { IoAdapter } from '@nestjs/platform-socket.io';
 import { AppModule } from './app.module';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 import { TimezoneUtil } from './common/utils';
 
-// 🔥 Set timezone
 process.env.TZ = 'Asia/Jakarta';
 
 async function bootstrap() {
@@ -34,11 +33,9 @@ async function bootstrap() {
   logger.log('🌍 ================================================');
   logger.log('');
 
-  // 🔥 NEW: WebSocket Adapter
   app.useWebSocketAdapter(new IoAdapter(app));
   logger.log('✅ WebSocket Adapter initialized');
 
-  // Timeout middleware
   app.use((req: Request, res: Response, next: NextFunction) => {
     const path = req.path;
     
@@ -75,14 +72,12 @@ async function bootstrap() {
     next();
   });
 
-  // Keep-Alive headers
   app.use((req: Request, res: Response, next: NextFunction) => {
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('Keep-Alive', 'timeout=60, max=1000');
     next();
   });
 
-  // CORS preflight
   app.use((req: Request, res: Response, next: NextFunction) => {
     if (req.method === 'OPTIONS') {
       res.status(200).end();
@@ -91,13 +86,11 @@ async function bootstrap() {
     next();
   });
 
-  // Security middleware
   app.use(helmet({
     contentSecurityPolicy: false,
     crossOriginEmbedderPolicy: false,
   }));
 
-  // Compression
   app.use(compression({
     level: 6,
     threshold: 512,
@@ -109,7 +102,6 @@ async function bootstrap() {
     },
   }));
 
-  // Global validation
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -127,21 +119,22 @@ async function bootstrap() {
 
   const nodeEnv = configService.get('nodeEnv');
   
-  // Logging interceptor hanya di development
   if (nodeEnv === 'development') {
     app.useGlobalInterceptors(new LoggingInterceptor());
   }
   
-  // Response interceptor
   app.useGlobalInterceptors(new ResponseInterceptor());
-  
-  // Exception filter
   app.useGlobalFilters(new AllExceptionsFilter());
 
-  // CORS configuration
   const corsOrigin = configService.get('cors.origin');
   app.enableCors({
-    origin: corsOrigin,
+    origin: [
+      ...(Array.isArray(corsOrigin) ? corsOrigin : [corsOrigin]),
+      'https://app.midtrans.com',
+      'https://app.sandbox.midtrans.com',
+      'https://api.midtrans.com',
+      'https://api.sandbox.midtrans.com',
+    ],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
@@ -151,12 +144,10 @@ async function bootstrap() {
     optionsSuccessStatus: 204,
   });
 
-  // Global prefix
   const apiPrefix = configService.get('apiPrefix');
   const apiVersion = configService.get('apiVersion');
   app.setGlobalPrefix(`${apiPrefix}/${apiVersion}`);
 
-  // Swagger (hanya di non-production)
   if (nodeEnv !== 'production') {
     const config = new DocumentBuilder()
       .setTitle('Binary Option Trading API')
@@ -169,6 +160,7 @@ async function bootstrap() {
       .addTag('assets', 'Trading assets')
       .addTag('binary-orders', 'Binary option orders (ULTRA-FAST)')
       .addTag('admin', 'Admin management')
+      .addTag('payment', 'Payment & Deposit (Midtrans)')
       .addTag('health', 'Health & Performance')
       .addTag('websocket', 'Real-time WebSocket Events')
       .build();
@@ -185,7 +177,6 @@ async function bootstrap() {
 
   const port = configService.get('port');
   
-  // Start server
   await app.listen(port, '0.0.0.0', () => {
     logger.log('');
     logger.log('⚡ ================================================');
@@ -205,6 +196,10 @@ async function bootstrap() {
     logger.log(`⚡   • Simulator: Asia/Jakarta (WIB = UTC+7)`);
     logger.log(`⚡   • Current: ${TimezoneUtil.formatDateTime()}`);
     logger.log('⚡ ================================================');
+    logger.log('⚡ PAYMENT GATEWAY:');
+    logger.log(`⚡   • Midtrans: ${configService.get('midtrans.isProduction') ? 'PRODUCTION' : 'SANDBOX'}`);
+    logger.log(`⚡   • Webhook: /${apiPrefix}/${apiVersion}/payment/webhook/midtrans`);
+    logger.log('⚡ ================================================');
     logger.log('⚡ PERFORMANCE OPTIMIZATIONS:');
     logger.log('⚡   • Order Creation: < 300ms target');
     logger.log('⚡   • Price Fetch: < 100ms target');
@@ -214,7 +209,7 @@ async function bootstrap() {
     logger.log('⚡   • 15-connection pool');
     logger.log('⚡ ================================================');
     logger.log('⚡ WEBSOCKET ENDPOINTS:');
-    logger.log('⚡   • Connection: ws://localhost:3000');
+    logger.log(`⚡   • Connection: ws://localhost:${port}`);
     logger.log('⚡   • Auth: JWT token in handshake');
     logger.log('⚡   • Events: price:update, order:update');
     logger.log('⚡ ================================================');
@@ -227,7 +222,6 @@ async function bootstrap() {
     logger.log('');
   });
 
-  // Graceful shutdown
   process.on('SIGTERM', async () => {
     logger.log('⚠️ SIGTERM received, shutting down gracefully...');
     await app.close();

@@ -1,4 +1,4 @@
-// src/payment/payment.service.ts - FINAL FIX
+// src/payment/payment.service.ts - ENHANCED VERSION
 
 import { Injectable, Logger, BadRequestException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -55,14 +55,11 @@ export class PaymentService {
 
       if (!serverKey || !clientKey) {
         this.logger.error('❌ Midtrans configuration missing!');
-        this.logger.error('Please set MIDTRANS_SERVER_KEY and MIDTRANS_CLIENT_KEY in .env');
         throw new Error('Midtrans configuration incomplete');
       }
 
       this.logger.log('🔧 Initializing Midtrans...');
       this.logger.log(`   Mode: ${isProduction ? 'PRODUCTION' : 'SANDBOX'}`);
-      this.logger.log(`   Server Key: ${serverKey.substring(0, 10)}...`);
-      this.logger.log(`   Client Key: ${clientKey.substring(0, 10)}...`);
 
       this.snap = new midtransClient.Snap({
         isProduction,
@@ -76,7 +73,7 @@ export class PaymentService {
         clientKey,
       });
 
-      this.logger.log(`✅ Midtrans initialized (${isProduction ? 'PRODUCTION' : 'SANDBOX'})`);
+      this.logger.log(`✅ Midtrans initialized`);
     } catch (error) {
       this.logger.error('❌ Failed to initialize Midtrans:', error.message);
       throw error;
@@ -87,13 +84,9 @@ export class PaymentService {
     const db = this.firebaseService.getFirestore();
 
     try {
-      this.logger.log('🔥 Processing transaction request...');
+      this.logger.log('🔥 Creating deposit transaction...');
       this.logger.log(`   User: ${userId}`);
       this.logger.log(`   Amount: Rp ${createDepositDto.amount.toLocaleString()}`);
-
-      if (!this.snap || !this.coreApi) {
-        throw new Error('Payment service not initialized. Please contact support.');
-      }
 
       const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
       if (!userDoc.exists) {
@@ -103,15 +96,12 @@ export class PaymentService {
       const user = userDoc.data() as User;
       
       if (!user.email) {
-        throw new BadRequestException('User email is required for transaction');
+        throw new BadRequestException('User email is required');
       }
 
-      this.logger.log(`   Email: ${user.email}`);
-
       const timestamp = Date.now();
-      
       const randomCode = Math.random().toString(36).substring(2, 6).toUpperCase();
-      const orderId = `TRX-${userId.substring(0, 6)}${randomCode}-${timestamp}`;
+      const orderId = `DEPOSIT-${userId.substring(0, 6)}-${timestamp}`;
 
       const depositId = await this.firebaseService.generateId('deposit_transactions');
       const depositTransaction: DepositTransaction = {
@@ -120,7 +110,7 @@ export class PaymentService {
         order_id: orderId,
         amount: createDepositDto.amount,
         status: 'pending',
-        description: createDepositDto.description || 'Credit top-up',
+        description: createDepositDto.description || 'Deposit to real account',
         userEmail: user.email,
         userName: user.profile?.fullName,
         createdAt: new Date().toISOString(),
@@ -144,10 +134,10 @@ export class PaymentService {
         },
         item_details: [
           {
-            id: `PKG${Math.floor(Math.random() * 900) + 100}`,
+            id: 'REAL_DEPOSIT',
             price: createDepositDto.amount,
             quantity: 1,
-            name: 'Pembelian Paket Digital',
+            name: 'Real Account Deposit',
           },
         ],
         callbacks: {
@@ -157,31 +147,8 @@ export class PaymentService {
         },
       };
 
-      this.logger.log('📄 Creating payment transaction...');
-      this.logger.log(`   Order ID: ${orderId}`);
-      this.logger.log(`   Amount: Rp ${createDepositDto.amount.toLocaleString()}`);
-
-      let transaction: any;
-      try {
-        transaction = await this.snap.createTransaction(parameter);
-        this.logger.log('✅ Payment transaction created successfully');
-      } catch (midtransError: any) {
-        this.logger.error('❌ Midtrans API Error:', midtransError.message);
-        this.logger.error('   Response:', JSON.stringify(midtransError.ApiResponse || {}));
-        
-        await db.collection('deposit_transactions').doc(depositId).update({
-          status: 'failed',
-          updatedAt: new Date().toISOString(),
-          midtrans_response: {
-            error: midtransError.message,
-            response: midtransError.ApiResponse,
-          },
-        });
-
-        throw new BadRequestException(
-          `Payment gateway error: ${midtransError.message || 'Failed to create payment'}`
-        );
-      }
+      this.logger.log('📄 Creating Snap transaction...');
+      const transaction = await this.snap.createTransaction(parameter);
 
       await db.collection('deposit_transactions').doc(depositId).update({
         snap_token: transaction.token,
@@ -190,12 +157,10 @@ export class PaymentService {
         midtrans_response: transaction,
       });
 
-      this.logger.log(
-        `✅ Transaction created: ${orderId} - User: ${userId} - Amount: Rp ${createDepositDto.amount.toLocaleString()}`
-      );
+      this.logger.log(`✅ Deposit created: ${orderId}`);
 
       return {
-        message: 'Transaction created successfully',
+        message: 'Deposit transaction created successfully',
         deposit: {
           id: depositId,
           order_id: orderId,
@@ -208,42 +173,43 @@ export class PaymentService {
 
     } catch (error: any) {
       this.logger.error(`❌ createDeposit error: ${error.message}`);
-      this.logger.error(`   Stack: ${error.stack}`);
       throw error;
     }
   }
 
   private getFrontendUrl(): string {
-    const frontendUrl = this.configService.get('frontend.url');
-    
-    if (!frontendUrl) {
-      this.logger.warn('⚠️ FRONTEND_URL not configured, using fallback');
-      return 'http://localhost:3000';
-    }
-    
-    this.logger.log(`🔗 Frontend URL: ${frontendUrl}`);
-    return frontendUrl;
+    return this.configService.get('frontend.url') || 'http://localhost:3000';
   }
 
   async handleWebhook(notification: MidtransWebhookDto) {
     const db = this.firebaseService.getFirestore();
 
     try {
-      // ✅ FIX: Convert DTO to plain object immediately
+      // ✅ LOG WEBHOOK RECEIVED
+      this.logger.log('🔔 ========================================');
+      this.logger.log('🔔 MIDTRANS WEBHOOK RECEIVED');
+      this.logger.log('🔔 ========================================');
+      this.logger.log(`   Order ID: ${notification.order_id}`);
+      this.logger.log(`   Transaction Status: ${notification.transaction_status}`);
+      this.logger.log(`   Payment Type: ${notification.payment_type}`);
+      this.logger.log(`   Gross Amount: ${notification.gross_amount}`);
+      this.logger.log(`   Transaction ID: ${notification.transaction_id}`);
+      this.logger.log('🔔 ========================================');
+
       const notificationData = this.dtoToPlainObject(notification);
 
+      // ✅ VERIFY SIGNATURE
       if (!this.verifySignature(notification)) {
+        this.logger.error('❌ Invalid signature!');
         throw new BadRequestException('Invalid signature');
       }
+      this.logger.log('✅ Signature verified');
 
       const orderId = notification.order_id;
       const transactionStatus = notification.transaction_status;
       const fraudStatus = notification.fraud_status;
 
-      this.logger.log(
-        `🔥 Webhook received: ${orderId} - Status: ${transactionStatus}`
-      );
-
+      // ✅ FIND TRANSACTION
       const depositSnapshot = await db
         .collection('deposit_transactions')
         .where('order_id', '==', orderId)
@@ -251,42 +217,61 @@ export class PaymentService {
         .get();
 
       if (depositSnapshot.empty) {
+        this.logger.error(`❌ Transaction not found: ${orderId}`);
         throw new NotFoundException(`Transaction not found: ${orderId}`);
       }
 
       const depositDoc = depositSnapshot.docs[0];
       const deposit = depositDoc.data() as DepositTransaction;
 
+      this.logger.log(`📦 Transaction found: ${deposit.id}`);
+      this.logger.log(`   User: ${deposit.user_id}`);
+      this.logger.log(`   Amount: Rp ${deposit.amount.toLocaleString()}`);
+      this.logger.log(`   Current Status: ${deposit.status}`);
+
+      // ✅ CHECK IF ALREADY PROCESSED
       if (deposit.status === 'success') {
         this.logger.warn(`⚠️ Duplicate webhook: ${orderId} already processed`);
         return { message: 'Transaction already processed' };
       }
 
+      // ✅ PROCESS BASED ON STATUS
       if (transactionStatus === 'capture') {
         if (fraudStatus === 'accept') {
+          this.logger.log('✅ Processing CAPTURE (fraud: accept)');
           await this.processSuccessfulDeposit(deposit, notificationData);
+        } else {
+          this.logger.warn(`⚠️ Fraud status: ${fraudStatus}`);
         }
       } else if (transactionStatus === 'settlement') {
+        this.logger.log('✅ Processing SETTLEMENT');
         await this.processSuccessfulDeposit(deposit, notificationData);
       } else if (
         transactionStatus === 'cancel' ||
         transactionStatus === 'deny' ||
         transactionStatus === 'expire'
       ) {
+        this.logger.log(`❌ Processing FAILED: ${transactionStatus}`);
         await this.processFailedDeposit(deposit, notificationData);
       } else if (transactionStatus === 'pending') {
+        this.logger.log('⏳ Processing PENDING');
         await this.processPendingDeposit(deposit, notificationData);
       }
+
+      this.logger.log('🔔 ========================================');
+      this.logger.log('🔔 WEBHOOK PROCESSING COMPLETE');
+      this.logger.log('🔔 ========================================');
 
       return { message: 'Webhook processed successfully' };
 
     } catch (error) {
+      this.logger.error('🔔 ========================================');
       this.logger.error(`❌ handleWebhook error: ${error.message}`);
+      this.logger.error('🔔 ========================================');
       throw error;
     }
   }
 
-  // ✅ NEW: Helper function to convert DTO to plain object
   private dtoToPlainObject(dto: MidtransWebhookDto): any {
     return {
       transaction_time: dto.transaction_time,
@@ -307,64 +292,80 @@ export class PaymentService {
   }
 
   private async processSuccessfulDeposit(
-  deposit: DepositTransaction,
-  notificationData: any,
-) {
-  const db = this.firebaseService.getFirestore();
-  const timestamp = new Date().toISOString();
+    deposit: DepositTransaction,
+    notificationData: any,
+  ) {
+    const db = this.firebaseService.getFirestore();
+    const timestamp = new Date().toISOString();
 
-  try {
-    // Step 1: Update deposit status
-    await db.collection('deposit_transactions').doc(deposit.id).update({
-      status: 'success',
-      transaction_id: notificationData.transaction_id,
-      payment_type: notificationData.payment_type,
-      completedAt: timestamp,
-      updatedAt: timestamp,
-      midtrans_response: notificationData,
-    });
+    try {
+      this.logger.log('💰 ========================================');
+      this.logger.log('💰 PROCESSING SUCCESSFUL DEPOSIT');
+      this.logger.log('💰 ========================================');
+      this.logger.log(`   Order ID: ${deposit.order_id}`);
+      this.logger.log(`   User ID: ${deposit.user_id}`);
+      this.logger.log(`   Amount: Rp ${deposit.amount.toLocaleString()}`);
+      this.logger.log(`   Payment Type: ${notificationData.payment_type}`);
 
-    // Step 2: Create balance entry
-    // ✅ CHANGE THIS - Add 4th parameter: true
-    await this.balanceService.createBalanceEntry(
-      deposit.user_id,
-      {
-        accountType: BALANCE_ACCOUNT_TYPE.REAL,
-        type: BALANCE_TYPES.DEPOSIT,
-        amount: deposit.amount,
-        description: `Credit via ${notificationData.payment_type} - ${deposit.order_id}`,
-      },
-      true,  // critical
-      true   // ✅ ADD THIS: fromMidtrans = true
-    );
+      // Step 1: Update deposit status
+      this.logger.log('📝 Step 1: Updating deposit transaction status...');
+      await db.collection('deposit_transactions').doc(deposit.id).update({
+        status: 'success',
+        transaction_id: notificationData.transaction_id,
+        payment_type: notificationData.payment_type,
+        completedAt: timestamp,
+        updatedAt: timestamp,
+        midtrans_response: notificationData,
+      });
+      this.logger.log('✅ Deposit status updated to SUCCESS');
 
-    // Step 3: Update user status
-    const statusUpdate = await this.userStatusService.updateUserStatus(deposit.user_id);
-    
-    if (statusUpdate.changed) {
-      this.logger.log(
-        `🎉 User status upgraded: ${statusUpdate.oldStatus.toUpperCase()} → ${statusUpdate.newStatus.toUpperCase()}`
+      // Step 2: Create balance entry
+      this.logger.log('💵 Step 2: Creating balance entry...');
+      await this.balanceService.createBalanceEntry(
+        deposit.user_id,
+        {
+          accountType: BALANCE_ACCOUNT_TYPE.REAL,
+          type: BALANCE_TYPES.DEPOSIT,
+          amount: deposit.amount,
+          description: `Deposit via ${notificationData.payment_type} - ${deposit.order_id}`,
+        },
+        true,  // critical
+        true   // fromMidtrans = true
       );
+      this.logger.log('✅ Balance entry created');
+
+      // Step 3: Update user status
+      this.logger.log('👤 Step 3: Updating user status...');
+      const statusUpdate = await this.userStatusService.updateUserStatus(deposit.user_id);
+      
+      if (statusUpdate.changed) {
+        this.logger.log(
+          `🎉 User status upgraded: ${statusUpdate.oldStatus.toUpperCase()} → ${statusUpdate.newStatus.toUpperCase()}`
+        );
+      } else {
+        this.logger.log(`ℹ️ User status unchanged: ${statusUpdate.newStatus.toUpperCase()}`);
+      }
+
+      this.logger.log('💰 ========================================');
+      this.logger.log('💰 DEPOSIT SUCCESS COMPLETE!');
+      this.logger.log('💰 ========================================');
+      this.logger.log(`   User: ${deposit.userEmail}`);
+      this.logger.log(`   Amount: Rp ${deposit.amount.toLocaleString()}`);
+      this.logger.log(`   Payment: ${notificationData.payment_type}`);
+      this.logger.log(`   Status Upgrade: ${statusUpdate.changed ? 'YES ✅' : 'NO'}`);
+      this.logger.log('💰 ========================================');
+
+    } catch (error) {
+      this.logger.error('💰 ========================================');
+      this.logger.error(`❌ processSuccessfulDeposit error: ${error.message}`);
+      this.logger.error('💰 ========================================');
+      throw error;
     }
-
-    this.logger.log(
-      `✅ Payment SUCCESS: ${deposit.order_id}\n` +
-      `   User: ${deposit.userEmail}\n` +
-      `   Amount: Rp ${deposit.amount.toLocaleString()}\n` +
-      `   Payment: ${notificationData.payment_type}\n` +
-      `   Status Upgrade: ${statusUpdate.changed ? 'YES' : 'NO'}`
-    );
-
-  } catch (error) {
-    this.logger.error(`❌ processSuccessfulDeposit error: ${error.message}`);
-    throw error;
   }
-}
-
 
   private async processFailedDeposit(
     deposit: DepositTransaction,
-    notificationData: any, // ✅ Plain object
+    notificationData: any,
   ) {
     const db = this.firebaseService.getFirestore();
     const timestamp = new Date().toISOString();
@@ -375,7 +376,7 @@ export class PaymentService {
         transaction_id: notificationData.transaction_id,
         payment_type: notificationData.payment_type,
         updatedAt: timestamp,
-        midtrans_response: notificationData, // ✅ Plain object
+        midtrans_response: notificationData,
       });
 
       this.logger.log(
@@ -393,7 +394,7 @@ export class PaymentService {
 
   private async processPendingDeposit(
     deposit: DepositTransaction,
-    notificationData: any, // ✅ Plain object
+    notificationData: any,
   ) {
     const db = this.firebaseService.getFirestore();
 
@@ -402,7 +403,7 @@ export class PaymentService {
         transaction_id: notificationData.transaction_id,
         payment_type: notificationData.payment_type,
         updatedAt: new Date().toISOString(),
-        midtrans_response: notificationData, // ✅ Plain object
+        midtrans_response: notificationData,
       });
 
       this.logger.log(`⏳ Payment PENDING: ${deposit.order_id}`);
@@ -425,7 +426,15 @@ export class PaymentService {
       .update(`${orderId}${statusCode}${grossAmount}${serverKey}`)
       .digest('hex');
 
-    return hash === signatureKey;
+    const isValid = hash === signatureKey;
+    
+    if (!isValid) {
+      this.logger.error('❌ SIGNATURE MISMATCH!');
+      this.logger.error(`   Expected: ${hash}`);
+      this.logger.error(`   Received: ${signatureKey}`);
+    }
+
+    return isValid;
   }
 
   async getUserDeposits(userId: string) {
