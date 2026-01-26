@@ -1,3 +1,5 @@
+// src/payment/payment.service.ts - FINAL FIX
+
 import { Injectable, Logger, BadRequestException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as crypto from 'crypto';
@@ -108,7 +110,6 @@ export class PaymentService {
 
       const timestamp = Date.now();
       
-      // ✅ UBAH: Generate Order ID yang samar (tanpa kata DEPOSIT)
       const randomCode = Math.random().toString(36).substring(2, 6).toUpperCase();
       const orderId = `TRX-${userId.substring(0, 6)}${randomCode}-${timestamp}`;
 
@@ -119,7 +120,7 @@ export class PaymentService {
         order_id: orderId,
         amount: createDepositDto.amount,
         status: 'pending',
-        description: createDepositDto.description || 'Credit top-up', // ✅ UBAH: Deskripsi internal
+        description: createDepositDto.description || 'Credit top-up',
         userEmail: user.email,
         userName: user.profile?.fullName,
         createdAt: new Date().toISOString(),
@@ -131,7 +132,6 @@ export class PaymentService {
       const customerName = user.profile?.fullName || user.email.split('@')[0];
       const customerPhone = user.profile?.phoneNumber || '081234567890';
       
-      // ✅ UBAH: Parameter Midtrans dengan nama yang lebih umum
       const parameter = {
         transaction_details: {
           order_id: orderId,
@@ -144,14 +144,14 @@ export class PaymentService {
         },
         item_details: [
           {
-            id: `PKG${Math.floor(Math.random() * 900) + 100}`, // ✅ UBAH: Contoh: PKG123
+            id: `PKG${Math.floor(Math.random() * 900) + 100}`,
             price: createDepositDto.amount,
             quantity: 1,
-            name: 'Pembelian Paket Digital', // ✅ UBAH: Nama umum, tanpa kata trading/deposit
+            name: 'Pembelian Paket Digital',
           },
         ],
         callbacks: {
-          finish: `${this.getFrontendUrl()}/payment/success`, // ✅ UBAH: URL callback umum
+          finish: `${this.getFrontendUrl()}/payment/success`,
           error: `${this.getFrontendUrl()}/payment/failed`,
           pending: `${this.getFrontendUrl()}/payment/pending`,
         },
@@ -221,7 +221,7 @@ export class PaymentService {
       return 'http://localhost:3000';
     }
     
-    this.logger.log(`📍 Frontend URL: ${frontendUrl}`);
+    this.logger.log(`🔗 Frontend URL: ${frontendUrl}`);
     return frontendUrl;
   }
 
@@ -229,6 +229,9 @@ export class PaymentService {
     const db = this.firebaseService.getFirestore();
 
     try {
+      // ✅ FIX: Convert DTO to plain object immediately
+      const notificationData = this.dtoToPlainObject(notification);
+
       if (!this.verifySignature(notification)) {
         throw new BadRequestException('Invalid signature');
       }
@@ -261,18 +264,18 @@ export class PaymentService {
 
       if (transactionStatus === 'capture') {
         if (fraudStatus === 'accept') {
-          await this.processSuccessfulDeposit(deposit, notification);
+          await this.processSuccessfulDeposit(deposit, notificationData);
         }
       } else if (transactionStatus === 'settlement') {
-        await this.processSuccessfulDeposit(deposit, notification);
+        await this.processSuccessfulDeposit(deposit, notificationData);
       } else if (
         transactionStatus === 'cancel' ||
         transactionStatus === 'deny' ||
         transactionStatus === 'expire'
       ) {
-        await this.processFailedDeposit(deposit, notification);
+        await this.processFailedDeposit(deposit, notificationData);
       } else if (transactionStatus === 'pending') {
-        await this.processPendingDeposit(deposit, notification);
+        await this.processPendingDeposit(deposit, notificationData);
       }
 
       return { message: 'Webhook processed successfully' };
@@ -283,21 +286,42 @@ export class PaymentService {
     }
   }
 
+  // ✅ NEW: Helper function to convert DTO to plain object
+  private dtoToPlainObject(dto: MidtransWebhookDto): any {
+    return {
+      transaction_time: dto.transaction_time,
+      transaction_status: dto.transaction_status,
+      transaction_id: dto.transaction_id,
+      status_message: dto.status_message,
+      status_code: dto.status_code,
+      signature_key: dto.signature_key,
+      payment_type: dto.payment_type,
+      order_id: dto.order_id,
+      merchant_id: dto.merchant_id,
+      gross_amount: dto.gross_amount,
+      fraud_status: dto.fraud_status,
+      currency: dto.currency,
+      acquirer: dto.acquirer,
+      settlement_time: dto.settlement_time,
+    };
+  }
+
   private async processSuccessfulDeposit(
     deposit: DepositTransaction,
-    notification: MidtransWebhookDto,
+    notificationData: any, // ✅ Changed from MidtransWebhookDto to any (plain object)
   ) {
     const db = this.firebaseService.getFirestore();
     const timestamp = new Date().toISOString();
 
     try {
+      // ✅ FIX: Use plain object instead of DTO instance
       await db.collection('deposit_transactions').doc(deposit.id).update({
         status: 'success',
-        transaction_id: notification.transaction_id,
-        payment_type: notification.payment_type,
+        transaction_id: notificationData.transaction_id,
+        payment_type: notificationData.payment_type,
         completedAt: timestamp,
         updatedAt: timestamp,
-        midtrans_response: notification,
+        midtrans_response: notificationData, // ✅ Plain object, not DTO
       });
 
       await this.balanceService.createBalanceEntry(
@@ -306,7 +330,7 @@ export class PaymentService {
           accountType: BALANCE_ACCOUNT_TYPE.REAL,
           type: BALANCE_TYPES.DEPOSIT,
           amount: deposit.amount,
-          description: `Credit via ${notification.payment_type} - ${deposit.order_id}`, // ✅ UBAH: Deskripsi umum
+          description: `Credit via ${notificationData.payment_type} - ${deposit.order_id}`,
         },
         true
       );
@@ -323,7 +347,7 @@ export class PaymentService {
         `✅ Payment SUCCESS: ${deposit.order_id}\n` +
         `   User: ${deposit.userEmail}\n` +
         `   Amount: Rp ${deposit.amount.toLocaleString()}\n` +
-        `   Payment: ${notification.payment_type}\n` +
+        `   Payment: ${notificationData.payment_type}\n` +
         `   Status Upgrade: ${statusUpdate.changed ? 'YES' : 'NO'}`
       );
 
@@ -335,7 +359,7 @@ export class PaymentService {
 
   private async processFailedDeposit(
     deposit: DepositTransaction,
-    notification: MidtransWebhookDto,
+    notificationData: any, // ✅ Plain object
   ) {
     const db = this.firebaseService.getFirestore();
     const timestamp = new Date().toISOString();
@@ -343,17 +367,17 @@ export class PaymentService {
     try {
       await db.collection('deposit_transactions').doc(deposit.id).update({
         status: 'failed',
-        transaction_id: notification.transaction_id,
-        payment_type: notification.payment_type,
+        transaction_id: notificationData.transaction_id,
+        payment_type: notificationData.payment_type,
         updatedAt: timestamp,
-        midtrans_response: notification,
+        midtrans_response: notificationData, // ✅ Plain object
       });
 
       this.logger.log(
         `❌ Payment FAILED: ${deposit.order_id}\n` +
         `   User: ${deposit.userEmail}\n` +
         `   Amount: Rp ${deposit.amount.toLocaleString()}\n` +
-        `   Reason: ${notification.transaction_status}`
+        `   Reason: ${notificationData.transaction_status}`
       );
 
     } catch (error) {
@@ -364,16 +388,16 @@ export class PaymentService {
 
   private async processPendingDeposit(
     deposit: DepositTransaction,
-    notification: MidtransWebhookDto,
+    notificationData: any, // ✅ Plain object
   ) {
     const db = this.firebaseService.getFirestore();
 
     try {
       await db.collection('deposit_transactions').doc(deposit.id).update({
-        transaction_id: notification.transaction_id,
-        payment_type: notification.payment_type,
+        transaction_id: notificationData.transaction_id,
+        payment_type: notificationData.payment_type,
         updatedAt: new Date().toISOString(),
-        midtrans_response: notification,
+        midtrans_response: notificationData, // ✅ Plain object
       });
 
       this.logger.log(`⏳ Payment PENDING: ${deposit.order_id}`);
