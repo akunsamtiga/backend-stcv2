@@ -85,7 +85,7 @@ export class PaymentService {
     const db = this.firebaseService.getFirestore();
 
     try {
-      this.logger.log('🔥 Processing deposit request...');
+      this.logger.log('🔥 Processing transaction request...');
       this.logger.log(`   User: ${userId}`);
       this.logger.log(`   Amount: Rp ${createDepositDto.amount.toLocaleString()}`);
 
@@ -101,13 +101,16 @@ export class PaymentService {
       const user = userDoc.data() as User;
       
       if (!user.email) {
-        throw new BadRequestException('User email is required for deposit');
+        throw new BadRequestException('User email is required for transaction');
       }
 
       this.logger.log(`   Email: ${user.email}`);
 
       const timestamp = Date.now();
-      const orderId = `DEPOSIT-${userId.substring(0, 8)}-${timestamp}`;
+      
+      // ✅ UBAH: Generate Order ID yang samar (tanpa kata DEPOSIT)
+      const randomCode = Math.random().toString(36).substring(2, 6).toUpperCase();
+      const orderId = `TRX-${userId.substring(0, 6)}${randomCode}-${timestamp}`;
 
       const depositId = await this.firebaseService.generateId('deposit_transactions');
       const depositTransaction: DepositTransaction = {
@@ -116,18 +119,19 @@ export class PaymentService {
         order_id: orderId,
         amount: createDepositDto.amount,
         status: 'pending',
-        description: createDepositDto.description || 'Deposit to real account',
+        description: createDepositDto.description || 'Credit top-up', // ✅ UBAH: Deskripsi internal
         userEmail: user.email,
         userName: user.profile?.fullName,
         createdAt: new Date().toISOString(),
       };
 
       await db.collection('deposit_transactions').doc(depositId).set(depositTransaction);
-      this.logger.log(`✅ Deposit record created: ${depositId}`);
+      this.logger.log(`✅ Transaction record created: ${depositId}`);
 
       const customerName = user.profile?.fullName || user.email.split('@')[0];
       const customerPhone = user.profile?.phoneNumber || '081234567890';
       
+      // ✅ UBAH: Parameter Midtrans dengan nama yang lebih umum
       const parameter = {
         transaction_details: {
           order_id: orderId,
@@ -140,27 +144,27 @@ export class PaymentService {
         },
         item_details: [
           {
-            id: 'DEPOSIT',
+            id: `PKG${Math.floor(Math.random() * 900) + 100}`, // ✅ UBAH: Contoh: PKG123
             price: createDepositDto.amount,
             quantity: 1,
-            name: 'Trading Account Deposit',
+            name: 'Pembelian Paket Digital', // ✅ UBAH: Nama umum, tanpa kata trading/deposit
           },
         ],
         callbacks: {
-          finish: `${this.getFrontendUrl()}/deposit/success`,
-          error: `${this.getFrontendUrl()}/deposit/failed`,
-          pending: `${this.getFrontendUrl()}/deposit/pending`,
+          finish: `${this.getFrontendUrl()}/payment/success`, // ✅ UBAH: URL callback umum
+          error: `${this.getFrontendUrl()}/payment/failed`,
+          pending: `${this.getFrontendUrl()}/payment/pending`,
         },
       };
 
-      this.logger.log('📄 Creating Midtrans transaction...');
+      this.logger.log('📄 Creating payment transaction...');
       this.logger.log(`   Order ID: ${orderId}`);
       this.logger.log(`   Amount: Rp ${createDepositDto.amount.toLocaleString()}`);
 
       let transaction: any;
       try {
         transaction = await this.snap.createTransaction(parameter);
-        this.logger.log('✅ Midtrans transaction created successfully');
+        this.logger.log('✅ Payment transaction created successfully');
       } catch (midtransError: any) {
         this.logger.error('❌ Midtrans API Error:', midtransError.message);
         this.logger.error('   Response:', JSON.stringify(midtransError.ApiResponse || {}));
@@ -187,11 +191,11 @@ export class PaymentService {
       });
 
       this.logger.log(
-        `✅ Deposit created: ${orderId} - User: ${userId} - Amount: Rp ${createDepositDto.amount.toLocaleString()}`
+        `✅ Transaction created: ${orderId} - User: ${userId} - Amount: Rp ${createDepositDto.amount.toLocaleString()}`
       );
 
       return {
-        message: 'Deposit transaction created successfully',
+        message: 'Transaction created successfully',
         deposit: {
           id: depositId,
           order_id: orderId,
@@ -244,7 +248,7 @@ export class PaymentService {
         .get();
 
       if (depositSnapshot.empty) {
-        throw new NotFoundException(`Deposit transaction not found: ${orderId}`);
+        throw new NotFoundException(`Transaction not found: ${orderId}`);
       }
 
       const depositDoc = depositSnapshot.docs[0];
@@ -302,7 +306,7 @@ export class PaymentService {
           accountType: BALANCE_ACCOUNT_TYPE.REAL,
           type: BALANCE_TYPES.DEPOSIT,
           amount: deposit.amount,
-          description: `Deposit via Midtrans - ${notification.payment_type} - ${deposit.order_id}`,
+          description: `Credit via ${notification.payment_type} - ${deposit.order_id}`, // ✅ UBAH: Deskripsi umum
         },
         true
       );
@@ -316,7 +320,7 @@ export class PaymentService {
       }
 
       this.logger.log(
-        `✅ Deposit SUCCESS: ${deposit.order_id}\n` +
+        `✅ Payment SUCCESS: ${deposit.order_id}\n` +
         `   User: ${deposit.userEmail}\n` +
         `   Amount: Rp ${deposit.amount.toLocaleString()}\n` +
         `   Payment: ${notification.payment_type}\n` +
@@ -346,7 +350,7 @@ export class PaymentService {
       });
 
       this.logger.log(
-        `❌ Deposit FAILED: ${deposit.order_id}\n` +
+        `❌ Payment FAILED: ${deposit.order_id}\n` +
         `   User: ${deposit.userEmail}\n` +
         `   Amount: Rp ${deposit.amount.toLocaleString()}\n` +
         `   Reason: ${notification.transaction_status}`
@@ -372,7 +376,7 @@ export class PaymentService {
         midtrans_response: notification,
       });
 
-      this.logger.log(`⏳ Deposit PENDING: ${deposit.order_id}`);
+      this.logger.log(`⏳ Payment PENDING: ${deposit.order_id}`);
 
     } catch (error) {
       this.logger.error(`❌ processPendingDeposit error: ${error.message}`);
@@ -381,30 +385,19 @@ export class PaymentService {
   }
 
   private verifySignature(notification: MidtransWebhookDto): boolean {
-  const serverKey = this.configService.get('midtrans.serverKey');
-  const orderId = notification.order_id;
-  const statusCode = notification.status_code;
-  const grossAmount = notification.gross_amount;
-  const signatureKey = notification.signature_key;
+    const serverKey = this.configService.get('midtrans.serverKey');
+    const orderId = notification.order_id;
+    const statusCode = notification.status_code;
+    const grossAmount = notification.gross_amount;
+    const signatureKey = notification.signature_key;
 
-  // ✅ TAMBAHKAN DEBUG LOG INI
-  console.log('=== SIGNATURE DEBUG ===');
-  console.log('Server Key from ENV:', serverKey);
-  console.log('Order ID:', orderId);
-  console.log('Status Code:', statusCode);
-  console.log('Gross Amount:', grossAmount);
-  console.log('Expected Hash:', crypto.createHash('sha512').update(`${orderId}${statusCode}${grossAmount}${serverKey}`).digest('hex'));
-  console.log('Received Sig:', signatureKey);
-  console.log('=======================');
+    const hash = crypto
+      .createHash('sha512')
+      .update(`${orderId}${statusCode}${grossAmount}${serverKey}`)
+      .digest('hex');
 
-  const hash = crypto
-    .createHash('sha512')
-    .update(`${orderId}${statusCode}${grossAmount}${serverKey}`)
-    .digest('hex');
-
-  return hash === signatureKey;
-}
-
+    return hash === signatureKey;
+  }
 
   async getUserDeposits(userId: string) {
     const db = this.firebaseService.getFirestore();
@@ -458,7 +451,7 @@ export class PaymentService {
         .get();
 
       if (snapshot.empty) {
-        throw new NotFoundException('Deposit not found');
+        throw new NotFoundException('Transaction not found');
       }
 
       const deposit = snapshot.docs[0].data() as DepositTransaction;
