@@ -354,7 +354,13 @@ export class VoucherService implements OnModuleInit {
       }
 
       // Check user eligibility
-      if (!voucher.eligibleStatuses.includes(user.status)) {
+      const isEligible = 
+        voucher.eligibleStatuses.includes('all') ||
+        voucher.eligibleStatuses.some(status => 
+          status.toLowerCase() === (user.status || 'standard').toLowerCase()
+        );
+
+      if (!isEligible) {
         return {
           valid: false,
           message: 'You are not eligible for this voucher',
