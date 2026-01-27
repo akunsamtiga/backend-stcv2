@@ -1,53 +1,70 @@
-import { IsString, IsEnum, IsNumber, IsBoolean, IsOptional, IsArray, Min, Max, Length, IsISO8601, ArrayNotEmpty } from 'class-validator';
+// src/vouchers/dto/create-voucher.dto.ts
+
+import { 
+  IsString, 
+  IsNumber, 
+  IsEnum, 
+  IsArray, 
+  IsOptional, 
+  IsBoolean, 
+  IsDateString,
+  Min,
+  MinLength,
+  MaxLength,
+  IsPositive
+} from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateVoucherDto {
   @ApiProperty({ 
     example: 'BONUS10',
-    description: 'Unique voucher code (uppercase, alphanumeric)'
+    description: 'Unique voucher code (will be converted to uppercase)',
+    minLength: 3,
+    maxLength: 20
   })
   @IsString()
-  @Length(3, 20, { message: 'Voucher code must be between 3 and 20 characters' })
+  @MinLength(3)
+  @MaxLength(20)
   code: string;
 
   @ApiProperty({ 
     enum: ['percentage', 'fixed'],
     example: 'percentage',
-    description: 'Type: percentage of deposit or fixed amount'
+    description: 'Type of bonus: percentage of deposit or fixed amount'
   })
   @IsEnum(['percentage', 'fixed'])
   type: 'percentage' | 'fixed';
 
   @ApiProperty({ 
     example: 10,
-    description: 'Value: percentage (1-100) or fixed amount in IDR'
+    description: 'Bonus value (percentage: 1-100, fixed: amount in IDR)'
   })
   @IsNumber()
-  @Min(1, { message: 'Value must be at least 1' })
-  @Max(100, { message: 'Percentage cannot exceed 100%' })
+  @IsPositive()
   value: number;
 
   @ApiProperty({ 
     example: 100000,
-    description: 'Minimum deposit amount required to use this voucher'
+    description: 'Minimum deposit amount required to use voucher (in IDR)'
   })
   @IsNumber()
   @Min(0)
   minDeposit: number;
 
-  @ApiProperty({ 
-    example: ['standard', 'gold'],
-    description: 'Eligible user statuses. Use ["all"] for all statuses',
-    type: [String]
+  @ApiPropertyOptional({ 
+    example: ['standard', 'gold', 'vip'],
+    description: 'User statuses eligible to use this voucher',
+    default: ['standard', 'gold', 'vip']
   })
+  @IsOptional()
   @IsArray()
-  @ArrayNotEmpty({ message: 'At least one eligible status is required' })
   @IsString({ each: true })
-  eligibleStatuses: string[];
+  eligibleStatuses?: string[];
 
   @ApiPropertyOptional({ 
     example: 100,
-    description: 'Maximum total usage limit (optional, unlimited if empty)'
+    description: 'Maximum number of times voucher can be used (null = unlimited)',
+    nullable: true
   })
   @IsOptional()
   @IsNumber()
@@ -56,52 +73,53 @@ export class CreateVoucherDto {
 
   @ApiPropertyOptional({ 
     example: 1,
-    description: 'Maximum usage per user (default: 1)',
+    description: 'Maximum uses per user',
     default: 1
   })
   @IsOptional()
   @IsNumber()
   @Min(1)
-  maxUsesPerUser?: number = 1;
+  maxUsesPerUser?: number;
 
   @ApiPropertyOptional({ 
-    example: 500000,
-    description: 'Maximum bonus amount cap for percentage type (optional)'
+    example: 100000,
+    description: 'Maximum bonus amount (only for percentage type, null = no limit)',
+    nullable: true
   })
   @IsOptional()
   @IsNumber()
-  @Min(1)
+  @Min(0)
   maxBonusAmount?: number;
 
   @ApiPropertyOptional({ 
     example: true,
-    description: 'Is voucher active',
+    description: 'Whether voucher is active',
     default: true
   })
   @IsOptional()
   @IsBoolean()
-  isActive?: boolean = true;
+  isActive?: boolean;
 
   @ApiProperty({ 
     example: '2024-01-01T00:00:00.000Z',
-    description: 'Valid from date (ISO 8601)'
+    description: 'Start date of voucher validity (ISO 8601)'
   })
-  @IsISO8601()
+  @IsDateString()
   validFrom: string;
 
   @ApiProperty({ 
     example: '2024-12-31T23:59:59.000Z',
-    description: 'Valid until date (ISO 8601)'
+    description: 'End date of voucher validity (ISO 8601)'
   })
-  @IsISO8601()
+  @IsDateString()
   validUntil: string;
 
   @ApiPropertyOptional({ 
-    example: 'Bonus deposit 10% untuk user baru',
-    description: 'Voucher description'
+    example: 'Get 10% bonus on your deposits',
+    description: 'Description of voucher for users'
   })
   @IsOptional()
   @IsString()
-  @Length(0, 500)
+  @MaxLength(500)
   description?: string;
 }

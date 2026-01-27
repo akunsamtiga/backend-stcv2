@@ -1,8 +1,10 @@
+// src/voucher/voucher.controller.ts
+
 import { 
-  Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards 
+  Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards, HttpStatus 
 } from '@nestjs/common';
 import { 
-  ApiTags, ApiOperation, ApiBearerAuth, ApiParam, ApiQuery, ApiResponse 
+  ApiTags, ApiOperation, ApiBearerAuth, ApiQuery, ApiResponse, ApiParam 
 } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -13,6 +15,7 @@ import { VoucherService } from './voucher.service';
 import { CreateVoucherDto } from './dto/create-voucher.dto';
 import { UpdateVoucherDto } from './dto/update-voucher.dto';
 import { ValidateVoucherDto } from './dto/validate-voucher.dto';
+import { Voucher, VoucherUsage, ApiResponse as ApiResponseType } from '../common/interfaces';
 
 @ApiTags('vouchers')
 @Controller('vouchers')
@@ -29,70 +32,156 @@ export class VoucherController {
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
   @ApiOperation({ 
     summary: 'Create new voucher (Admin only)',
-    description: 'Create deposit bonus voucher with percentage or fixed amount'
+    description: 'Create a new deposit voucher with bonus settings'
   })
-  @ApiResponse({ status: 201, description: 'Voucher created successfully' })
-  @ApiResponse({ status: 409, description: 'Voucher code already exists' })
-  createVoucher(
-    @Body() createVoucherDto: CreateVoucherDto,
-    @CurrentUser('sub') adminId: string,
+  @ApiResponse({ 
+    status: HttpStatus.CREATED, 
+    description: 'Voucher created successfully',
+  })
+  @ApiResponse({ status: HttpStatus.BAD_REQUEST, description: 'Invalid input' })
+  @ApiResponse({ status: HttpStatus.CONFLICT, description: 'Voucher code already exists' })
+  async createVoucher(
+    @Body() createVoucherDto: CreateVoucherDto, 
+    @CurrentUser() user: any
   ) {
-    return this.voucherService.createVoucher(createVoucherDto, adminId);
+    const voucher = await this.voucherService.createVoucher(createVoucherDto, user.id);
+    return {
+      success: true,
+      message: 'Voucher created successfully',
+      data: voucher,
+      timestamp: new Date().toISOString(),
+      path: '/vouchers',
+    };
   }
 
   @Get()
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
   @ApiOperation({ 
     summary: 'Get all vouchers (Admin only)',
-    description: 'List all vouchers with pagination and optional active filter'
+    description: 'Retrieve all vouchers with optional filters and pagination'
   })
-  @ApiQuery({ name: 'isActive', required: false, type: Boolean })
-  @ApiQuery({ name: 'page', required: false, type: Number })
-  @ApiQuery({ name: 'limit', required: false, type: Number })
-  getAllVouchers(
-    @Query('isActive') isActive?: boolean,
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
+  @ApiQuery({ name: 'page', required: false, type: Number, description: 'Page number (default: 1)' })
+  @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Items per page (default: 20)' })
+  @ApiQuery({ name: 'isActive', required: false, type: Boolean, description: 'Filter by active status' })
+  @ApiResponse({ 
+    status: HttpStatus.OK, 
+    description: 'Vouchers retrieved successfully',
+  })
+  async getAllVouchers(
+    @Query('page') page: number = 1,
+    @Query('limit') limit: number = 20,
+    @Query('isActive') isActive?: string,
   ) {
-    return this.voucherService.getAllVouchers({ isActive, page, limit });
+    const isActiveBoolean = isActive === 'true' ? true : isActive === 'false' ? false : undefined;
+    
+    const result = await this.voucherService.getAllVouchers({ 
+      page: Number(page), 
+      limit: Number(limit), 
+      isActive: isActiveBoolean 
+    });
+    
+    return {
+      success: true,
+      message: 'Vouchers retrieved successfully',
+      data: result,
+      timestamp: new Date().toISOString(),
+      path: '/vouchers',
+    };
   }
 
   @Get(':id')
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
-  @ApiOperation({ summary: 'Get voucher details (Admin only)' })
+  @ApiOperation({ 
+    summary: 'Get voucher by ID (Admin only)',
+    description: 'Retrieve detailed information about a specific voucher'
+  })
   @ApiParam({ name: 'id', description: 'Voucher ID' })
-  getVoucherById(@Param('id') voucherId: string) {
-    return this.voucherService.getVoucherById(voucherId);
+  @ApiResponse({ 
+    status: HttpStatus.OK, 
+    description: 'Voucher retrieved successfully'
+  })
+  @ApiResponse({ status: HttpStatus.NOT_FOUND, description: 'Voucher not found' })
+  async getVoucherById(@Param('id') id: string) {
+    const voucher = await this.voucherService.getVoucherById(id);
+    return {
+      success: true,
+      message: 'Voucher retrieved successfully',
+      data: voucher,
+      timestamp: new Date().toISOString(),
+      path: `/vouchers/${id}`,
+    };
   }
 
   @Get(':id/statistics')
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
   @ApiOperation({ 
-    summary: 'Get voucher usage statistics (Admin only)',
-    description: 'Get detailed statistics about voucher usage'
+    summary: 'Get voucher statistics (Admin only)',
+    description: 'Get usage statistics and analytics for a specific voucher'
   })
   @ApiParam({ name: 'id', description: 'Voucher ID' })
-  getVoucherStatistics(@Param('id') voucherId: string) {
-    return this.voucherService.getVoucherStatistics(voucherId);
+  @ApiResponse({ 
+    status: HttpStatus.OK, 
+    description: 'Statistics retrieved successfully',
+  })
+  @ApiResponse({ status: HttpStatus.NOT_FOUND, description: 'Voucher not found' })
+  async getVoucherStatistics(@Param('id') id: string) {
+    const statistics = await this.voucherService.getVoucherStatistics(id);
+    return {
+      success: true,
+      message: 'Statistics retrieved successfully',
+      data: statistics,
+      timestamp: new Date().toISOString(),
+      path: `/vouchers/${id}/statistics`,
+    };
   }
 
   @Put(':id')
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
-  @ApiOperation({ summary: 'Update voucher (Admin only)' })
+  @ApiOperation({ 
+    summary: 'Update voucher (Admin only)',
+    description: 'Update voucher settings (cannot change code)'
+  })
   @ApiParam({ name: 'id', description: 'Voucher ID' })
-  updateVoucher(
-    @Param('id') voucherId: string,
+  @ApiResponse({ 
+    status: HttpStatus.OK, 
+    description: 'Voucher updated successfully'
+  })
+  @ApiResponse({ status: HttpStatus.NOT_FOUND, description: 'Voucher not found' })
+  @ApiResponse({ status: HttpStatus.BAD_REQUEST, description: 'Invalid input' })
+  async updateVoucher(
+    @Param('id') id: string,
     @Body() updateVoucherDto: UpdateVoucherDto,
   ) {
-    return this.voucherService.updateVoucher(voucherId, updateVoucherDto);
+    const voucher = await this.voucherService.updateVoucher(id, updateVoucherDto);
+    return {
+      success: true,
+      message: 'Voucher updated successfully',
+      data: voucher,
+      timestamp: new Date().toISOString(),
+      path: `/vouchers/${id}`,
+    };
   }
 
   @Delete(':id')
-  @Roles(USER_ROLES.SUPER_ADMIN)
-  @ApiOperation({ summary: 'Delete voucher (Super Admin only)' })
+  @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
+  @ApiOperation({ 
+    summary: 'Delete voucher (Admin only)',
+    description: 'Soft delete a voucher (marks as inactive)'
+  })
   @ApiParam({ name: 'id', description: 'Voucher ID' })
-  deleteVoucher(@Param('id') voucherId: string) {
-    return this.voucherService.deleteVoucher(voucherId);
+  @ApiResponse({ 
+    status: HttpStatus.OK, 
+    description: 'Voucher deleted successfully'
+  })
+  @ApiResponse({ status: HttpStatus.NOT_FOUND, description: 'Voucher not found' })
+  async deleteVoucher(@Param('id') id: string) {
+    await this.voucherService.deleteVoucher(id);
+    return {
+      success: true,
+      message: 'Voucher deleted successfully',
+      timestamp: new Date().toISOString(),
+      path: `/vouchers/${id}`,
+    };
   }
 
   // ============================================
@@ -102,32 +191,52 @@ export class VoucherController {
   @Post('validate')
   @ApiOperation({ 
     summary: 'Validate voucher code',
-    description: 'Check if voucher is valid for current user with specific deposit amount'
+    description: 'Check if a voucher is valid and calculate bonus amount'
   })
   @ApiResponse({ 
-    status: 200, 
-    description: 'Validation result',
-    schema: {
-      example: {
-        valid: true,
-        bonusAmount: 10000,
-        message: 'Voucher valid! You will receive Rp 10,000 bonus'
-      }
-    }
+    status: HttpStatus.OK, 
+    description: 'Voucher validation result',
   })
-  validateVoucher(
-    @CurrentUser('sub') userId: string,
-    @Body() validateDto: ValidateVoucherDto,
+  @ApiResponse({ 
+    status: HttpStatus.BAD_REQUEST, 
+    description: 'Invalid voucher',
+  })
+  async validateVoucher(
+    @Body() validateVoucherDto: ValidateVoucherDto,
+    @CurrentUser() user: any,
   ) {
-    return this.voucherService.validateVoucher(userId, validateDto);
+    const result = await this.voucherService.validateVoucher(
+      validateVoucherDto.code,
+      validateVoucherDto.depositAmount,
+      user,
+    );
+    
+    return {
+      success: true,
+      message: result.message || 'Voucher validation completed',
+      data: result,
+      timestamp: new Date().toISOString(),
+      path: '/vouchers/validate',
+    };
   }
 
   @Get('my/history')
   @ApiOperation({ 
     summary: 'Get my voucher usage history',
-    description: 'Get all vouchers used by current user'
+    description: 'Retrieve all vouchers used by the current user'
   })
-  getMyVoucherHistory(@CurrentUser('sub') userId: string) {
-    return this.voucherService.getUserVoucherHistory(userId);
+  @ApiResponse({ 
+    status: HttpStatus.OK, 
+    description: 'Voucher history retrieved successfully',
+  })
+  async getMyVoucherHistory(@CurrentUser() user: any) {
+    const history = await this.voucherService.getMyVoucherHistory(user.id);
+    return {
+      success: true,
+      message: 'Voucher history retrieved successfully',
+      data: history,
+      timestamp: new Date().toISOString(),
+      path: '/vouchers/my/history',
+    };
   }
 }

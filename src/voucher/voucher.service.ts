@@ -1,404 +1,502 @@
-import { Injectable, Logger, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
-import { FirebaseService } from '../firebase/firebase.service';
+// src/voucher/voucher.service.ts
+// ✅ FINAL VERSION - All TypeScript errors and warnings fixed
+
+import { Injectable, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
+import { Firestore } from '@google-cloud/firestore';
 import { CreateVoucherDto } from './dto/create-voucher.dto';
 import { UpdateVoucherDto } from './dto/update-voucher.dto';
-import { ValidateVoucherDto } from './dto/validate-voucher.dto';
-import { COLLECTIONS, USER_STATUS } from '../common/constants';
-import { Voucher, VoucherUsage, User } from '../common/interfaces';
+import { Voucher, VoucherUsage } from '../common/interfaces';
 
 @Injectable()
 export class VoucherService {
-  private readonly logger = new Logger(VoucherService.name);
+  private db: Firestore;
+  private vouchersCollection: FirebaseFirestore.CollectionReference;
+  private voucherUsagesCollection: FirebaseFirestore.CollectionReference;
 
-  constructor(private firebaseService: FirebaseService) {}
-
-  async createVoucher(createVoucherDto: CreateVoucherDto, adminId: string) {
-    const db = this.firebaseService.getFirestore();
-    
-    const code = createVoucherDto.code.toUpperCase().trim();
-    
-    const existingSnapshot = await db
-      .collection(COLLECTIONS.VOUCHERS)
-      .where('code', '==', code)
-      .limit(1)
-      .get();
-
-    if (!existingSnapshot.empty) {
-      throw new ConflictException(`Voucher code '${code}' already exists`);
-    }
-
-    const validFrom = new Date(createVoucherDto.validFrom);
-    const validUntil = new Date(createVoucherDto.validUntil);
-    
-    if (validFrom >= validUntil) {
-      throw new BadRequestException('Valid from date must be before valid until date');
-    }
-
-    if (createVoucherDto.type === 'percentage' && createVoucherDto.value > 100) {
-      throw new BadRequestException('Percentage value cannot exceed 100%');
-    }
-
-    const voucherId = await this.firebaseService.generateId(COLLECTIONS.VOUCHERS);
-    const timestamp = new Date().toISOString();
-
-    const voucherData: Voucher = {
-      id: voucherId,
-      code,
-      type: createVoucherDto.type,
-      value: createVoucherDto.value,
-      minDeposit: createVoucherDto.minDeposit,
-      eligibleStatuses: createVoucherDto.eligibleStatuses.map(s => s.toLowerCase()),
-      maxUses: createVoucherDto.maxUses,
-      usedCount: 0,
-      maxUsesPerUser: createVoucherDto.maxUsesPerUser || 1,
-      maxBonusAmount: createVoucherDto.maxBonusAmount,
-      isActive: createVoucherDto.isActive ?? true,
-      validFrom: createVoucherDto.validFrom,
-      validUntil: createVoucherDto.validUntil,
-      description: createVoucherDto.description,
-      createdBy: adminId,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    };
-
-    await db.collection(COLLECTIONS.VOUCHERS).doc(voucherId).set(voucherData);
-
-    this.logger.log(`Voucher created: ${code} by admin ${adminId}`);
-
-    return {
-      message: 'Voucher created successfully',
-      voucher: voucherData,
-    };
+  constructor() {
+    this.db = new Firestore();
+    this.vouchersCollection = this.db.collection('vouchers');
+    this.voucherUsagesCollection = this.db.collection('voucher_usages');
   }
 
-  async getAllVouchers(options?: { isActive?: boolean; page?: number; limit?: number }) {
-    const db = this.firebaseService.getFirestore();
-    const { isActive, page = 1, limit = 50 } = options || {};
+  // ============================================
+  // ADMIN METHODS
+  // ============================================
 
-    let query = db.collection(COLLECTIONS.VOUCHERS)
-      .orderBy('createdAt', 'desc');
-
-    if (isActive !== undefined) {
-      query = query.where('isActive', '==', isActive) as any;
-    }
-
-    const snapshot = await query.get();
-    const allVouchers = snapshot.docs.map(doc => doc.data() as Voucher);
-
-    const total = allVouchers.length;
-    const startIndex = (page - 1) * limit;
-    const vouchers = allVouchers.slice(startIndex, startIndex + limit);
-
-    return {
-      vouchers,
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
-    };
-  }
-
-  async getVoucherById(voucherId: string) {
-    const db = this.firebaseService.getFirestore();
-    const doc = await db.collection(COLLECTIONS.VOUCHERS).doc(voucherId).get();
-    
-    if (!doc.exists) {
-      throw new NotFoundException('Voucher not found');
-    }
-
-    return doc.data() as Voucher;
-  }
-
-  async updateVoucher(voucherId: string, updateVoucherDto: UpdateVoucherDto) {
-    const db = this.firebaseService.getFirestore();
-    
-    const voucher = await this.getVoucherById(voucherId);
-    
-    if (updateVoucherDto.code && updateVoucherDto.code.toUpperCase() !== voucher.code) {
-      const existingSnapshot = await db
-        .collection(COLLECTIONS.VOUCHERS)
-        .where('code', '==', updateVoucherDto.code.toUpperCase())
+  async createVoucher(createVoucherDto: CreateVoucherDto, adminId: string): Promise<Voucher> {
+    try {
+      // Check if voucher code already exists
+      const existingVoucher = await this.vouchersCollection
+        .where('code', '==', createVoucherDto.code.toUpperCase())
         .limit(1)
         .get();
 
-      if (!existingSnapshot.empty) {
-        throw new ConflictException(`Voucher code '${updateVoucherDto.code}' already exists`);
+      if (!existingVoucher.empty) {
+        throw new ConflictException('Voucher code already exists');
       }
+
+      const now = new Date().toISOString();
+      const voucherData: Omit<Voucher, 'id'> = {
+        code: createVoucherDto.code.toUpperCase(),
+        type: createVoucherDto.type,
+        value: createVoucherDto.value,
+        minDeposit: createVoucherDto.minDeposit,
+        eligibleStatuses: createVoucherDto.eligibleStatuses || ['standard', 'gold', 'vip'],
+        maxUses: createVoucherDto.maxUses || undefined,
+        usedCount: 0,
+        maxUsesPerUser: createVoucherDto.maxUsesPerUser || 1,
+        maxBonusAmount: createVoucherDto.maxBonusAmount || undefined,
+        isActive: createVoucherDto.isActive !== false,
+        validFrom: createVoucherDto.validFrom,
+        validUntil: createVoucherDto.validUntil,
+        description: createVoucherDto.description || '',
+        createdBy: adminId,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      const docRef = await this.vouchersCollection.add(voucherData);
+
+      return {
+        id: docRef.id,
+        ...voucherData,
+      };
+    } catch (error) {
+      if (error instanceof ConflictException) {
+        throw error;
+      }
+      throw new BadRequestException('Failed to create voucher: ' + error.message);
     }
-
-    const updateData: any = {
-      ...updateVoucherDto,
-      updatedAt: new Date().toISOString(),
-    };
-
-    if (updateVoucherDto.code) {
-      updateData.code = updateVoucherDto.code.toUpperCase().trim();
-    }
-
-    if (updateVoucherDto.eligibleStatuses) {
-      updateData.eligibleStatuses = updateVoucherDto.eligibleStatuses.map(s => s.toLowerCase());
-    }
-
-    await db.collection(COLLECTIONS.VOUCHERS).doc(voucherId).update(updateData);
-
-    this.logger.log(`Voucher updated: ${voucherId}`);
-
-    return {
-      message: 'Voucher updated successfully',
-    };
   }
 
-  async deleteVoucher(voucherId: string) {
-    const db = this.firebaseService.getFirestore();
-    
-    await this.getVoucherById(voucherId);
-    
-    await db.collection(COLLECTIONS.VOUCHERS).doc(voucherId).delete();
-    
-    this.logger.log(`Voucher deleted: ${voucherId}`);
-    
-    return {
-      message: 'Voucher deleted successfully',
+  async getAllVouchers(options?: { 
+    page?: number; 
+    limit?: number; 
+    isActive?: boolean 
+  }): Promise<{
+    vouchers: Voucher[];
+    pagination: {
+      page: number;
+      limit: number;
+      total: number;
+      totalPages: number;
     };
+  }> {
+    try {
+      const page = options?.page || 1;
+      const limit = options?.limit || 20;
+      const offset = (page - 1) * limit;
+
+      let query = this.vouchersCollection.orderBy('createdAt', 'desc');
+
+      // Filter by active status if specified
+      if (options?.isActive !== undefined) {
+        query = query.where('isActive', '==', options.isActive) as any;
+      }
+
+      // Get total count for pagination
+      const countSnapshot = await query.get();
+      const total = countSnapshot.size;
+
+      // Get paginated results
+      const snapshot = await query
+        .offset(offset)
+        .limit(limit)
+        .get();
+
+      const vouchers: Voucher[] = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          ...data,
+          id: doc.id,
+        } as Voucher;
+      });
+
+      return {
+        vouchers,
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages: Math.ceil(total / limit),
+        },
+      };
+    } catch (error) {
+      throw new BadRequestException('Failed to fetch vouchers: ' + error.message);
+    }
   }
 
-  async getVoucherStatistics(voucherId: string) {
-    const db = this.firebaseService.getFirestore();
-    
-    const voucher = await this.getVoucherById(voucherId);
-    
-    const usagesSnapshot = await db
-      .collection(COLLECTIONS.VOUCHER_USAGES)
-      .where('voucherId', '==', voucherId)
-      .orderBy('usedAt', 'desc')
-      .get();
+  async getVoucherById(voucherId: string): Promise<Voucher> {
+    try {
+      const doc = await this.vouchersCollection.doc(voucherId).get();
 
-    const usages = usagesSnapshot.docs.map(doc => doc.data() as VoucherUsage);
-    
-    const totalBonusGiven = usages.reduce((sum, u) => sum + u.bonusAmount, 0);
-    const totalDepositAmount = usages.reduce((sum, u) => sum + u.depositAmount, 0);
+      if (!doc.exists) {
+        throw new NotFoundException('Voucher not found');
+      }
 
-    return {
-      voucher: {
-        id: voucher.id,
-        code: voucher.code,
-        type: voucher.type,
-        value: voucher.value,
-      },
-      statistics: {
-        totalUsed: usages.length,
-        totalBonusGiven,
-        totalDepositAmount,
-        averageBonus: usages.length > 0 ? totalBonusGiven / usages.length : 0,
-        remainingUses: voucher.maxUses ? voucher.maxUses - voucher.usedCount : null,
-      },
-      recentUsages: usages.slice(0, 10),
-    };
+      const data = doc.data();
+      return {
+        ...data,
+        id: doc.id,
+      } as Voucher;
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      throw new BadRequestException('Failed to fetch voucher: ' + error.message);
+    }
   }
 
-  async validateVoucher(userId: string, validateDto: ValidateVoucherDto): Promise<{
+  async getVoucherStatistics(voucherId: string): Promise<{
+    voucher: {
+      id: string;
+      code: string;
+      type: string;
+      value: number;
+    };
+    statistics: {
+      totalUsed: number;
+      totalBonusGiven: number;
+      totalDepositAmount: number;
+      averageBonus: number;
+      remainingUses: number | null;
+    };
+    recentUsages: VoucherUsage[];
+  }> {
+    try {
+      const voucher = await this.getVoucherById(voucherId);
+
+      // Get usage statistics
+      const usagesSnapshot = await this.voucherUsagesCollection
+        .where('voucherId', '==', voucherId)
+        .orderBy('usedAt', 'desc')
+        .get();
+
+      const usages: VoucherUsage[] = usagesSnapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          ...data,
+          id: doc.id,
+        } as VoucherUsage;
+      });
+
+      const totalUsed = usages.length;
+      const totalBonusGiven = usages.reduce((sum, usage) => sum + (usage.bonusAmount || 0), 0);
+      const totalDepositAmount = usages.reduce((sum, usage) => sum + (usage.depositAmount || 0), 0);
+      const averageBonus = totalUsed > 0 ? totalBonusGiven / totalUsed : 0;
+      
+      let remainingUses: number | null = null;
+      if (voucher.maxUses) {
+        remainingUses = voucher.maxUses - voucher.usedCount;
+      }
+
+      // Get recent 10 usages
+      const recentUsages = usages.slice(0, 10);
+
+      return {
+        voucher: {
+          id: voucher.id,
+          code: voucher.code,
+          type: voucher.type,
+          value: voucher.value,
+        },
+        statistics: {
+          totalUsed,
+          totalBonusGiven,
+          totalDepositAmount,
+          averageBonus: Math.round(averageBonus),
+          remainingUses,
+        },
+        recentUsages,
+      };
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      throw new BadRequestException('Failed to fetch voucher statistics: ' + error.message);
+    }
+  }
+
+  async updateVoucher(voucherId: string, updateVoucherDto: UpdateVoucherDto): Promise<Voucher> {
+    try {
+      const voucherRef = this.vouchersCollection.doc(voucherId);
+      const doc = await voucherRef.get();
+
+      if (!doc.exists) {
+        throw new NotFoundException('Voucher not found');
+      }
+
+      // Create updateData with index signature for dynamic property access
+      const updateData: Partial<Voucher> & { [key: string]: any } = {
+        ...updateVoucherDto,
+        updatedAt: new Date().toISOString(),
+      };
+
+      // Remove undefined fields
+      Object.keys(updateData).forEach(key => {
+        if (updateData[key] === undefined) {
+          delete updateData[key];
+        }
+      });
+
+      await voucherRef.update(updateData);
+
+      const updated = await voucherRef.get();
+      const data = updated.data();
+      return {
+        ...data,
+        id: updated.id,
+      } as Voucher;
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      throw new BadRequestException('Failed to update voucher: ' + error.message);
+    }
+  }
+
+  async deleteVoucher(voucherId: string): Promise<{ success: boolean }> {
+    try {
+      const voucherRef = this.vouchersCollection.doc(voucherId);
+      const doc = await voucherRef.get();
+
+      if (!doc.exists) {
+        throw new NotFoundException('Voucher not found');
+      }
+
+      // Soft delete by marking as inactive
+      await voucherRef.update({
+        isActive: false,
+        deletedAt: new Date().toISOString(),
+      });
+
+      return { success: true };
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      throw new BadRequestException('Failed to delete voucher: ' + error.message);
+    }
+  }
+
+  // ============================================
+  // USER METHODS
+  // ============================================
+
+  async validateVoucher(code: string, depositAmount: number, user: any): Promise<{
     valid: boolean;
     bonusAmount?: number;
     message?: string;
-    voucher?: Voucher;
+    voucher?: {
+      type: string;
+      value: number;
+      minDeposit: number;
+      maxBonusAmount?: number;
+    };
   }> {
-    const db = this.firebaseService.getFirestore();
-    const { code, depositAmount } = validateDto;
-
     try {
-      const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
-      if (!userDoc.exists) {
-        throw new NotFoundException('User not found');
-      }
-      const user = userDoc.data() as User;
-
-      const voucherSnapshot = await db
-        .collection(COLLECTIONS.VOUCHERS)
-        .where('code', '==', code.toUpperCase().trim())
+      // Find voucher by code
+      const snapshot = await this.vouchersCollection
+        .where('code', '==', code.toUpperCase())
         .where('isActive', '==', true)
         .limit(1)
         .get();
 
-      if (voucherSnapshot.empty) {
-        return { valid: false, message: 'Invalid or expired voucher code' };
+      if (snapshot.empty) {
+        return {
+          valid: false,
+          message: 'Voucher not found or inactive',
+        };
       }
 
-      const voucher = voucherSnapshot.docs[0].data() as Voucher;
+      const voucherDoc = snapshot.docs[0];
+      const data = voucherDoc.data();
+      
+      // ✅ FIXED: Spread data first, then add id (no duplication)
+      const voucher: Voucher = {
+        ...data,
+        id: voucherDoc.id,
+      } as Voucher;
 
+      // Check if voucher is expired
       const now = new Date();
       const validFrom = new Date(voucher.validFrom);
       const validUntil = new Date(voucher.validUntil);
 
       if (now < validFrom) {
-        return { valid: false, message: 'Voucher is not yet valid' };
+        return {
+          valid: false,
+          message: 'Voucher is not yet valid',
+        };
       }
 
       if (now > validUntil) {
-        return { valid: false, message: 'Voucher has expired' };
+        return {
+          valid: false,
+          message: 'Voucher has expired',
+        };
       }
 
+      // Check min deposit
       if (depositAmount < voucher.minDeposit) {
-        return { 
-          valid: false, 
-          message: `Minimum deposit of Rp ${voucher.minDeposit.toLocaleString()} required for this voucher` 
+        return {
+          valid: false,
+          message: `Minimum deposit is ${this.formatCurrency(voucher.minDeposit)}`,
         };
       }
 
-      const userStatus = user.status || USER_STATUS.STANDARD;
-      const isEligible = voucher.eligibleStatuses.includes('all') || 
-                        voucher.eligibleStatuses.includes(userStatus);
-
-      if (!isEligible) {
-        return { 
-          valid: false, 
-          message: `This voucher is only available for ${voucher.eligibleStatuses.join(', ')} status` 
+      // Check user eligibility
+      if (!voucher.eligibleStatuses.includes(user.status)) {
+        return {
+          valid: false,
+          message: 'You are not eligible for this voucher',
         };
       }
 
+      // Check max uses
       if (voucher.maxUses && voucher.usedCount >= voucher.maxUses) {
-        return { valid: false, message: 'Voucher usage limit reached' };
-      }
-
-      const userUsageCount = await this.getUserVoucherUsageCount(userId, voucher.id);
-      if (userUsageCount >= voucher.maxUsesPerUser) {
-        return { 
-          valid: false, 
-          message: `You have already used this voucher ${voucher.maxUsesPerUser} time(s)` 
+        return {
+          valid: false,
+          message: 'Voucher usage limit reached',
         };
       }
 
-      let bonusAmount: number;
+      // Check user usage limit
+      const userUsages = await this.voucherUsagesCollection
+        .where('voucherId', '==', voucherDoc.id)
+        .where('userId', '==', user.id)
+        .get();
+
+      if (userUsages.size >= voucher.maxUsesPerUser) {
+        return {
+          valid: false,
+          message: `You can only use this voucher ${voucher.maxUsesPerUser} time(s)`,
+        };
+      }
+
+      // Calculate bonus
+      let bonusAmount = 0;
       if (voucher.type === 'percentage') {
         bonusAmount = Math.floor(depositAmount * (voucher.value / 100));
+        
+        // Apply max bonus cap if set
         if (voucher.maxBonusAmount && bonusAmount > voucher.maxBonusAmount) {
           bonusAmount = voucher.maxBonusAmount;
         }
-      } else {
+      } else if (voucher.type === 'fixed') {
         bonusAmount = voucher.value;
       }
 
       return {
         valid: true,
         bonusAmount,
-        voucher,
-        message: `Voucher valid! You will receive Rp ${bonusAmount.toLocaleString()} bonus`,
+        message: 'Voucher is valid',
+        voucher: {
+          type: voucher.type,
+          value: voucher.value,
+          minDeposit: voucher.minDeposit,
+          maxBonusAmount: voucher.maxBonusAmount,
+        },
       };
-
     } catch (error) {
-      this.logger.error(`validateVoucher error: ${error.message}`);
-      return { valid: false, message: 'Error validating voucher' };
+      throw new BadRequestException('Failed to validate voucher: ' + error.message);
     }
   }
 
-  async applyVoucher(userId: string, voucherCode: string, depositId: string, depositAmount: number): Promise<{
-    success: boolean;
-    bonusAmount?: number;
-    message?: string;
-    voucherUsageId?: string;
-  }> {
-    const db = this.firebaseService.getFirestore();
-
+  async recordVoucherUsage(
+    voucherId: string,
+    voucherCode: string,
+    userId: string,
+    userEmail: string,
+    depositId: string,
+    depositAmount: number,
+    bonusAmount: number,
+  ): Promise<{ success: boolean }> {
     try {
-      const validation = await this.validateVoucher(userId, {
-        code: voucherCode,
-        depositAmount,
-      });
-
-      if (!validation.valid || !validation.voucher || validation.bonusAmount === undefined) {
-        return { success: false, message: validation.message || 'Invalid voucher' };
-      }
-
-      const voucher = validation.voucher;
-      const bonusAmount = validation.bonusAmount;
-
-      const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
-      const user = userDoc.data() as User;
-
-      const usageId = await this.firebaseService.generateId(COLLECTIONS.VOUCHER_USAGES);
-      const timestamp = new Date().toISOString();
-
-      const usageData: VoucherUsage = {
-        id: usageId,
-        voucherId: voucher.id,
-        voucherCode: voucher.code,
+      // Record usage
+      const usageData: Omit<VoucherUsage, 'id'> = {
+        voucherId,
+        voucherCode: voucherCode.toUpperCase(),
         userId,
-        userEmail: user.email,
+        userEmail,
         depositId,
         depositAmount,
         bonusAmount,
-        usedAt: timestamp,
+        usedAt: new Date().toISOString(),
       };
 
-      await db.runTransaction(async (transaction) => {
-        const usageRef = db.collection(COLLECTIONS.VOUCHER_USAGES).doc(usageId);
-        transaction.set(usageRef, usageData);
+      await this.voucherUsagesCollection.add(usageData);
 
-        const voucherRef = db.collection(COLLECTIONS.VOUCHERS).doc(voucher.id);
-        transaction.update(voucherRef, {
-          usedCount: (voucher.usedCount || 0) + 1,
-          updatedAt: timestamp,
-        });
+      // Increment used count
+      const voucherRef = this.vouchersCollection.doc(voucherId);
+      const voucherDoc = await voucherRef.get();
+      
+      if (!voucherDoc.exists) {
+        throw new NotFoundException('Voucher not found');
+      }
+
+      const data = voucherDoc.data();
+      const voucherData = {
+        ...data,
+        id: voucherDoc.id,
+      } as Voucher;
+      
+      await voucherRef.update({
+        usedCount: voucherData.usedCount + 1,
+        updatedAt: new Date().toISOString(),
       });
 
-      this.logger.log(
-        `Voucher applied: ${voucher.code} | User: ${userId} | Bonus: Rp ${bonusAmount.toLocaleString()}`
-      );
-
-      return {
-        success: true,
-        bonusAmount,
-        voucherUsageId: usageId,
-        message: `Bonus Rp ${bonusAmount.toLocaleString()} will be added after payment confirmation`,
-      };
-
+      return { success: true };
     } catch (error) {
-      this.logger.error(`applyVoucher error: ${error.message}`);
-      return { success: false, message: 'Error applying voucher' };
+      throw new BadRequestException('Failed to record voucher usage: ' + error.message);
     }
   }
 
-  async getUserVoucherUsageCount(userId: string, voucherId: string): Promise<number> {
-    const db = this.firebaseService.getFirestore();
-    
-    const snapshot = await db
-      .collection(COLLECTIONS.VOUCHER_USAGES)
-      .where('userId', '==', userId)
-      .where('voucherId', '==', voucherId)
-      .get();
+  async getMyVoucherHistory(userId: string): Promise<{
+    usages: VoucherUsage[];
+    summary: {
+      totalUsed: number;
+      totalBonusReceived: number;
+    };
+  }> {
+    try {
+      const snapshot = await this.voucherUsagesCollection
+        .where('userId', '==', userId)
+        .orderBy('usedAt', 'desc')
+        .get();
 
-    return snapshot.size;
+      const usages: VoucherUsage[] = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          ...data,
+          id: doc.id,
+        } as VoucherUsage;
+      });
+
+      const totalUsed = usages.length;
+      const totalBonusReceived = usages.reduce((sum, usage) => sum + (usage.bonusAmount || 0), 0);
+
+      return {
+        usages,
+        summary: {
+          totalUsed,
+          totalBonusReceived,
+        },
+      };
+    } catch (error) {
+      throw new BadRequestException('Failed to fetch voucher history: ' + error.message);
+    }
   }
 
-  async getUserVoucherHistory(userId: string) {
-    const db = this.firebaseService.getFirestore();
-    
-    const snapshot = await db
-      .collection(COLLECTIONS.VOUCHER_USAGES)
-      .where('userId', '==', userId)
-      .orderBy('usedAt', 'desc')
-      .get();
+  // ============================================
+  // HELPER METHODS
+  // ============================================
 
-    const usages = snapshot.docs.map(doc => {
-      const data = doc.data() as VoucherUsage;
-      return {
-        id: data.id,
-        voucherCode: data.voucherCode,
-        depositAmount: data.depositAmount,
-        bonusAmount: data.bonusAmount,
-        usedAt: data.usedAt,
-      };
-    });
-
-    const totalBonusReceived = usages.reduce((sum, u) => sum + u.bonusAmount, 0);
-
-    return {
-      usages,
-      summary: {
-        totalUsed: usages.length,
-        totalBonusReceived,
-      },
-    };
+  private formatCurrency(amount: number): string {
+    return new Intl.NumberFormat('id-ID', {
+      style: 'currency',
+      currency: 'IDR',
+      minimumFractionDigits: 0,
+    }).format(amount);
   }
 }
