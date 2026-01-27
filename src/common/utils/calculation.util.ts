@@ -108,15 +108,30 @@ export class CalculationUtil {
   }
 
   static calculateBalance(transactions: Array<{ type: string; amount: number }>): number {
-    return transactions.reduce((sum, t) => {
-      if (t.type === 'deposit' || t.type === 'order_profit' || t.type === 'win') {
-        return sum + t.amount;
-      } else if (t.type === 'withdrawal' || t.type === 'order_debit' || t.type === 'lose') {
-        return sum - t.amount;
-      }
-      return sum;
-    }, 0);
-  }
+  return transactions.reduce((sum, t) => {
+    // Tipe transaksi yang MENAMBAH balance
+    if (
+      t.type === 'deposit' || 
+      t.type === 'order_profit' || 
+      t.type === 'win' ||
+      t.type === 'voucher_bonus' ||           
+      t.type === 'affiliate_commission'       
+    ) {
+      return sum + t.amount;
+    } 
+    // Tipe transaksi yang MENGURANGI balance
+    else if (
+      t.type === 'withdrawal' || 
+      t.type === 'order_debit' || 
+      t.type === 'lose'
+    ) {
+      return sum - t.amount;
+    }
+    // Tipe lain tidak mempengaruhi balance
+    return sum;
+  }, 0);
+}
+
 
   static calculateExpiryTime(startTime: Date, durationMinutes: number): Date {
     const durationMs = durationMinutes * 60 * 1000;
