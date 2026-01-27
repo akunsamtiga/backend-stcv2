@@ -97,11 +97,13 @@ export class PaymentService {
       let voucherBonusAmount: number = 0;
       let voucherCode: string | null = null;
       
+      // ✅ FIXED: Pass 3 separate arguments to validateVoucher
       if (createDepositDto.voucherCode) {
-        const voucherResult = await this.voucherService.validateVoucher(userId, {
-          code: createDepositDto.voucherCode,
-          depositAmount: createDepositDto.amount,
-        });
+        const voucherResult = await this.voucherService.validateVoucher(
+          createDepositDto.voucherCode,  // code: string
+          createDepositDto.amount,       // depositAmount: number
+          { ...user, id: userId }        // user: any (with id property)
+        );
 
         if (!voucherResult.valid) {
           throw new BadRequestException(voucherResult.message);
@@ -298,27 +300,56 @@ export class PaymentService {
         true
       );
 
+      // ✅ FIXED: Use recordVoucherUsage instead of applyVoucher
       const bonusAmount = deposit.voucherBonusAmount ?? 0;
       if (deposit.voucherCode && bonusAmount > 0) {
-        const voucherApply = await this.voucherService.applyVoucher(
-          deposit.user_id,
-          deposit.voucherCode,
-          deposit.id,
-          deposit.amount
-        );
+        // Get user data
+        const userDoc = await db.collection(COLLECTIONS.USERS).doc(deposit.user_id).get();
+        if (!userDoc.exists) {
+          this.logger.error(`User not found for voucher usage: ${deposit.user_id}`);
+        } else {
+          const user = userDoc.data() as User;
+          
+          // Get voucher ID
+          const voucherSnapshot = await db.collection('vouchers')
+            .where('code', '==', deposit.voucherCode.toUpperCase())
+            .limit(1)
+            .get();
+          
+          if (!voucherSnapshot.empty) {
+            const voucherDoc = voucherSnapshot.docs[0];
+            const voucherId = voucherDoc.id;
+            
+            // Record voucher usage
+            const voucherApply = await this.voucherService.recordVoucherUsage(
+              voucherId,              // voucherId: string
+              deposit.voucherCode,    // voucherCode: string
+              deposit.user_id,        // userId: string
+              user.email,             // userEmail: string
+              deposit.id,             // depositId: string
+              deposit.amount,         // depositAmount: number
+              bonusAmount             // bonusAmount: number
+            );
 
-        if (voucherApply.success) {
-          await this.balanceService.createBalanceEntry(
-            deposit.user_id,
-            {
-              accountType: BALANCE_ACCOUNT_TYPE.REAL,
-              type: BALANCE_TYPES.VOUCHER_BONUS,
-              amount: bonusAmount,
-              description: `Voucher bonus ${deposit.voucherCode} for deposit ${deposit.order_id}`,
-            },
-            true,
-            true
-          );
+            if (voucherApply.success) {
+              // Add voucher bonus to balance
+              await this.balanceService.createBalanceEntry(
+                deposit.user_id,
+                {
+                  accountType: BALANCE_ACCOUNT_TYPE.REAL,
+                  type: BALANCE_TYPES.VOUCHER_BONUS,
+                  amount: bonusAmount,
+                  description: `Voucher bonus ${deposit.voucherCode} for deposit ${deposit.order_id}`,
+                },
+                true,
+                true
+              );
+              
+              this.logger.log(`Voucher bonus applied: ${deposit.voucherCode} | Bonus: ${bonusAmount}`);
+            }
+          } else {
+            this.logger.warn(`Voucher not found for code: ${deposit.voucherCode}`);
+          }
         }
       }
 
