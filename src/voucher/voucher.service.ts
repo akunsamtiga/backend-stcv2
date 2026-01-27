@@ -1,22 +1,22 @@
 // src/voucher/voucher.service.ts
-// ✅ FINAL VERSION - All TypeScript errors and warnings fixed
+// ✅ FINAL VERSION - Fixed Firebase initialization
 
 import { Injectable, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
-import { Firestore } from '@google-cloud/firestore';
 import { CreateVoucherDto } from './dto/create-voucher.dto';
 import { UpdateVoucherDto } from './dto/update-voucher.dto';
 import { Voucher, VoucherUsage } from '../common/interfaces';
+import { FirebaseService } from '../firebase/firebase.service'; // ✅ ADDED
 
 @Injectable()
 export class VoucherService {
-  private db: Firestore;
   private vouchersCollection: FirebaseFirestore.CollectionReference;
   private voucherUsagesCollection: FirebaseFirestore.CollectionReference;
 
-  constructor() {
-    this.db = new Firestore();
-    this.vouchersCollection = this.db.collection('vouchers');
-    this.voucherUsagesCollection = this.db.collection('voucher_usages');
+  // ✅ FIXED: Inject FirebaseService instead of creating new Firestore instance
+  constructor(private firebaseService: FirebaseService) {
+    const db = this.firebaseService.getFirestore();
+    this.vouchersCollection = db.collection('vouchers');
+    this.voucherUsagesCollection = db.collection('voucher_usages');
   }
 
   // ============================================

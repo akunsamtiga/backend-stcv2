@@ -1,10 +1,15 @@
+// src/voucher/voucher.module.ts
 import { Module } from '@nestjs/common';
 import { VoucherController } from './voucher.controller';
 import { VoucherService } from './voucher.service';
-import { AuthModule } from '../auth/auth.module'; // ✅ TAMBAHKAN INI
+import { AuthModule } from '../auth/auth.module';
+import { FirebaseModule } from '../firebase/firebase.module'; // ✅ ADDED
 
 @Module({
-  imports: [AuthModule], // ✅ TAMBAHKAN INI - untuk JwtAuthGuard
+  imports: [
+    AuthModule,
+    FirebaseModule, // ✅ ADDED - Required for VoucherService
+  ],
   controllers: [VoucherController],
   providers: [VoucherService],
   exports: [VoucherService],
