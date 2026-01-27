@@ -1,28 +1,18 @@
 // src/payment/payment.module.ts
 import { Module } from '@nestjs/common';
-import { JwtModule } from '@nestjs/jwt';
-import { ConfigModule, ConfigService } from '@nestjs/config';
 import { PaymentController } from './payment.controller';
 import { PaymentService } from './payment.service';
-import { AuthModule } from '../auth/auth.module';
+import { FirebaseModule } from '../firebase/firebase.module';
 import { BalanceModule } from '../balance/balance.module';
 import { UserModule } from '../user/user.module';
+import { VoucherModule } from '../voucher/voucher.module'; 
 
 @Module({
   imports: [
-    AuthModule,
+    FirebaseModule,
     BalanceModule,
     UserModule,
-    JwtModule.registerAsync({
-      imports: [ConfigModule],
-      inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ({
-        secret: configService.get('jwt.secret'),
-        signOptions: {
-          expiresIn: configService.get('jwt.expiresIn'),
-        },
-      }),
-    }),
+    VoucherModule, 
   ],
   controllers: [PaymentController],
   providers: [PaymentService],
