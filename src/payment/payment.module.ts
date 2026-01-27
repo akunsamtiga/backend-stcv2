@@ -5,7 +5,7 @@ import { PaymentService } from './payment.service';
 import { FirebaseModule } from '../firebase/firebase.module';
 import { BalanceModule } from '../balance/balance.module';
 import { UserModule } from '../user/user.module';
-import { VoucherModule } from '../voucher/voucher.module'; 
+import { VoucherModule } from '../voucher/voucher.module';
 
 @Module({
   imports: [
