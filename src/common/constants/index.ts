@@ -1,3 +1,4 @@
+// src/common/constants/index.ts
 export const BALANCE_TYPES = {
   DEPOSIT: 'deposit',
   WITHDRAWAL: 'withdrawal',

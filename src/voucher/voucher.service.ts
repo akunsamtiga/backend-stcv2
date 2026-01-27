@@ -1,22 +1,31 @@
 // src/voucher/voucher.service.ts
-// ✅ FINAL VERSION - Fixed Firebase initialization
+// ✅ FINAL VERSION - Fixed Firebase initialization with OnModuleInit
 
-import { Injectable, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ConflictException, OnModuleInit } from '@nestjs/common';
 import { CreateVoucherDto } from './dto/create-voucher.dto';
 import { UpdateVoucherDto } from './dto/update-voucher.dto';
 import { Voucher, VoucherUsage } from '../common/interfaces';
-import { FirebaseService } from '../firebase/firebase.service'; // ✅ ADDED
+import { FirebaseService } from '../firebase/firebase.service';
 
 @Injectable()
-export class VoucherService {
+export class VoucherService implements OnModuleInit {
   private vouchersCollection: FirebaseFirestore.CollectionReference;
   private voucherUsagesCollection: FirebaseFirestore.CollectionReference;
 
-  // ✅ FIXED: Inject FirebaseService instead of creating new Firestore instance
-  constructor(private firebaseService: FirebaseService) {
-    const db = this.firebaseService.getFirestore();
-    this.vouchersCollection = db.collection('vouchers');
-    this.voucherUsagesCollection = db.collection('voucher_usages');
+  // ✅ FIXED: Constructor hanya inject service, tidak initialize Firestore
+  constructor(private firebaseService: FirebaseService) {}
+
+  // ✅ FIXED: Initialize Firestore setelah module ready
+  onModuleInit() {
+    try {
+      const db = this.firebaseService.getFirestore();
+      this.vouchersCollection = db.collection('vouchers');
+      this.voucherUsagesCollection = db.collection('voucher_usages');
+      console.log('VoucherService: Firestore collections initialized successfully');
+    } catch (error) {
+      console.error('VoucherService: Failed to initialize Firestore collections', error);
+      throw error;
+    }
   }
 
   // ============================================
@@ -312,7 +321,6 @@ export class VoucherService {
       const voucherDoc = snapshot.docs[0];
       const data = voucherDoc.data();
       
-      // ✅ FIXED: Spread data first, then add id (no duplication)
       const voucher: Voucher = {
         ...data,
         id: voucherDoc.id,
