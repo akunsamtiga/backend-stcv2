@@ -10,9 +10,11 @@ import { SimulatorPriceRelayService } from './services/simulator-price-relay.ser
 import { InitializeAssetCandlesHelper } from './helpers/initialize-asset-candles.helper';
 import { AuthModule } from '../auth/auth.module';
 import { WebSocketModule } from '../websocket/websocket.module';
+import { EventEmitterModule } from '@nestjs/event-emitter'; // PASTIKAN INI ADA
 
 @Module({
   imports: [
+    EventEmitterModule.forRoot(),
     AuthModule,
     forwardRef(() => WebSocketModule),
     JwtModule.registerAsync({

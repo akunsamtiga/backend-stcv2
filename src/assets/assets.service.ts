@@ -355,7 +355,6 @@ export class AssetsService {
       // ============================================
       // ✅ INITIALIZE 240 CANDLES FOR NORMAL ASSETS
       // ============================================
-      // Hanya untuk asset normal dengan dataSource realtime_db atau mock
       if (createAssetDto.category === ASSET_CATEGORY.NORMAL && 
           (createAssetDto.dataSource === ASSET_DATA_SOURCE.REALTIME_DB || 
            createAssetDto.dataSource === ASSET_DATA_SOURCE.MOCK)) {
@@ -363,7 +362,6 @@ export class AssetsService {
         this.logger.log(`📈 Initializing 240 candles for ${createAssetDto.symbol}...`);
         
         try {
-          // FIX: Gunakan plainAssetData.simulatorSettings (bukan plainSimulatorSettings)
           const initialPrice = plainAssetData.simulatorSettings?.initialPrice || 
                               createAssetDto.initialPrice || 
                               1.0;
@@ -382,12 +380,49 @@ export class AssetsService {
           this.logger.log(`✅ 240 candles initialized successfully for ${createAssetDto.symbol}`);
         } catch (candleError) {
           this.logger.error(`❌ Failed to initialize candles: ${candleError.message}`);
-          // Asset tetap dibuat meskipun candle gagal
         }
       }
 
       this.invalidateCache();
 
+      // ============================================
+      // 🔔 EMIT EVENT UNTUK NOTIFY SERVICE LAIN
+      // ============================================
+      // Emit event agar simulator langsung pick up asset baru tanpa restart
+      this.eventEmitter.emit('asset.created', {
+        assetId,
+        symbol: createAssetDto.symbol,
+        name: createAssetDto.name,
+        category: createAssetDto.category,
+        type: createAssetDto.type,
+        dataSource: createAssetDto.dataSource,
+        realtimeDbPath: plainAssetData.realtimeDbPath,
+        simulatorSettings: plainAssetData.simulatorSettings,
+      });
+
+      // Emit event khusus untuk simulator relay
+      if (createAssetDto.category === ASSET_CATEGORY.NORMAL) {
+        this.eventEmitter.emit('simulator.asset.new', {
+          assetId,
+          symbol: createAssetDto.symbol,
+          realtimeDbPath: plainAssetData.realtimeDbPath,
+          simulatorSettings: plainAssetData.simulatorSettings,
+        });
+        this.logger.log(`📡 Emitted simulator.asset.new event for ${createAssetDto.symbol}`);
+      }
+
+      // Emit event khusus untuk crypto scheduler
+      if (createAssetDto.category === ASSET_CATEGORY.CRYPTO) {
+        this.eventEmitter.emit('crypto.asset.new', {
+          assetId,
+          symbol: createAssetDto.symbol,
+          cryptoConfig: plainAssetData.cryptoConfig,
+          realtimeDbPath: plainAssetData.realtimeDbPath,
+        });
+        this.logger.log(`📡 Emitted crypto.asset.new event for ${createAssetDto.symbol}`);
+      }
+
+      this.logger.log('');
       this.logger.log('');
       this.logger.log('🎉 ================================================');
       this.logger.log(`🎉 NEW ${createAssetDto.type.toUpperCase()} ASSET: ${createAssetDto.symbol}`);

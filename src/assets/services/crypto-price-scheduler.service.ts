@@ -8,6 +8,7 @@ import { CryptoTimeframeManager, CryptoBar } from './crypto-timeframe-manager';
 import { TradingGateway } from '../../websocket/trading.gateway';
 import { ASSET_CATEGORY } from '../../common/constants';
 import { Asset } from '../../common/interfaces';
+import { OnEvent } from '@nestjs/event-emitter';
 
 @Injectable()
 export class CryptoPriceSchedulerService implements OnModuleInit {
@@ -563,6 +564,32 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       this.logger.error(`OHLC generation failed for ${asset.symbol}: ${error.message}`);
     }
   }
+
+  @OnEvent('crypto.asset.new')
+async handleNewCryptoAsset(payload: {
+  assetId: string;
+  symbol: string;
+  cryptoConfig: any;
+  realtimeDbPath: string;
+}) {
+  this.logger.log(`🆕 New crypto asset detected via event: ${payload.symbol}`);
+  
+  try {
+    // Reload assets
+    await this.loadCryptoAssets();
+    
+    // Jika scheduler belum aktif, start sekarang
+    if (!this.schedulerActive && this.cryptoAssets.length > 0) {
+      this.logger.log('🚀 Starting crypto scheduler for new asset...');
+      await this.startScheduler();
+    } else {
+      this.logger.log(`⚡ Scheduler already active with ${this.cryptoAssets.length} crypto assets`);
+    }
+  } catch (error) {
+    this.logger.error(`❌ Failed to handle new crypto asset: ${error.message}`);
+  }
+}
+
 
   private cleanBarData(bar: any): any {
     return {

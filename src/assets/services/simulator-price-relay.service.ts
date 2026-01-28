@@ -1,9 +1,8 @@
-// src/assets/services/simulator-price-relay.service.ts
-
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
+import { OnEvent } from '@nestjs/event-emitter'; // TAMBAHKAN INI
 import { FirebaseService } from '../../firebase/firebase.service';
-import { AssetsService } from '../assets.service';
+import { AssetsService } from '../assets.service'; // TAMBAHKAN INI (jika belum ada)
 import { TradingGateway } from '../../websocket/trading.gateway';
 import { ASSET_CATEGORY } from '../../common/constants';
 import { Asset } from '../../common/interfaces';
@@ -22,7 +21,7 @@ export class SimulatorPriceRelayService implements OnModuleInit {
 
   constructor(
     private firebaseService: FirebaseService,
-    private assetsService: AssetsService,
+    private assetsService: AssetsService, // INJECT AssetsService
     private tradingGateway: TradingGateway,
   ) {}
 
@@ -46,31 +45,42 @@ export class SimulatorPriceRelayService implements OnModuleInit {
     }
   }
 
-  private async loadNormalAssets() {
+  // ============================================
+  // 🎯 EVENT LISTENER: Asset Baru Dibuat
+  // ============================================
+  
+  @OnEvent('simulator.asset.new')
+  async handleNewSimulatorAsset(payload: { 
+    assetId: string; 
+    symbol: string; 
+    realtimeDbPath: string;
+    simulatorSettings?: any;
+  }) {
+    this.logger.log(`🆕 New simulator asset detected via event: ${payload.symbol}`);
+    
     try {
-      const { assets } = await this.assetsService.getAllAssets(true);
+      // Reload assets dari database untuk mendapatkan asset terbaru
+      await this.loadNormalAssets();
       
-      this.normalAssets = assets.filter(a => a.category === ASSET_CATEGORY.NORMAL);
-      
-      this.logger.log('');
-      this.logger.log('📡 ================================================');
-      this.logger.log('📡 SIMULATOR PRICE RELAY SERVICE');
-      this.logger.log('📡 ================================================');
-      this.logger.log(`   Normal Assets: ${this.normalAssets.length}`);
-      
-      this.normalAssets.forEach(asset => {
-        const path = this.getAssetPath(asset);
-        this.logger.log(`   • ${asset.symbol} → ${path}`);
-      });
-      
-      this.logger.log('📡 ================================================');
-      this.logger.log('');
-      
+      // Jika relay belum jalan, start sekarang
+      if (!this.isRunning && this.normalAssets.length > 0) {
+        this.logger.log('🚀 Starting relay for new asset...');
+        await this.startRelay();
+      } else {
+        this.logger.log(`📡 Relay already running with ${this.normalAssets.length} assets`);
+      }
     } catch (error) {
-      this.logger.error(`❌ Failed to load normal assets: ${error.message}`);
-      this.normalAssets = [];
+      this.logger.error(`❌ Failed to handle new simulator asset: ${error.message}`);
     }
   }
+
+  @OnEvent('asset.refresh.requested') // Untuk manual refresh
+  async handleRefreshRequest() {
+    this.logger.log('🔄 Manual refresh requested for simulator relay');
+    await this.loadNormalAssets();
+  }
+
+  // (Sisanya sama seperti kode sebelumnya...)
 
   @Cron('*/10 * * * *')
   async refreshAssets() {
@@ -91,6 +101,21 @@ export class SimulatorPriceRelayService implements OnModuleInit {
     }
   }
 
+  private async loadNormalAssets() {
+    try {
+      // ✅ Gunakan getAllAssets dari AssetsService untuk mendapatkan data terbaru
+      const { assets } = await this.assetsService.getAllAssets(true);
+      
+      this.normalAssets = assets.filter(a => a.category === ASSET_CATEGORY.NORMAL);
+      
+      this.logger.log(`📡 Loaded ${this.normalAssets.length} normal assets for relay`);
+      
+    } catch (error) {
+      this.logger.error(`❌ Failed to load normal assets: ${error.message}`);
+      this.normalAssets = [];
+    }
+  }
+
   private async startRelay() {
     if (this.isRunning) {
       this.logger.warn('⚠️ Relay already running');
@@ -105,8 +130,7 @@ export class SimulatorPriceRelayService implements OnModuleInit {
     this.isRunning = true;
     
     this.logger.log('🚀 Starting simulator price relay...');
-    this.logger.log('   Interval: 1 second');
-    this.logger.log('   Assets: ' + this.normalAssets.map(a => a.symbol).join(', '));
+    this.logger.log(`   Assets: ${this.normalAssets.map(a => a.symbol).join(', ')}`);
     
     this.relayInterval = setInterval(async () => {
       await this.relayPrices();
