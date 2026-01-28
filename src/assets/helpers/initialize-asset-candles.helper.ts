@@ -6,7 +6,7 @@ import * as admin from 'firebase-admin';
 @Injectable()
 export class InitializeAssetCandlesHelper {
   private readonly logger = new Logger(InitializeAssetCandlesHelper.name);
-  private readonly realtimeDb: admin.database.Database;
+  private realtimeDb: admin.database.Database | null = null;
 
   // Definisi timeframes dan durasi dalam detik
   private readonly TIMEFRAMES = {
@@ -23,7 +23,21 @@ export class InitializeAssetCandlesHelper {
   private readonly CANDLES_TO_CREATE = 240; // Jumlah candle yang akan dibuat
 
   constructor() {
-    this.realtimeDb = admin.database();
+    // Tidak memanggil admin.database() di sini
+  }
+
+  /**
+   * Lazy initialization untuk Realtime Database
+   */
+  private getRealtimeDb(): admin.database.Database {
+    if (!this.realtimeDb) {
+      // Pastikan Firebase sudah di-initialize sebelum mengakses
+      if (!admin.apps.length) {
+        throw new Error('Firebase Admin SDK not initialized. Ensure FirebaseModule is loaded first.');
+      }
+      this.realtimeDb = admin.database();
+    }
+    return this.realtimeDb;
   }
 
   /**
@@ -119,7 +133,7 @@ export class InitializeAssetCandlesHelper {
     const path = `${realtimeDbPath}/ohlc/${timeframe}`;
     
     try {
-      await this.realtimeDb.ref(path).set(candles);
+      await this.getRealtimeDb().ref(path).set(candles);
       this.logger.debug(`Written ${this.CANDLES_TO_CREATE} candles to ${path}`);
     } catch (error) {
       this.logger.error(`Failed to write candles to ${path}: ${error.message}`);
@@ -160,7 +174,7 @@ export class InitializeAssetCandlesHelper {
    */
   private async setLastPrice(realtimeDbPath: string, price: number): Promise<void> {
     try {
-      await this.realtimeDb.ref(`${realtimeDbPath}/price`).set({
+      await this.getRealtimeDb().ref(`${realtimeDbPath}/price`).set({
         current: this.roundPrice(price),
         timestamp: Math.floor(Date.now() / 1000),
       });
