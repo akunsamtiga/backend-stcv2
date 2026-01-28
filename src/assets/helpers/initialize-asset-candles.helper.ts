@@ -8,7 +8,6 @@ export class InitializeAssetCandlesHelper {
   private readonly logger = new Logger(InitializeAssetCandlesHelper.name);
   private realtimeDb: admin.database.Database | null = null;
 
-  // Definisi timeframes dan durasi dalam detik
   private readonly TIMEFRAMES = {
     '1s': 1,
     '1m': 60,
@@ -20,34 +19,20 @@ export class InitializeAssetCandlesHelper {
     '1d': 86400,
   };
 
-  private readonly CANDLES_TO_CREATE = 240; // Jumlah candle yang akan dibuat
+  private readonly CANDLES_TO_CREATE = 240;
 
-  constructor() {
-    // Tidak memanggil admin.database() di sini
-  }
+  constructor() {}
 
-  /**
-   * Lazy initialization untuk Realtime Database
-   */
   private getRealtimeDb(): admin.database.Database {
     if (!this.realtimeDb) {
-      // Pastikan Firebase sudah di-initialize sebelum mengakses
       if (!admin.apps.length) {
-        throw new Error('Firebase Admin SDK not initialized. Ensure FirebaseModule is loaded first.');
+        throw new Error('Firebase Admin SDK not initialized.');
       }
       this.realtimeDb = admin.database();
     }
     return this.realtimeDb;
   }
 
-  /**
-   * Generate 240 candle historis untuk semua timeframe
-   * @param assetId - ID dari asset
-   * @param symbol - Symbol asset (contoh: EUR/USD)
-   * @param realtimeDbPath - Path di Realtime Database
-   * @param initialPrice - Harga awal untuk generate candle
-   * @param volatility - Volatilitas untuk simulasi pergerakan harga (default: 0.001 = 0.1%)
-   */
   async initializeAssetCandles(
     assetId: string,
     symbol: string,
@@ -58,7 +43,7 @@ export class InitializeAssetCandlesHelper {
     this.logger.log(`Initializing 240 candles for asset: ${symbol} (${assetId})`);
 
     try {
-      const now = Math.floor(Date.now() / 1000); // Current timestamp dalam detik
+      const now = Math.floor(Date.now() / 1000);
 
       // Generate candles untuk setiap timeframe
       for (const [timeframe, durationInSeconds] of Object.entries(this.TIMEFRAMES)) {
@@ -84,9 +69,6 @@ export class InitializeAssetCandlesHelper {
     }
   }
 
-  /**
-   * Generate candles untuk satu timeframe tertentu
-   */
   private async generateCandlesForTimeframe(
     realtimeDbPath: string,
     timeframe: string,
@@ -100,19 +82,16 @@ export class InitializeAssetCandlesHelper {
 
     // Generate 240 candles mundur dari waktu sekarang
     for (let i = this.CANDLES_TO_CREATE - 1; i >= 0; i--) {
-      // Hitung timestamp untuk candle ini (mundur dari sekarang)
       const candleTimestamp = currentTimestamp - (i * durationInSeconds);
       
       // Generate OHLC data dengan simulasi random walk
       const open = price;
       const priceChange = this.generatePriceMovement(price, volatility);
       
-      // Simulasi pergerakan intrabar
       const high = open + Math.abs(priceChange) * Math.random() * 1.5;
       const low = open - Math.abs(priceChange) * Math.random() * 1.5;
       const close = open + priceChange;
 
-      // Update price untuk candle berikutnya
       price = close;
 
       // Format candle data
@@ -122,15 +101,14 @@ export class InitializeAssetCandlesHelper {
         l: this.roundPrice(Math.min(open, close, low)),
         c: this.roundPrice(close),
         t: candleTimestamp,
-        v: this.generateVolume(), // Volume simulasi
+        v: this.generateVolume(),
       };
 
-      // Gunakan timestamp sebagai key
       candles[candleTimestamp.toString()] = candleData;
     }
 
-    // Batch write ke Realtime Database
-    const path = `${realtimeDbPath}/ohlc/${timeframe}`;
+    // ✅ FIX: Gunakan flat path ohlc_{timeframe}, bukan nested ohlc/{timeframe}
+    const path = `${realtimeDbPath}/ohlc_${timeframe}`;
     
     try {
       await this.getRealtimeDb().ref(path).set(candles);
@@ -141,53 +119,35 @@ export class InitializeAssetCandlesHelper {
     }
   }
 
-  /**
-   * Generate random price movement berdasarkan volatility
-   */
   private generatePriceMovement(currentPrice: number, volatility: number): number {
-    // Random walk dengan distribusi normal (Box-Muller transform)
     const u1 = Math.random();
     const u2 = Math.random();
     const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
-    
-    // Scale dengan volatility
     return currentPrice * volatility * z;
   }
 
-  /**
-   * Generate volume simulasi
-   */
   private generateVolume(): number {
-    // Random volume antara 1000 - 10000
     return Math.floor(1000 + Math.random() * 9000);
   }
 
-  /**
-   * Round price ke 6 decimal places
-   */
   private roundPrice(price: number): number {
     return Math.round(price * 1000000) / 1000000;
   }
 
-  /**
-   * Set last price di Realtime Database
-   */
   private async setLastPrice(realtimeDbPath: string, price: number): Promise<void> {
     try {
-      await this.getRealtimeDb().ref(`${realtimeDbPath}/price`).set({
+      // ✅ FIX: Gunakan current_price, bukan price
+      await this.getRealtimeDb().ref(`${realtimeDbPath}/current_price`).set({
         current: this.roundPrice(price),
         timestamp: Math.floor(Date.now() / 1000),
       });
-      this.logger.debug(`Set last price for ${realtimeDbPath}: ${price}`);
+      this.logger.debug(`Set current_price for ${realtimeDbPath}: ${price}`);
     } catch (error) {
-      this.logger.error(`Failed to set last price: ${error.message}`);
+      this.logger.error(`Failed to set current_price: ${error.message}`);
       throw error;
     }
   }
 
-  /**
-   * Initialize candles untuk multiple assets sekaligus
-   */
   async initializeMultipleAssets(
     assets: Array<{
       assetId: string;
