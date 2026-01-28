@@ -42,8 +42,6 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
   private initAttempts = 0;
   private readonly MAX_INIT_ATTEMPTS = 10;
 
-  private readonly MAX_1S_BARS_PER_ASSET = 60;
-
   constructor(
     private firebaseService: FirebaseService,
     private binanceService: BinanceService,
@@ -166,16 +164,16 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     }, this.CLEANUP_INTERVAL);
     
     this.logger.log('✅ Cleanup schedulers started:');
-    this.logger.log('   • 1s bars: Every 1 minute (60 bar limit)');
+    this.logger.log('   • 1s bars: Every 1 minute (time-based, 2 min retention = 120 bars)');
     this.logger.log('   • Other timeframes: Every 30 minutes');
   }
 
-  // ✅ FIXED: Aggressive Cleanup untuk 1s bars
+  // ✅ FIXED: Time-based cleanup ONLY for 1s bars
   private async aggressiveCleanup1sBars(): Promise<void> {
     if (this.cryptoAssets.length === 0) return;
 
     const startTime = Date.now();
-    this.logger.log('🗑️ HARDCORE 1S CLEANUP STARTED (1-min retention, 60 bars max)...');
+    this.logger.log('🗑️ 1S CLEANUP STARTED (2-min retention, time-based only)...');
 
     try {
       let totalDeleted = 0;
@@ -185,7 +183,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
         const batch = this.cryptoAssets.slice(i, i + PARALLEL_ASSETS);
         
         const results = await Promise.allSettled(
-          batch.map(asset => this.cleanupAsset1sHardcore(asset))
+          batch.map(asset => this.cleanupAsset1sTimeBased(asset))
         );
         
         results.forEach((result, index) => {
@@ -193,7 +191,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
             totalDeleted += result.value.deleted;
             this.logger.log(
               `${batch[index].symbol}: ${result.value.deleted} deleted, ` +
-              `${result.value.remaining} remaining (max 60 bars, oldest: ${result.value.oldestAge}s)`
+              `${result.value.remaining} remaining (retention: 2 min, oldest: ${result.value.oldestAge}s)`
             );
           } else {
             this.logger.error(`Cleanup failed for ${batch[index].symbol}: ${result.reason}`);
@@ -210,7 +208,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       this.cleanupStats.lastRun = Date.now();
       this.cleanupStats.byTimeframe['1s'] = (this.cleanupStats.byTimeframe['1s'] || 0) + totalDeleted;
 
-      this.logger.log(`✅ HARDCORE 1S DONE: ${totalDeleted} bars deleted in ${duration}ms (60-bar limit enforced)`);
+      this.logger.log(`✅ 1S CLEANUP DONE: ${totalDeleted} bars deleted in ${duration}ms (time-based only)`);
 
     } catch (error) {
       this.logger.error(`❌ Aggressive 1s cleanup failed: ${error.message}`);
@@ -218,155 +216,145 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     }
   }
 
-  // ✅ FIXED: Cleanup per asset - SIMPLIFIED & WORKING
-  private async cleanupAsset1sHardcore(asset: Asset) {
+  // ✅ FIXED: Time-based cleanup ONLY - NO max bars limit!
+  private async cleanupAsset1sTimeBased(asset: Asset) {
     const path = this.getAssetPath(asset);
     const ohlcPath = `${path}/ohlc_1s`;
     const now = Math.floor(Date.now() / 1000);
-    const ONE_MINUTE_AGO = now - 60;
+    
+    // ✅ RETENTION: 2 minutes = 120 seconds
+    const TWO_MINUTES_AGO = now - 120;
 
     try {
-      // ✅ Check if Admin SDK is available (more reliable)
       const useAdminSDK = this.firebaseService.isRealtimeDbAdminAvailable();
-      
-      let allKeys: string[] = [];
-      
+
       if (useAdminSDK) {
-        // ✅ METHOD 1: Admin SDK (most reliable)
+        // ✅ Admin SDK method
         const snapshot = await this.firebaseService.getRealtimeDatabase()
           .ref(ohlcPath)
+          .orderByKey()
+          .endAt(TWO_MINUTES_AGO.toString())
+          .limitToLast(1000)
           .once('value');
-        
+
         const data = snapshot.val();
         if (!data) {
           return { deleted: 0, remaining: 0, oldestAge: 0 };
         }
+
+        const keysToDelete = Object.keys(data)
+          .filter(key => parseInt(key) < TWO_MINUTES_AGO);
+
+        if (keysToDelete.length === 0) {
+          const allSnapshot = await this.firebaseService.getRealtimeDatabase()
+            .ref(ohlcPath)
+            .limitToLast(1)
+            .once('value');
+          
+          const allData = allSnapshot.val();
+          const remaining = allData ? Object.keys(allData).length : 0;
+          const oldestKey = allData ? Math.min(...Object.keys(allData).map(k => parseInt(k))) : now;
+          const oldestAge = now - oldestKey;
+
+          return { deleted: 0, remaining, oldestAge };
+        }
+
+        // ✅ Batch delete
+        const updates: Record<string, null> = {};
+        keysToDelete.forEach(key => {
+          updates[key] = null;
+        });
+
+        await this.firebaseService.getRealtimeDatabase()
+          .ref(ohlcPath)
+          .update(updates);
+
+        // Count remaining
+        const remainingSnapshot = await this.firebaseService.getRealtimeDatabase()
+          .ref(ohlcPath)
+          .limitToLast(1)
+          .once('value');
         
-        allKeys = Object.keys(data).sort((a, b) => parseInt(a) - parseInt(b));
+        const remainingData = remainingSnapshot.val();
+        const remaining = remainingData ? Object.keys(remainingData).length : 0;
+        const oldestKey = remainingData ? Math.min(...Object.keys(remainingData).map(k => parseInt(k))) : now;
+        const oldestAge = now - oldestKey;
+
+        return { deleted: keysToDelete.length, remaining, oldestAge };
+
       } else {
-        // ✅ METHOD 2: REST API fallback
+        // ✅ REST API method
         const response = await this.firebaseService.getRealtimeDbValue(
-          `${ohlcPath}.json?shallow=true`,
+          ohlcPath,
           false
         );
 
-        if (!response) {
+        if (!response || typeof response !== 'object') {
           return { deleted: 0, remaining: 0, oldestAge: 0 };
         }
 
-        allKeys = Object.keys(response).sort((a, b) => parseInt(a) - parseInt(b));
-      }
+        const keysToDelete = Object.keys(response)
+          .filter(key => parseInt(key) < TWO_MINUTES_AGO);
 
-      if (allKeys.length === 0) {
-        return { deleted: 0, remaining: 0, oldestAge: 0 };
-      }
+        if (keysToDelete.length === 0) {
+          const allKeys = Object.keys(response);
+          const remaining = allKeys.length;
+          const oldestKey = allKeys.length > 0 ? Math.min(...allKeys.map(k => parseInt(k))) : now;
+          const oldestAge = now - oldestKey;
 
-      // ✅ TWO-PHASE CLEANUP:
-      // Phase 1: Remove bars older than 1 minute (time-based)
-      // Phase 2: Ensure max 60 bars total (count-based)
-      
-      const keysToDelete: string[] = [];
-      
-      // Phase 1: Time-based cleanup (older than 1 minute)
-      const oldKeys = allKeys.filter(key => parseInt(key) < ONE_MINUTE_AGO);
-      keysToDelete.push(...oldKeys);
-      
-      // Phase 2: Count-based cleanup (keep only 60 newest)
-      const remainingAfterPhase1 = allKeys.filter(key => !keysToDelete.includes(key));
-      if (remainingAfterPhase1.length > this.MAX_1S_BARS_PER_ASSET) {
-        const excessCount = remainingAfterPhase1.length - this.MAX_1S_BARS_PER_ASSET;
-        const oldestRemaining = remainingAfterPhase1.slice(0, excessCount);
-        keysToDelete.push(...oldestRemaining);
-      }
-
-      if (keysToDelete.length === 0) {
-        const oldestAge = now - parseInt(allKeys[0]);
-        return {
-          deleted: 0,
-          remaining: allKeys.length,
-          oldestAge
-        };
-      }
-
-      const oldestAge = now - parseInt(keysToDelete[0]);
-
-      // ✅ DELETE using most reliable method available
-      const BATCH_SIZE = 50;
-      let deleted = 0;
-
-      for (let i = 0; i < keysToDelete.length; i += BATCH_SIZE) {
-        const batch = keysToDelete.slice(i, i + BATCH_SIZE);
-        
-        const deletedCount = await this.firebaseService.batchDeleteRealtimeDbRelative(
-          ohlcPath,
-          batch
-        );
-        
-        deleted += deletedCount;
-        
-        this.logger.debug(
-          `🗑️ Deleted ${deletedCount} 1s bars from ${asset.symbol} ` +
-          `(${deleted}/${keysToDelete.length})`
-        );
-
-        // Rate limit protection
-        if (i + BATCH_SIZE < keysToDelete.length) {
-          await new Promise(resolve => setTimeout(resolve, 100));
+          return { deleted: 0, remaining, oldestAge };
         }
+
+        // Delete via REST API
+        for (const key of keysToDelete) {
+          await this.firebaseService.setRealtimeDbValue(
+            `${ohlcPath}/${key}`,
+            null,
+            false
+          );
+        }
+
+        const remainingKeys = Object.keys(response).filter(k => !keysToDelete.includes(k));
+        const remaining = remainingKeys.length;
+        const oldestKey = remainingKeys.length > 0 ? Math.min(...remainingKeys.map(k => parseInt(k))) : now;
+        const oldestAge = now - oldestKey;
+
+        return { deleted: keysToDelete.length, remaining, oldestAge };
       }
-
-      const remaining = allKeys.length - deleted;
-
-      return {
-        deleted,
-        remaining: Math.min(remaining, this.MAX_1S_BARS_PER_ASSET),
-        oldestAge
-      };
 
     } catch (error) {
-      this.logger.error(
-        `❌ 1s cleanup failed for ${asset.symbol}: ${error.message}`
-      );
+      this.logger.error(`1s cleanup failed for ${asset.symbol}: ${error.message}`);
       return { deleted: 0, remaining: 0, oldestAge: 0 };
     }
   }
 
-  // ✅ FIXED: Regular cleanup untuk timeframe lainnya
+  // ✅ Regular cleanup for other timeframes
   private async regularCleanup(): Promise<void> {
     if (this.cryptoAssets.length === 0) return;
 
     const startTime = Date.now();
-    this.logger.log('🧹 REGULAR cleanup (all timeframes)...');
+    this.logger.log('🗑️ REGULAR CLEANUP STARTED (all timeframes except 1s)...');
 
     try {
-      const manager = new CryptoTimeframeManager();
-      const retentionDays = manager.getRetentionDays();
-      
+      const timeframes = ['1m', '5m', '15m', '30m', '1h', '4h', '1d'];
       let totalDeleted = 0;
 
       for (const asset of this.cryptoAssets) {
-        try {
-          for (const [timeframe, days] of Object.entries(retentionDays)) {
-            if (timeframe === '1s') continue; // Skip 1s (handled by aggressive cleanup)
-            
-            const deleted = await this.cleanupAssetTimeframe(asset, timeframe, days);
-            totalDeleted += deleted;
-            
-            if (!this.cleanupStats.byTimeframe[timeframe]) {
-              this.cleanupStats.byTimeframe[timeframe] = 0;
-            }
-            this.cleanupStats.byTimeframe[timeframe] += deleted;
+        for (const tf of timeframes) {
+          const deleted = await this.cleanupTimeframe(asset, tf);
+          totalDeleted += deleted;
+
+          if (deleted > 0) {
+            this.cleanupStats.byTimeframe[tf] = (this.cleanupStats.byTimeframe[tf] || 0) + deleted;
           }
-        } catch (error) {
-          this.logger.error(`❌ Cleanup error for ${asset.symbol}: ${error.message}`);
-          this.cleanupStats.errors++;
         }
       }
 
       const duration = Date.now() - startTime;
       this.lastCleanupTime = Date.now();
+      this.cleanupStats.totalDeleted += totalDeleted;
 
-      this.logger.log(`✅ REGULAR cleanup: ${totalDeleted} bars deleted in ${duration}ms`);
+      this.logger.log(`✅ REGULAR CLEANUP DONE: ${totalDeleted} bars deleted in ${duration}ms`);
 
     } catch (error) {
       this.logger.error(`❌ Regular cleanup failed: ${error.message}`);
@@ -374,88 +362,78 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     }
   }
 
-  // ✅ FIXED: Cleanup per timeframe - WORKING VERSION
-  private async cleanupAssetTimeframe(
-    asset: Asset,
-    timeframe: string,
-    retentionDays: number
-  ): Promise<number> {
-    const startTime = Date.now();
-    const cutoffTimestamp = Math.floor(Date.now() / 1000) - (retentionDays * 86400);
+  private async cleanupTimeframe(asset: Asset, timeframe: string): Promise<number> {
     const path = this.getAssetPath(asset);
     const ohlcPath = `${path}/ohlc_${timeframe}`;
+    
+    const manager = this.timeframeManagers.get(asset.id);
+    if (!manager) return 0;
 
-    this.logger.debug(
-      `Starting cleanup for ${asset.symbol} ${timeframe} (cutoff: ${cutoffTimestamp})`
-    );
+    const retentionDays = manager.getRetentionDays();
+    const retention = retentionDays[timeframe];
+    
+    if (!retention) return 0;
 
-    let totalDeleted = 0;
-    const BATCH_DELETE_SIZE = 100;
+    const now = Math.floor(Date.now() / 1000);
+    const retentionSeconds = Math.floor(retention * 86400);
+    const cutoffTimestamp = now - retentionSeconds;
 
     try {
       const useAdminSDK = this.firebaseService.isRealtimeDbAdminAvailable();
-      
-      let allKeys: string[] = [];
-      
+
       if (useAdminSDK) {
         const snapshot = await this.firebaseService.getRealtimeDatabase()
           .ref(ohlcPath)
+          .orderByKey()
+          .endAt(cutoffTimestamp.toString())
+          .limitToLast(500)
           .once('value');
-        
+
         const data = snapshot.val();
         if (!data) return 0;
-        
-        allKeys = Object.keys(data).sort((a, b) => parseInt(a) - parseInt(b));
+
+        const keysToDelete = Object.keys(data)
+          .filter(key => parseInt(key) < cutoffTimestamp);
+
+        if (keysToDelete.length === 0) return 0;
+
+        const updates: Record<string, null> = {};
+        keysToDelete.forEach(key => {
+          updates[key] = null;
+        });
+
+        await this.firebaseService.getRealtimeDatabase()
+          .ref(ohlcPath)
+          .update(updates);
+
+        return keysToDelete.length;
+
       } else {
         const response = await this.firebaseService.getRealtimeDbValue(
-          `${ohlcPath}.json?shallow=true`,
+          ohlcPath,
           false
         );
-        
-        if (!response) return 0;
-        allKeys = Object.keys(response).sort((a, b) => parseInt(a) - parseInt(b));
-      }
-      
-      const oldKeys = allKeys.filter(key => parseInt(key) < cutoffTimestamp);
-      
-      if (oldKeys.length === 0) return 0;
 
-      this.logger.log(
-        `🗑️ Deleting ${oldKeys.length} old ${timeframe} bars for ${asset.symbol}`
-      );
+        if (!response || typeof response !== 'object') return 0;
 
-      for (let i = 0; i < oldKeys.length; i += BATCH_DELETE_SIZE) {
-        const batch = oldKeys.slice(i, i + BATCH_DELETE_SIZE);
-        
-        const deleted = await this.firebaseService.batchDeleteRealtimeDbRelative(
-          ohlcPath,
-          batch
-        );
-        
-        totalDeleted += deleted;
-        
-        this.logger.debug(
-          `🗑️ Deleted ${deleted} ${timeframe} bars from ${asset.symbol} ` +
-          `(${totalDeleted}/${oldKeys.length})`
-        );
+        const keysToDelete = Object.keys(response)
+          .filter(key => parseInt(key) < cutoffTimestamp);
 
-        // Rate limit protection
-        if (i + BATCH_DELETE_SIZE < oldKeys.length) {
-          await new Promise(resolve => setTimeout(resolve, 100));
+        if (keysToDelete.length === 0) return 0;
+
+        for (const key of keysToDelete) {
+          await this.firebaseService.setRealtimeDbValue(
+            `${ohlcPath}/${key}`,
+            null,
+            false
+          );
         }
+
+        return keysToDelete.length;
       }
-
-      const duration = Date.now() - startTime;
-      this.logger.debug(
-        `✅ Cleanup ${asset.symbol} ${timeframe}: ${totalDeleted} bars in ${duration}ms`
-      );
-
-      return totalDeleted;
 
     } catch (error) {
-      this.logger.error(
-        `❌ Cleanup error for ${asset.symbol} ${timeframe}: ${error.message}`
-      );
+      this.logger.error(`Cleanup ${timeframe} failed for ${asset.symbol}: ${error.message}`);
       return 0;
     }
   }
@@ -635,10 +613,11 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     this.logger.log(`Errors: ${this.errorCount}`);
     this.logger.log(`WebSocket: ENABLED`);
     this.logger.log('================================================');
-    this.logger.log('CLEANUP STATS:');
+    this.logger.log('CLEANUP STATS (TIME-BASED ONLY):');
     this.logger.log(`Total Runs: ${this.cleanupStats.totalRuns}`);
     this.logger.log(`Total Deleted: ${this.cleanupStats.totalDeleted}`);
     this.logger.log(`Errors: ${this.cleanupStats.errors}`);
+    this.logger.log(`1s Retention: 2 minutes (120 bars) - NO MAX LIMIT ✅`);
     this.logger.log('By Timeframe:');
     Object.entries(this.cleanupStats.byTimeframe).forEach(([tf, count]) => {
       this.logger.log(`  ${tf}: ${count} bars`);
@@ -692,7 +671,8 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
           lastRun: this.lastAggressiveCleanupTime > 0
             ? `${Math.floor((Date.now() - this.lastAggressiveCleanupTime) / 60000)}m ago`
             : 'Never',
-          maxBarsPerAsset: this.MAX_1S_BARS_PER_ASSET,
+          retention: '2 minutes (120 bars) - Time-based only ✅',
+          method: 'Time-based cleanup ONLY, NO max bars limit',
         },
         regular: {
           interval: `${this.CLEANUP_INTERVAL / 60000} minutes`,
@@ -730,4 +710,3 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     await this.stopScheduler();
   }
 }
-
