@@ -1,7 +1,24 @@
-// src/assets/assets.controller.ts
-
-import { Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth, ApiParam, ApiQuery, ApiResponse } from '@nestjs/swagger';
+import { 
+  Controller, 
+  Get, 
+  Post, 
+  Put, 
+  Delete, 
+  Body, 
+  Param, 
+  Query, 
+  UseGuards,
+  HttpCode,
+  HttpStatus,
+} from '@nestjs/common';
+import { 
+  ApiTags, 
+  ApiOperation, 
+  ApiBearerAuth, 
+  ApiParam, 
+  ApiQuery, 
+  ApiResponse,
+} from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -24,6 +41,144 @@ export class AssetsController {
     private simulatorRelay: SimulatorPriceRelayService,
   ) {}
 
+  @Post()
+  @UseGuards(RolesGuard)
+  @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ 
+    summary: 'Create new asset with 240 candles initialized (Admin only)',
+    description: `Creates a new trading asset and automatically generates 240 historical candles for all timeframes (1s, 1m, 5m, 15m, 30m, 1h, 4h, 1d). 
+    Only applicable for 'normal' category assets with 'realtime_db' or 'mock' data source.`
+  })
+  @ApiResponse({ 
+    status: 201, 
+    description: 'Asset created successfully with candles initialized',
+    schema: {
+      example: {
+        success: true,
+        message: 'forex normal asset created successfully',
+        asset: {
+          id: 'asset_123',
+          name: 'EUR/USD',
+          symbol: 'EUR/USD',
+          category: 'normal',
+          dataSource: 'realtime_db',
+          realtimeDbPath: '/assets/EUR_USD'
+        },
+        storageInfo: {
+          candlesInitialized: true,
+          initialCandles: 240,
+          timeframes: ['1s', '1m', '5m', '15m', '30m', '1h', '4h', '1d']
+        }
+      }
+    }
+  })
+  @ApiResponse({ 
+    status: 400, 
+    description: 'Invalid input data or validation error'
+  })
+  @ApiResponse({ 
+    status: 403, 
+    description: 'Forbidden - Admin access required'
+  })
+  @ApiResponse({ 
+    status: 409, 
+    description: 'Asset with this symbol already exists'
+  })
+  async createAsset(
+    @Body() createAssetDto: CreateAssetDto,
+    @CurrentUser('sub') userId: string,
+  ) {
+    return this.assetsService.createAsset(createAssetDto, userId);
+  }
+
+  @Post('bulk')
+  @UseGuards(RolesGuard)
+  @Roles(USER_ROLES.SUPER_ADMIN)
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ 
+    summary: 'Bulk create multiple assets (Super Admin only)',
+    description: 'Create multiple assets at once, each with 240 candles initialized. Returns detailed results including success/failure status for each asset.'
+  })
+  @ApiResponse({ 
+    status: 201, 
+    description: 'Bulk operation completed',
+    schema: {
+      example: {
+        success: true,
+        message: 'Processed 5 assets (4 success, 1 failed)',
+        summary: {
+          total: 5,
+          success: 4,
+          failed: 1
+        },
+        results: [
+          {
+            success: true,
+            symbol: 'EUR/USD',
+            data: {
+              message: 'forex normal asset created successfully',
+              asset: { /* asset data */ }
+            }
+          },
+          {
+            success: false,
+            symbol: 'GBP/USD',
+            error: 'Asset with symbol GBP/USD already exists'
+          }
+        ]
+      }
+    }
+  })
+  async bulkCreateAssets(
+    @Body() assets: CreateAssetDto[],
+    @CurrentUser('sub') adminId: string,
+  ) {
+    return this.assetsService.bulkCreateAssets(assets, adminId);
+  }
+
+  @Post(':assetId/reinitialize-candles')
+  @UseGuards(RolesGuard)
+  @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ 
+    summary: 'Reinitialize 240 candles for existing asset (Admin only)',
+    description: `Regenerates all historical candles for an existing asset. 
+    WARNING: This will overwrite existing OHLC data in Realtime Database!
+    Only works for 'normal' category assets with 'realtime_db' or 'mock' data source.`
+  })
+  @ApiParam({ 
+    name: 'assetId', 
+    description: 'Asset ID from Firestore',
+    example: 'abc123def456'
+  })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Candles reinitialized successfully',
+    schema: {
+      example: {
+        success: true,
+        message: 'Candles reinitialized for EUR/USD',
+        data: {
+          assetId: 'abc123',
+          symbol: 'EUR/USD',
+          realtimeDbPath: '/assets/EUR_USD'
+        }
+      }
+    }
+  })
+  @ApiResponse({ 
+    status: 404, 
+    description: 'Asset not found'
+  })
+  @ApiResponse({ 
+    status: 400, 
+    description: 'Cannot reinitialize candles for this asset type (crypto or api source)'
+  })
+  async reinitializeCandles(@Param('assetId') assetId: string) {
+    return this.assetsService.reinitializeAssetCandles(assetId);
+  }
+
   @Get('types')
   @ApiOperation({ 
     summary: 'Get available asset types',
@@ -40,26 +195,11 @@ export class AssetsController {
     };
   }
 
-  @Post()
-  @UseGuards(RolesGuard)
-  @Roles(USER_ROLES.SUPER_ADMIN)
-  @ApiOperation({ 
-    summary: 'Create new asset (Super Admin only)',
-    description: 'Create asset with full control over type, simulator and trading settings'
-  })
-  @ApiResponse({ status: 201, description: 'Asset created successfully' })
-  createAsset(
-    @Body() createAssetDto: CreateAssetDto,
-    @CurrentUser('sub') userId: string,
-  ) {
-    return this.assetsService.createAsset(createAssetDto, userId);
-  }
-
   @Put(':id')
   @UseGuards(RolesGuard)
-  @Roles(USER_ROLES.SUPER_ADMIN)
+  @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
   @ApiOperation({ 
-    summary: 'Update asset (Super Admin only)',
+    summary: 'Update asset (Admin only)',
     description: 'Update any asset property including type, simulator and trading settings'
   })
   @ApiParam({ name: 'id', description: 'Asset ID' })

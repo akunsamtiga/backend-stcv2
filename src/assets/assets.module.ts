@@ -1,5 +1,3 @@
-// src/assets/assets.module.ts
-
 import { Module, forwardRef } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
@@ -9,6 +7,7 @@ import { PriceFetcherService } from './services/price-fetcher.service';
 import { BinanceService } from './services/binance.service';
 import { CryptoPriceSchedulerService } from './services/crypto-price-scheduler.service';
 import { SimulatorPriceRelayService } from './services/simulator-price-relay.service';
+import { InitializeAssetCandlesHelper } from './helpers/initialize-asset-candles.helper';
 import { AuthModule } from '../auth/auth.module';
 import { WebSocketModule } from '../websocket/websocket.module';
 
@@ -34,6 +33,7 @@ import { WebSocketModule } from '../websocket/websocket.module';
     BinanceService,
     CryptoPriceSchedulerService,
     SimulatorPriceRelayService,
+    InitializeAssetCandlesHelper,
   ],
   exports: [
     AssetsService,
@@ -41,6 +41,7 @@ import { WebSocketModule } from '../websocket/websocket.module';
     BinanceService,
     CryptoPriceSchedulerService,
     SimulatorPriceRelayService,
+    InitializeAssetCandlesHelper,
   ],
 })
 export class AssetsModule {}

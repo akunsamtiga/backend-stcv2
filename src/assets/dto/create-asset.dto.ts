@@ -1,9 +1,16 @@
 import { 
-  IsString, IsNumber, IsBoolean, IsEnum, IsOptional, 
-  Min, Max, IsArray, ValidateNested, IsInt, IsUrl 
+  IsString, 
+  IsNumber, 
+  IsBoolean, 
+  IsEnum, 
+  IsOptional,
+  ValidateNested,
+  IsArray,
+  Min,
+  Max,
 } from 'class-validator';
-import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
 import { ASSET_CATEGORY, ASSET_DATA_SOURCE, ASSET_TYPE } from '../../common/constants';
 
 export class SimulatorSettingsDto {
@@ -11,8 +18,8 @@ export class SimulatorSettingsDto {
     example: 640.0225387, 
     description: 'Initial price for simulator (supports high precision up to 10 decimal places)' 
   })
-  @IsNumber({ maxDecimalPlaces: 10 }) // ✅ Support up to 10 decimal places
-  @Min(0.0000000001) // ✅ Support very small numbers
+  @IsNumber({ maxDecimalPlaces: 10 })
+  @Min(0.0000000001)
   initialPrice: number;
 
   @ApiProperty({ 
@@ -124,22 +131,22 @@ export class CryptoConfigDto {
 
 export class CreateAssetDto {
   @ApiProperty({ 
-    example: 'Bitcoin',
-    description: 'Asset display name' 
+    example: 'Euro vs US Dollar',
+    description: 'Asset display name'
   })
   @IsString()
   name: string;
 
   @ApiProperty({ 
-    example: 'BTC/USD',
-    description: 'Asset symbol (unique identifier)' 
+    example: 'EUR/USD',
+    description: 'Asset symbol (unique identifier)'
   })
   @IsString()
   symbol: string;
 
   @ApiPropertyOptional({ 
-    example: 'https://example.com/icons/btc.png  OR data:image/png;base64,...',
-    description: 'Asset icon - URL or base64 image (max 2MB)' 
+    example: 'https://example.com/icons/eur-usd.png OR data:image/png;base64,...',
+    description: 'Asset icon - URL or base64 image (max 2MB)'
   })
   @IsOptional()
   @IsString()
@@ -155,15 +162,15 @@ export class CreateAssetDto {
 
   @ApiProperty({ 
     enum: ASSET_CATEGORY,
-    example: 'crypto',
-    description: 'Asset category: normal or crypto'
+    example: 'normal',
+    description: 'Asset category: normal (simulated) or crypto (real-time)'
   })
   @IsEnum(ASSET_CATEGORY)
   category: string;
 
   @ApiProperty({ 
     example: 85, 
-    description: 'Profit rate percentage (0-100)' 
+    description: 'Profit rate percentage (0-100)'
   })
   @IsNumber()
   @Min(0)
@@ -172,30 +179,30 @@ export class CreateAssetDto {
 
   @ApiProperty({ 
     example: true, 
-    description: 'Is asset active for trading' 
+    description: 'Is asset active for trading'
   })
   @IsBoolean()
   isActive: boolean;
 
   @ApiProperty({ 
     enum: ASSET_DATA_SOURCE,
-    example: 'binance',
+    example: 'realtime_db',
     description: 'Data source: realtime_db, api, mock, or binance (for crypto)'
   })
   @IsEnum(ASSET_DATA_SOURCE)
   dataSource: string;
 
   @ApiPropertyOptional({ 
-    example: '/crypto/btc_usd',
-    description: 'Firebase Realtime DB path'
+    example: '/assets/EUR_USD',
+    description: 'Firebase Realtime DB path (auto-generated if not provided for crypto)'
   })
   @IsOptional()
   @IsString()
   realtimeDbPath?: string;
 
   @ApiPropertyOptional({ 
-    example: 'https://api.example.com/price ',
-    description: 'API endpoint URL (for api data source only, not for crypto)'
+    example: 'https://api.example.com/price',
+    description: 'API endpoint URL (for api data source only)'
   })
   @IsOptional()
   @IsString()
@@ -209,14 +216,6 @@ export class CreateAssetDto {
   @ValidateNested()
   @Type(() => CryptoConfigDto)
   cryptoConfig?: CryptoConfigDto;
-
-  @ApiPropertyOptional({ 
-    example: 'Bitcoin - Leading cryptocurrency',
-    description: 'Asset description'
-  })
-  @IsOptional()
-  @IsString()
-  description?: string;
 
   @ApiPropertyOptional({ 
     type: SimulatorSettingsDto,
@@ -235,4 +234,61 @@ export class CreateAssetDto {
   @ValidateNested()
   @Type(() => TradingSettingsDto)
   tradingSettings?: TradingSettingsDto;
+
+  @ApiPropertyOptional({ 
+    example: 'Euro vs US Dollar pair for forex trading',
+    description: 'Asset description'
+  })
+  @IsOptional()
+  @IsString()
+  description?: string;
+
+  @ApiPropertyOptional({ 
+    example: 1.0950,
+    description: 'Initial price for candle generation (alternative to simulatorSettings.initialPrice). Used when auto-generating 240 historical candles.'
+  })
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 10 })
+  @Min(0.0000000001)
+  initialPrice?: number;
+
+  @ApiPropertyOptional({ 
+    example: 0.001,
+    description: 'Price volatility for candle generation (alternative to simulatorSettings.secondVolatilityMax). Default: 0.001 (0.1%)',
+    default: 0.001
+  })
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 10 })
+  @Min(0.0001)
+  @Max(0.1)
+  volatility?: number;
+
+  @ApiPropertyOptional({ 
+    example: 1.0850,
+    description: 'Minimum price limit (alternative to simulatorSettings.minPrice)'
+  })
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 10 })
+  @Min(0)
+  minPrice?: number;
+
+  @ApiPropertyOptional({ 
+    example: 1.1050,
+    description: 'Maximum price limit (alternative to simulatorSettings.maxPrice)'
+  })
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 10 })
+  @Min(0)
+  maxPrice?: number;
+
+  @ApiPropertyOptional({ 
+    example: 6,
+    description: 'Number of decimal places for price display',
+    default: 6
+  })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(10)
+  decimalPlaces?: number;
 }

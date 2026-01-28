@@ -8,6 +8,7 @@ import { UpdateAssetDto } from './dto/update-asset.dto';
 import { COLLECTIONS, ALL_DURATIONS, ASSET_CATEGORY, ASSET_DATA_SOURCE } from '../common/constants';
 import { CalculationUtil, TimezoneUtil } from '../common/utils';
 import { Asset } from '../common/interfaces';
+import { InitializeAssetCandlesHelper } from './helpers/initialize-asset-candles.helper';
 
 @Injectable()
 export class AssetsService {
@@ -43,6 +44,7 @@ export class AssetsService {
     private priceFetcherService: PriceFetcherService,
     private binanceService: BinanceService,
     private readonly eventEmitter: EventEmitter2,
+    private initializeCandlesHelper: InitializeAssetCandlesHelper,
   ) {
     setTimeout(async () => {
       try {
@@ -88,21 +90,16 @@ export class AssetsService {
     return obj;
   }
 
-  // ✅ Helper function untuk preserve high precision numbers
   private preserveHighPrecision(value: number | undefined, defaultValue?: number): number | undefined {
     if (value === undefined || value === null) {
       return defaultValue;
     }
-    
-    // Don't round, preserve original precision
     return value;
   }
 
-  // ✅ Helper untuk validate simulator settings dengan high precision
   private validateSimulatorSettingsHighPrecision(settings: any): void {
     if (!settings) return;
     
-    // Validate volatility range
     if (settings.dailyVolatilityMin > settings.dailyVolatilityMax) {
       throw new BadRequestException(
         'dailyVolatilityMin must be <= dailyVolatilityMax'
@@ -115,7 +112,6 @@ export class AssetsService {
       );
     }
     
-    // Validate price range
     if (settings.minPrice !== undefined && settings.maxPrice !== undefined) {
       if (settings.minPrice >= settings.maxPrice) {
         throw new BadRequestException(
@@ -125,16 +121,12 @@ export class AssetsService {
       
       const priceRange = settings.maxPrice - settings.minPrice;
       
-      // ✅ IMPORTANT: Allow very small ranges for high precision assets
-      // Old check was too strict: if (priceRange < 0.01)
-      // Now we allow ranges as small as 0.0000001
       if (priceRange < 0.0000001) {
         throw new BadRequestException(
           `Price range too small: ${priceRange.toExponential()}. Minimum range is 0.0000001`
         );
       }
       
-      // Validate initialPrice is within range
       if (settings.initialPrice < settings.minPrice || settings.initialPrice > settings.maxPrice) {
         throw new BadRequestException(
           `initialPrice (${settings.initialPrice}) must be between minPrice (${settings.minPrice}) and maxPrice (${settings.maxPrice})`
@@ -142,12 +134,10 @@ export class AssetsService {
       }
     }
     
-    // Validate volatility makes sense for the price range
     if (settings.minPrice !== undefined && settings.maxPrice !== undefined && settings.secondVolatilityMax !== undefined) {
       const priceRange = settings.maxPrice - settings.minPrice;
       const maxPriceChange = settings.initialPrice * settings.secondVolatilityMax;
       
-      // Warn if volatility can cause price to jump outside range in one update
       if (maxPriceChange > priceRange) {
         this.logger.warn(
           `⚠️ High volatility: Max price change per second (${maxPriceChange.toExponential()}) ` +
@@ -309,7 +299,6 @@ export class AssetsService {
           }
         }
 
-        // ✅ PRESERVE HIGH PRECISION for simulator settings
         const baseSimulatorSettings = createAssetDto.simulatorSettings || this.DEFAULT_SIMULATOR_SETTINGS;
         
         const plainSimulatorSettings = this.toPlainObject({
@@ -326,7 +315,6 @@ export class AssetsService {
             : baseSimulatorSettings.initialPrice * 2.0,
         });
 
-        // ✅ Validate high precision settings
         this.validateSimulatorSettingsHighPrecision(plainSimulatorSettings);
 
         const plainTradingSettings = this.toPlainObject(
@@ -364,6 +352,40 @@ export class AssetsService {
       this.logger.log(`💾 Saving asset to Firestore...`);
       await db.collection(COLLECTIONS.ASSETS).doc(assetId).set(plainAssetData);
 
+      // ============================================
+      // ✅ INITIALIZE 240 CANDLES FOR NORMAL ASSETS
+      // ============================================
+      // Hanya untuk asset normal dengan dataSource realtime_db atau mock
+      if (createAssetDto.category === ASSET_CATEGORY.NORMAL && 
+          (createAssetDto.dataSource === ASSET_DATA_SOURCE.REALTIME_DB || 
+           createAssetDto.dataSource === ASSET_DATA_SOURCE.MOCK)) {
+        
+        this.logger.log(`📈 Initializing 240 candles for ${createAssetDto.symbol}...`);
+        
+        try {
+          // FIX: Gunakan plainAssetData.simulatorSettings (bukan plainSimulatorSettings)
+          const initialPrice = plainAssetData.simulatorSettings?.initialPrice || 
+                              createAssetDto.initialPrice || 
+                              1.0;
+          const volatility = plainAssetData.simulatorSettings?.secondVolatilityMax || 
+                            createAssetDto.volatility || 
+                            0.001;
+
+          await this.initializeCandlesHelper.initializeAssetCandles(
+            assetId,
+            createAssetDto.symbol,
+            plainAssetData.realtimeDbPath,
+            initialPrice,
+            volatility,
+          );
+
+          this.logger.log(`✅ 240 candles initialized successfully for ${createAssetDto.symbol}`);
+        } catch (candleError) {
+          this.logger.error(`❌ Failed to initialize candles: ${candleError.message}`);
+          // Asset tetap dibuat meskipun candle gagal
+        }
+      }
+
       this.invalidateCache();
 
       this.logger.log('');
@@ -383,20 +405,14 @@ export class AssetsService {
         }
         this.logger.log(`   🔗 RT DB Path: ${plainAssetData.realtimeDbPath}`);
         this.logger.log(`   ⚡ Price Source: Binance API (FREE)`);
-        this.logger.log(`   ⚡ Price Flow: Binance API → Backend → Realtime DB`);
-        this.logger.log(`   ⚡ Simulator: NOT USED (real-time API data)`);
-        this.logger.log(`   ⚡ API Key: Not required`);
       } else {
         this.logger.log(`   🔗 RT DB Path: ${createAssetDto.realtimeDbPath || 'N/A'}`);
         this.logger.log(`   ⚡ Simulator: WILL BE SIMULATED`);
         if (plainAssetData.simulatorSettings) {
           this.logger.log(`   💰 Initial Price: ${plainAssetData.simulatorSettings.initialPrice}`);
-          this.logger.log(`   📉 Min Price: ${plainAssetData.simulatorSettings.minPrice}`);
-          this.logger.log(`   📈 Max Price: ${plainAssetData.simulatorSettings.maxPrice}`);
-          this.logger.log(`   📊 Price Range: ${(plainAssetData.simulatorSettings.maxPrice - plainAssetData.simulatorSettings.minPrice).toExponential()}`);
-          this.logger.log(`   🔄 Second Volatility: ${plainAssetData.simulatorSettings.secondVolatilityMin} - ${plainAssetData.simulatorSettings.secondVolatilityMax}`);
+          this.logger.log(`   📊 Price Range: ${plainAssetData.simulatorSettings.minPrice} - ${plainAssetData.simulatorSettings.maxPrice}`);
         }
-        this.logger.log(`   💰 Price Range: ${plainAssetData.simulatorSettings?.minPrice} - ${plainAssetData.simulatorSettings?.maxPrice}`);
+        this.logger.log(`   📈 240 Candles: ${createAssetDto.dataSource === ASSET_DATA_SOURCE.REALTIME_DB || createAssetDto.dataSource === ASSET_DATA_SOURCE.MOCK ? 'GENERATED ✅' : 'SKIPPED (API source)'}`);
       }
       
       this.logger.log(`   📈 Profit Rate: ${createAssetDto.profitRate}%`);
@@ -426,6 +442,8 @@ export class AssetsService {
               updateFrequency: '1 second',
               icon: plainAssetData.icon,
               simulatorUsed: true,
+              candlesInitialized: createAssetDto.dataSource === ASSET_DATA_SOURCE.REALTIME_DB || createAssetDto.dataSource === ASSET_DATA_SOURCE.MOCK,
+              initialCandles: 240,
             },
       };
 
@@ -441,6 +459,95 @@ export class AssetsService {
       throw new BadRequestException(
         `Failed to create asset: ${error.message}`
       );
+    }
+  }
+
+  async bulkCreateAssets(assets: CreateAssetDto[], createdBy: string) {
+    this.logger.log(`Bulk creating ${assets.length} assets`);
+
+    const results = [];
+    let successCount = 0;
+    let failCount = 0;
+
+    for (const assetDto of assets) {
+      try {
+        const result = await this.createAsset(assetDto, createdBy);
+        results.push({ 
+          success: true, 
+          symbol: assetDto.symbol,
+          data: result 
+        });
+        successCount++;
+      } catch (error) {
+        this.logger.error(`Failed to create ${assetDto.symbol}: ${error.message}`);
+        results.push({
+          success: false,
+          symbol: assetDto.symbol,
+          error: error.message,
+        });
+        failCount++;
+      }
+    }
+
+    return {
+      success: true,
+      message: `Processed ${assets.length} assets (${successCount} success, ${failCount} failed)`,
+      summary: {
+        total: assets.length,
+        success: successCount,
+        failed: failCount
+      },
+      results,
+    };
+  }
+
+  async reinitializeAssetCandles(assetId: string) {
+    this.logger.log(`Re-initializing candles for asset: ${assetId}`);
+
+    try {
+      const db = this.firebaseService.getFirestore();
+      const assetDoc = await db.collection(COLLECTIONS.ASSETS).doc(assetId).get();
+      
+      if (!assetDoc.exists) {
+        throw new NotFoundException(`Asset not found: ${assetId}`);
+      }
+
+      const assetData = assetDoc.data() as Asset;
+
+      if (assetData.category !== ASSET_CATEGORY.NORMAL) {
+        throw new BadRequestException('Can only reinitialize candles for normal assets');
+      }
+
+      if (assetData.dataSource !== ASSET_DATA_SOURCE.REALTIME_DB && 
+          assetData.dataSource !== ASSET_DATA_SOURCE.MOCK) {
+        throw new BadRequestException('Asset must use realtime_db or mock as data source');
+      }
+
+      const currentPrice = assetData.simulatorSettings?.initialPrice || 1.0;
+      const volatility = assetData.simulatorSettings?.secondVolatilityMax || 0.001;
+      const realtimeDbPath = assetData.realtimeDbPath || `assets/${assetData.symbol.replace(/[^a-zA-Z0-9]/g, '_')}`;
+
+      await this.initializeCandlesHelper.initializeAssetCandles(
+        assetId,
+        assetData.symbol,
+        realtimeDbPath,
+        currentPrice,
+        volatility,
+      );
+
+      return {
+        success: true,
+        message: `Candles reinitialized for ${assetData.symbol}`,
+        data: {
+          assetId,
+          symbol: assetData.symbol,
+          realtimeDbPath,
+        },
+      };
+
+    } catch (error) {
+      this.logger.error(`Failed to reinitialize candles: ${error.message}`);
+      throw error;
     }
   }
 
@@ -606,21 +713,9 @@ export class AssetsService {
         this.logger.warn(
           `⚠️ Could not fetch price for ${baseCurrency}/${quoteCurrency}, but continuing with creation`
         );
-        this.logger.warn(
-          `⚠️ This might mean the currency pair is not available on Binance`
-        );
-        this.logger.warn(
-          `⚠️ The asset will be created, but price fetching may fail at runtime`
-        );
       } else {
         this.logger.log(
           `✅ Price test successful: ${baseCurrency}/${quoteCurrency} = $${price.price}`
-        );
-        this.logger.log(
-          `   Volume 24h: $${price.volume24h?.toLocaleString() || 'N/A'}`
-        );
-        this.logger.log(
-          `   Change 24h: ${price.changePercent24h?.toFixed(2) || 'N/A'}%`
         );
       }
 
@@ -628,63 +723,11 @@ export class AssetsService {
       this.logger.warn(
         `⚠️ Price validation failed for ${baseCurrency}/${quoteCurrency}: ${error.message}`
       );
-      
-      if (error.message.includes('timeout')) {
-        this.logger.warn(
-          `⚠️ Binance API timeout - the API might be slow or unreachable`
-        );
-      } else if (error.message.includes('No data') || error.message.includes('Unsupported')) {
-        this.logger.warn(
-          `⚠️ Currency pair ${baseCurrency}/${quoteCurrency} might not be available on Binance`
-        );
-      }
-      
-      this.logger.warn(
-        `⚠️ Continuing with asset creation anyway - verify the currency pair exists on Binance`
-      );
-    }
-
-    const commonMistakes: Record<string, string> = {
-      'USDT': 'Use USD instead of USDT for better Binance compatibility',
-      'BUSD': 'BUSD is being phased out, use USD or USDT',
-    };
-
-    if (commonMistakes[quoteCurrency.toUpperCase()]) {
-      this.logger.warn(
-        `⚠️ Note: ${commonMistakes[quoteCurrency.toUpperCase()]}`
-      );
-    }
-
-    if (dto.cryptoConfig.exchange) {
-      const validExchanges = [
-        'Binance', 'Coinbase', 'Kraken', 'Bitfinex', 'Bitstamp',
-        'Gemini', 'Huobi', 'OKEx', 'KuCoin', 'Bybit'
-      ];
-
-      if (!validExchanges.includes(dto.cryptoConfig.exchange)) {
-        this.logger.warn(
-          `⚠️ Exchange '${dto.cryptoConfig.exchange}' not in common list. ` +
-          `Supported: ${validExchanges.join(', ')}`
-        );
-      } else {
-        this.logger.log(
-          `✅ Exchange specified: ${dto.cryptoConfig.exchange}`
-        );
-      }
     }
 
     this.logger.log('');
     this.logger.log('✅ ================================================');
     this.logger.log('✅ CRYPTO ASSET VALIDATION COMPLETE (BINANCE)');
-    this.logger.log('✅ ================================================');
-    this.logger.log(`   Pair: ${baseCurrency}/${quoteCurrency}`);
-    this.logger.log(`   Data Source: Binance API (FREE)`);
-    this.logger.log(`   RT DB Path: ${dto.realtimeDbPath || 'Auto-generated'}`);
-    if (dto.cryptoConfig.exchange) {
-      this.logger.log(`   Exchange: ${dto.cryptoConfig.exchange}`);
-    }
-    this.logger.log(`   Rate Limit: 1200 req/min`);
-    this.logger.log(`   API Key: Not required`);
     this.logger.log('✅ ================================================');
     this.logger.log('');
   }

@@ -164,7 +164,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     }, this.CLEANUP_INTERVAL);
     
     this.logger.log('✅ Cleanup schedulers started:');
-    this.logger.log('   • 1s bars: Every 1 minute (time-based, 2 min retention = 120 bars)');
+    this.logger.log('   • 1s bars: Every 1 minute (time-based, 4 min retention = 240 bars)');
     this.logger.log('   • Other timeframes: Every 30 minutes');
   }
 
@@ -173,7 +173,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     if (this.cryptoAssets.length === 0) return;
 
     const startTime = Date.now();
-    this.logger.log('🗑️ 1S CLEANUP STARTED (2-min retention, time-based only)...');
+    this.logger.log('🗑️ 1S CLEANUP STARTED (4-min retention, time-based only)...');
 
     try {
       let totalDeleted = 0;
@@ -191,7 +191,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
             totalDeleted += result.value.deleted;
             this.logger.log(
               `${batch[index].symbol}: ${result.value.deleted} deleted, ` +
-              `${result.value.remaining} remaining (retention: 2 min, oldest: ${result.value.oldestAge}s)`
+              `${result.value.remaining} remaining (retention: 4 min, oldest: ${result.value.oldestAge}s)`
             );
           } else {
             this.logger.error(`Cleanup failed for ${batch[index].symbol}: ${result.reason}`);
@@ -222,8 +222,8 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     const ohlcPath = `${path}/ohlc_1s`;
     const now = Math.floor(Date.now() / 1000);
     
-    // ✅ RETENTION: 2 minutes = 120 seconds
-    const TWO_MINUTES_AGO = now - 120;
+    // ✅ RETENTION: 4 minutes = 240 seconds
+    const FOUR_MINUTES_AGO = now - 240;
 
     try {
       const useAdminSDK = this.firebaseService.isRealtimeDbAdminAvailable();
@@ -233,7 +233,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
         const snapshot = await this.firebaseService.getRealtimeDatabase()
           .ref(ohlcPath)
           .orderByKey()
-          .endAt(TWO_MINUTES_AGO.toString())
+          .endAt(FOUR_MINUTES_AGO.toString())
           .limitToLast(1000)
           .once('value');
 
@@ -243,7 +243,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
         }
 
         const keysToDelete = Object.keys(data)
-          .filter(key => parseInt(key) < TWO_MINUTES_AGO);
+          .filter(key => parseInt(key) < FOUR_MINUTES_AGO);
 
         if (keysToDelete.length === 0) {
           const allSnapshot = await this.firebaseService.getRealtimeDatabase()
@@ -294,7 +294,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
         }
 
         const keysToDelete = Object.keys(response)
-          .filter(key => parseInt(key) < TWO_MINUTES_AGO);
+          .filter(key => parseInt(key) < FOUR_MINUTES_AGO);
 
         if (keysToDelete.length === 0) {
           const allKeys = Object.keys(response);
@@ -617,7 +617,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     this.logger.log(`Total Runs: ${this.cleanupStats.totalRuns}`);
     this.logger.log(`Total Deleted: ${this.cleanupStats.totalDeleted}`);
     this.logger.log(`Errors: ${this.cleanupStats.errors}`);
-    this.logger.log(`1s Retention: 2 minutes (120 bars) - NO MAX LIMIT ✅`);
+    this.logger.log(`1s Retention: 4 minutes (240 bars) - NO MAX LIMIT ✅`);
     this.logger.log('By Timeframe:');
     Object.entries(this.cleanupStats.byTimeframe).forEach(([tf, count]) => {
       this.logger.log(`  ${tf}: ${count} bars`);
@@ -671,7 +671,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
           lastRun: this.lastAggressiveCleanupTime > 0
             ? `${Math.floor((Date.now() - this.lastAggressiveCleanupTime) / 60000)}m ago`
             : 'Never',
-          retention: '2 minutes (120 bars) - Time-based only ✅',
+          retention: '4 minutes (240 bars) - Time-based only ✅',
           method: 'Time-based cleanup ONLY, NO max bars limit',
         },
         regular: {
