@@ -81,9 +81,9 @@ export class InitializeAssetCandlesHelper {
     let price = basePrice;
 
     // ✅ RANDOM NATURAL SETTINGS - Tidak terkekang oleh volatility asset
-    // Volatility dinamis antara 0.2% - 2% per candle (natural market movement)
-    const minVolatility = 0.002;  // 0.2%
-    const maxVolatility = 0.02;   // 2%
+    // Volatility dinamis antara 0.1% - 0.8% per candle (natural market movement)
+    const minVolatility = 0.001;  // 0.1%
+    const maxVolatility = 0.008;  // 0.8%
     
     // Probabilitas trend: 40% bullish, 40% bearish, 20% sideways
     const trendProbability = Math.random();
@@ -111,21 +111,21 @@ export class InitializeAssetCandlesHelper {
       const open = price;
       const close = open + priceChange;
       
-      // ✅ Generate natural OHLC dengan variasi yang lebih besar
+      // ✅ Generate natural OHLC dengan wick proporsional
       // High dan Low HARUS mempertimbangkan open DAN close
       const maxPrice = Math.max(open, close);
       const minPrice = Math.min(open, close);
       
-      // Wick multiplier: 0.3x - 1.5x dari range (open-close)
-      const wickMultiplier = 0.3 + Math.random() * 1.2;
-      const bodySize = Math.abs(close - open);
+      // Wick sebagai persentase dari harga, BUKAN dari body size
+      // Wick volatility: 0.1% - 0.5% dari harga (realistic)
+      const wickVolatility = 0.001 + Math.random() * 0.004; // 0.1% - 0.5%
       
-      // High = harga tertinggi + random wick ke atas
-      const upperWick = bodySize * wickMultiplier * Math.random();
+      // High = harga tertinggi + random wick ke atas (max 0.5% dari harga)
+      const upperWick = maxPrice * wickVolatility * Math.random();
       const high = maxPrice + upperWick;
       
-      // Low = harga terendah - random wick ke bawah
-      const lowerWick = bodySize * wickMultiplier * Math.random();
+      // Low = harga terendah - random wick ke bawah (max 0.5% dari harga)
+      const lowerWick = minPrice * wickVolatility * Math.random();
       const low = minPrice - lowerWick;
 
       // Update price untuk candle berikutnya
