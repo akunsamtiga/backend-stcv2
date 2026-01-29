@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ConflictException, Logger, RequestTimeoutException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, Logger, RequestTimeoutException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
 import { FirebaseService } from '../firebase/firebase.service';
 import { PriceFetcherService } from './services/price-fetcher.service';
 import { BinanceService } from './services/binance.service';
@@ -47,8 +47,9 @@ export class AssetsService {
     private binanceService: BinanceService,
     private readonly eventEmitter: EventEmitter2,
     private initializeCandlesHelper: InitializeAssetCandlesHelper,
-    // ✅ INJECT LANGSUNG: Untuk menghindari masalah EventEmitter yang tidak ter-trigger
+    @Inject(forwardRef(() => CryptoPriceSchedulerService))  // ✅ TAMBAHKAN forwardRef
     private cryptoScheduler: CryptoPriceSchedulerService,
+    @Inject(forwardRef(() => SimulatorPriceRelayService))   // ✅ TAMBAHKAN forwardRef
     private simulatorRelay: SimulatorPriceRelayService,
   ) {
     setTimeout(async () => {

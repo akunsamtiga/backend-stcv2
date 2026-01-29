@@ -45,11 +45,13 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
   constructor(
     private firebaseService: FirebaseService,
     private binanceService: BinanceService,
+    @Inject(forwardRef(() => AssetsService))  
     private assetsService: AssetsService,
     private schedulerRegistry: SchedulerRegistry,
     @Inject(forwardRef(() => TradingGateway))
     private readonly tradingGateway: TradingGateway,
   ) {}
+
 
   async onModuleInit() {
     // Tunggu sebentar agar Firebase siap
