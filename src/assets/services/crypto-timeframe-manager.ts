@@ -1,3 +1,5 @@
+// src/assets/services/crypto-timeframe-manager.ts
+
 import { Logger } from '@nestjs/common';
 
 export interface CryptoBar {
@@ -154,18 +156,16 @@ export class CryptoTimeframeManager {
     this.logger.log(`🔄 Reset OHLC bars for ${assetId}`);
   }
   
-  // ✅ FIXED: Retention 1s diubah dari 0.002778 (4 menit) menjadi 0.00694 (10 menit)
-  // Agar 240 candles historical (4 menit) aman dari cleanup
   getRetentionDays(): Record<string, number> {
     return {
-      '1s': 0.00694,   // ✅ 10 menit = 600 detik (buffer aman untuk 240 candles = 4 menit)
-      '1m': 0.1667,    // 4 jam (240 candles)
-      '5m': 0.8333,    // 20 jam (240 candles)
-      '15m': 2.5,      // 2.5 hari (240 candles)
-      '30m': 5,        // 5 hari (240 candles)
-      '1h': 10,        // 10 hari (240 candles)
-      '4h': 40,        // 40 hari (240 candles)
-      '1d': 240,       // 240 hari (240 candles)
+      '1s': 0.002778,  // 240 candle (4 menit)
+      '1m': 0.1667,    // 240 candle (4 jam)
+      '5m': 0.8333,    // 240 candle (20 jam)
+      '15m': 2.5,      // 240 candle (2.5 hari)
+      '30m': 5,        // 240 candle (5 hari)
+      '1h': 10,        // 240 candle (10 hari)
+      '4h': 40,        // 240 candle (40 hari)
+      '1d': 240,       // 240 candle (240 hari)
     };
   }
 }

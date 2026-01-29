@@ -1,9 +1,7 @@
-import { Injectable, NotFoundException, ConflictException, Logger, RequestTimeoutException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, Logger, RequestTimeoutException, BadRequestException } from '@nestjs/common';
 import { FirebaseService } from '../firebase/firebase.service';
 import { PriceFetcherService } from './services/price-fetcher.service';
 import { BinanceService } from './services/binance.service';
-import { CryptoPriceSchedulerService } from './services/crypto-price-scheduler.service';
-import { SimulatorPriceRelayService } from './services/simulator-price-relay.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { CreateAssetDto } from './dto/create-asset.dto';
 import { UpdateAssetDto } from './dto/update-asset.dto';
@@ -47,10 +45,6 @@ export class AssetsService {
     private binanceService: BinanceService,
     private readonly eventEmitter: EventEmitter2,
     private initializeCandlesHelper: InitializeAssetCandlesHelper,
-    @Inject(forwardRef(() => CryptoPriceSchedulerService))  // ✅ TAMBAHKAN forwardRef
-    private cryptoScheduler: CryptoPriceSchedulerService,
-    @Inject(forwardRef(() => SimulatorPriceRelayService))   // ✅ TAMBAHKAN forwardRef
-    private simulatorRelay: SimulatorPriceRelayService,
   ) {
     setTimeout(async () => {
       try {
@@ -392,34 +386,9 @@ export class AssetsService {
       this.invalidateCache();
 
       // ============================================
-      // ✅ PERBAIKAN UTAMA: Panggil langsung service, jangan emit event
+      // 🔔 EMIT EVENT UNTUK NOTIFY SERVICE LAIN
       // ============================================
-      try {
-        if (createAssetDto.category === ASSET_CATEGORY.CRYPTO) {
-          this.logger.log(`🚀 Triggering crypto scheduler for ${createAssetDto.symbol}...`);
-          // Panggil langsung method, jangan pakai event emitter
-          await this.cryptoScheduler.handleNewCryptoAsset({
-            assetId,
-            symbol: createAssetDto.symbol,
-            cryptoConfig: plainAssetData.cryptoConfig,
-            realtimeDbPath: plainAssetData.realtimeDbPath,
-          });
-        } else {
-          this.logger.log(`🚀 Triggering simulator relay for ${createAssetDto.symbol}...`);
-          // Panggil langsung method, jangan pakai event emitter
-          await this.simulatorRelay.handleNewSimulatorAsset({
-            assetId,
-            symbol: createAssetDto.symbol,
-            realtimeDbPath: plainAssetData.realtimeDbPath,
-            simulatorSettings: plainAssetData.simulatorSettings,
-          });
-        }
-      } catch (triggerError) {
-        this.logger.error(`❌ Failed to trigger scheduler: ${triggerError.message}`);
-        // Jangan throw error di sini, biarkan asset tetap terbuat
-      }
-
-      // Tetap emit event untuk kompatibilitas dengan service lain (jika ada)
+      // Emit event agar simulator langsung pick up asset baru tanpa restart
       this.eventEmitter.emit('asset.created', {
         assetId,
         symbol: createAssetDto.symbol,
@@ -430,6 +399,28 @@ export class AssetsService {
         realtimeDbPath: plainAssetData.realtimeDbPath,
         simulatorSettings: plainAssetData.simulatorSettings,
       });
+
+      // Emit event khusus untuk simulator relay
+      if (createAssetDto.category === ASSET_CATEGORY.NORMAL) {
+        this.eventEmitter.emit('simulator.asset.new', {
+          assetId,
+          symbol: createAssetDto.symbol,
+          realtimeDbPath: plainAssetData.realtimeDbPath,
+          simulatorSettings: plainAssetData.simulatorSettings,
+        });
+        this.logger.log(`📡 Emitted simulator.asset.new event for ${createAssetDto.symbol}`);
+      }
+
+      // Emit event khusus untuk crypto scheduler
+      if (createAssetDto.category === ASSET_CATEGORY.CRYPTO) {
+        this.eventEmitter.emit('crypto.asset.new', {
+          assetId,
+          symbol: createAssetDto.symbol,
+          cryptoConfig: plainAssetData.cryptoConfig,
+          realtimeDbPath: plainAssetData.realtimeDbPath,
+        });
+        this.logger.log(`📡 Emitted crypto.asset.new event for ${createAssetDto.symbol}`);
+      }
 
       this.logger.log('');
       this.logger.log('');

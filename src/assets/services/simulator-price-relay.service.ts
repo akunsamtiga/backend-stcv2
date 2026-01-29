@@ -1,8 +1,8 @@
-import { Injectable, Logger, OnModuleInit, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import { OnEvent } from '@nestjs/event-emitter';
+import { OnEvent } from '@nestjs/event-emitter'; // TAMBAHKAN INI
 import { FirebaseService } from '../../firebase/firebase.service';
-import { AssetsService } from '../assets.service';
+import { AssetsService } from '../assets.service'; // TAMBAHKAN INI (jika belum ada)
 import { TradingGateway } from '../../websocket/trading.gateway';
 import { ASSET_CATEGORY } from '../../common/constants';
 import { Asset } from '../../common/interfaces';
@@ -21,83 +21,17 @@ export class SimulatorPriceRelayService implements OnModuleInit {
 
   constructor(
     private firebaseService: FirebaseService,
-    @Inject(forwardRef(() => AssetsService))  // ✅ TAMBAHKAN INI
-    private assetsService: AssetsService,
-    @Inject(forwardRef(() => TradingGateway)) // ✅ TAMBAHKAN INI jika belum ada
+    private assetsService: AssetsService, // INJECT AssetsService
     private tradingGateway: TradingGateway,
   ) {}
 
   async onModuleInit() {
-    // Delay 5 detik untuk initialize
     setTimeout(async () => {
       await this.initialize();
     }, 5000);
-    
-    // ✅ DELAY 10 DETIK untuk setup listener (tunggu Firebase siap)
-    setTimeout(() => {
-      this.setupAssetsListener();
-    }, 10000);
   }
 
-
-  private async setupAssetsListener(): Promise<void> {
-    try {
-      // Tunggu Firebase ready dulu
-      await this.firebaseService.waitForFirestore(15000);
-      
-      this.logger.log('📡 Setting up Firestore listener for normal assets...');
-      
-      const unsubscribe = this.firebaseService.getFirestore()
-        .collection('assets')
-        .where('category', '==', 'normal')
-        .where('isActive', '==', true)
-        .onSnapshot(
-          snapshot => {
-            const changes = snapshot.docChanges();
-            
-            if (changes.length > 0) {
-              this.logger.log(`📡 Firestore detected ${changes.length} changes in normal assets`);
-              
-              // Cek apakah ada asset baru
-              const currentIds = new Set(this.normalAssets.map(a => a.id));
-              let hasNewAsset = false;
-              
-              for (const change of changes) {
-                if (change.type === 'added' && !currentIds.has(change.doc.id)) {
-                  hasNewAsset = true;
-                  break;
-                }
-              }
-              
-              if (hasNewAsset || !this.isRunning) {
-                this.logger.log('🚀 New normal asset detected via Firestore, reloading...');
-                this.handleNewSimulatorAsset({
-                  assetId: 'bulk-update',
-                  symbol: 'bulk-update',
-                  realtimeDbPath: '',
-                }).catch(err => {
-                  this.logger.error(`Failed to reload relay: ${err.message}`);
-                });
-              }
-            }
-          },
-          error => {
-            this.logger.error(`❌ Firestore listener error: ${error.message}`);
-            // Retry setelah 30 detik
-            setTimeout(() => this.setupAssetsListener(), 30000);
-          }
-        );
-
-      this.logger.log('✅ Firestore listener active for normal assets');
-        
-    } catch (error) {
-      this.logger.error(`❌ Failed to setup Firestore listener: ${error.message}`);
-      // ✅ RETRY: Coba lagi setelah 30 detik
-      setTimeout(() => this.setupAssetsListener(), 30000);
-    }
-  }
-
-  async initialize() {
+  private async initialize() {
     try {
       await this.loadNormalAssets();
       
@@ -122,7 +56,7 @@ export class SimulatorPriceRelayService implements OnModuleInit {
     realtimeDbPath: string;
     simulatorSettings?: any;
   }) {
-    this.logger.log(`🆕 New simulator asset detected: ${payload.symbol}`);
+    this.logger.log(`🆕 New simulator asset detected via event: ${payload.symbol}`);
     
     try {
       // Reload assets dari database untuk mendapatkan asset terbaru
@@ -132,31 +66,23 @@ export class SimulatorPriceRelayService implements OnModuleInit {
       if (!this.isRunning && this.normalAssets.length > 0) {
         this.logger.log('🚀 Starting relay for new asset...');
         await this.startRelay();
-      } else if (this.isRunning) {
+      } else {
         this.logger.log(`📡 Relay already running with ${this.normalAssets.length} assets`);
-        // Force reload untuk memastikan asset baru masuk ke polling
-        await this.loadNormalAssets();
       }
     } catch (error) {
       this.logger.error(`❌ Failed to handle new simulator asset: ${error.message}`);
     }
   }
 
-  @OnEvent('asset.refresh.requested')
+  @OnEvent('asset.refresh.requested') // Untuk manual refresh
   async handleRefreshRequest() {
     this.logger.log('🔄 Manual refresh requested for simulator relay');
     await this.loadNormalAssets();
-    
-    if (this.normalAssets.length > 0 && !this.isRunning) {
-      await this.startRelay();
-    }
   }
 
-  // ============================================
-  // CRON: Refresh assets setiap 1 menit (dari 10 menit)
-  // ============================================
-  
-  @Cron('*/1 * * * *')  // ✅ Diubah dari */10 * * * * menjadi */1 * * * *
+  // (Sisanya sama seperti kode sebelumnya...)
+
+  @Cron('*/10 * * * *')
   async refreshAssets() {
     const previousCount = this.normalAssets.length;
     await this.loadNormalAssets();
@@ -169,7 +95,7 @@ export class SimulatorPriceRelayService implements OnModuleInit {
     if (previousCount === 0 && currentCount > 0 && !this.isRunning) {
       this.logger.log('✅ Assets detected, starting relay...');
       await this.startRelay();
-    } else if (previousCount > 0 && currentCount === 0 && this.isRunning) {
+    } else if (currentCount === 0 && this.isRunning) {
       this.logger.warn('⚠️ No more assets, stopping relay...');
       this.stopRelay();
     }
@@ -177,6 +103,7 @@ export class SimulatorPriceRelayService implements OnModuleInit {
 
   private async loadNormalAssets() {
     try {
+      // ✅ Gunakan getAllAssets dari AssetsService untuk mendapatkan data terbaru
       const { assets } = await this.assetsService.getAllAssets(true);
       
       this.normalAssets = assets.filter(a => a.category === ASSET_CATEGORY.NORMAL);
