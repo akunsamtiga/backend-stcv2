@@ -109,22 +109,24 @@ export class InitializeAssetCandlesHelper {
       const priceChange = randomWalk + trendBias;
       
       const open = price;
+      const close = open + priceChange;
       
       // ✅ Generate natural OHLC dengan variasi yang lebih besar
-      // High dan Low bisa lebih ekstrem (1-3x dari price change)
-      const wickMultiplier = 1 + Math.random() * 2; // 1x - 3x
+      // High dan Low HARUS mempertimbangkan open DAN close
+      const maxPrice = Math.max(open, close);
+      const minPrice = Math.min(open, close);
       
-      const high = Math.max(
-        open,
-        open + Math.abs(priceChange) * wickMultiplier * (Math.random() * 0.5 + 0.5)
-      );
+      // Wick multiplier: 0.3x - 1.5x dari range (open-close)
+      const wickMultiplier = 0.3 + Math.random() * 1.2;
+      const bodySize = Math.abs(close - open);
       
-      const low = Math.min(
-        open,
-        open - Math.abs(priceChange) * wickMultiplier * (Math.random() * 0.5 + 0.5)
-      );
+      // High = harga tertinggi + random wick ke atas
+      const upperWick = bodySize * wickMultiplier * Math.random();
+      const high = maxPrice + upperWick;
       
-      const close = open + priceChange;
+      // Low = harga terendah - random wick ke bawah
+      const lowerWick = bodySize * wickMultiplier * Math.random();
+      const low = minPrice - lowerWick;
 
       // Update price untuk candle berikutnya
       price = close;
