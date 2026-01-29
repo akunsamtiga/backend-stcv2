@@ -54,10 +54,15 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
 
 
   async onModuleInit() {
-    // Tunggu sebentar agar Firebase siap
+    // Delay 3 detik untuk initialize scheduler
     setTimeout(async () => {
       await this.initializeScheduler();
     }, 3000);
+    
+    // ✅ DELAY 10 DETIK untuk setup listener (tunggu Firebase siap)
+    setTimeout(() => {
+      this.setupAssetsListener();
+    }, 10000);
     
     // Setup retry interval jika gagal
     const retryInterval = setInterval(async () => {
@@ -73,50 +78,59 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
         this.logger.log('Scheduler active, stopping retry interval');
       }
     }, 30000);
-
-    // ✅ TAMBAHAN: Setup Firestore listener untuk auto-detect asset baru
-    this.setupAssetsListener();
   }
 
-  // ✅ METHOD BARU: Firestore listener real-time
-  private setupAssetsListener(): void {
+
+  private async setupAssetsListener(): Promise<void> {
     try {
+      // Tunggu Firebase ready dulu
+      await this.firebaseService.waitForFirestore(15000);
+      
       this.logger.log('📡 Setting up Firestore listener for crypto assets...');
       
-      this.firebaseService.getFirestore()
+      const unsubscribe = this.firebaseService.getFirestore()
         .collection('assets')
         .where('category', '==', 'crypto')
         .where('isActive', '==', true)
-        .onSnapshot(snapshot => {
-          const changes = snapshot.docChanges();
-          
-          if (changes.length > 0) {
-            this.logger.log(`📡 Firestore detected ${changes.length} changes in crypto assets`);
+        .onSnapshot(
+          snapshot => {
+            const changes = snapshot.docChanges();
             
-            // Cek apakah ada asset baru yang belum ada di list
-            const currentIds = new Set(this.cryptoAssets.map(a => a.id));
-            let hasNewAsset = false;
-            
-            for (const change of changes) {
-              if (change.type === 'added' && !currentIds.has(change.doc.id)) {
-                hasNewAsset = true;
-                break;
+            if (changes.length > 0) {
+              this.logger.log(`📡 Firestore detected ${changes.length} changes in crypto assets`);
+              
+              // Cek apakah ada asset baru yang belum ada di list
+              const currentIds = new Set(this.cryptoAssets.map(a => a.id));
+              let hasNewAsset = false;
+              
+              for (const change of changes) {
+                if (change.type === 'added' && !currentIds.has(change.doc.id)) {
+                  hasNewAsset = true;
+                  break;
+                }
+              }
+              
+              if (hasNewAsset || !this.schedulerActive) {
+                this.logger.log('🚀 New crypto asset detected via Firestore, reloading scheduler...');
+                this.initializeScheduler().catch(err => {
+                  this.logger.error(`Failed to reload scheduler: ${err.message}`);
+                });
               }
             }
-            
-            if (hasNewAsset || !this.schedulerActive) {
-              this.logger.log('🚀 New crypto asset detected via Firestore, reloading scheduler...');
-              this.initializeScheduler().catch(err => {
-                this.logger.error(`Failed to reload scheduler: ${err.message}`);
-              });
-            }
+          },
+          error => {
+            this.logger.error(`❌ Firestore listener error: ${error.message}`);
+            // Retry setelah 30 detik jika error
+            setTimeout(() => this.setupAssetsListener(), 30000);
           }
-        }, error => {
-          this.logger.error(`❌ Firestore listener error: ${error.message}`);
-        });
+        );
+
+      this.logger.log('✅ Firestore listener active for crypto assets');
         
     } catch (error) {
       this.logger.error(`❌ Failed to setup Firestore listener: ${error.message}`);
+      // ✅ RETRY: Coba lagi setelah 30 detik
+      setTimeout(() => this.setupAssetsListener(), 30000);
     }
   }
 
