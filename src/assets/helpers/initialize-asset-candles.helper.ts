@@ -4,12 +4,12 @@ import { Injectable, Logger } from '@nestjs/common';
 import * as admin from 'firebase-admin';
 
 /**
- * ✅ UPDATED VERSION: Candle initialization dengan volatilitas 50x
+ * ✅ UPDATED VERSION: Candle initialization dengan volatilitas 200x
  * 
  * Perubahan utama:
- * 1. Volatilitas untuk generate 240 candle = 50x dari settingan aset
- * 2. Price terakhir dari candle disimpan ke current_price (tidak loncat ke initial)
- * 3. Setelah initialization, simulator melanjutkan dari price terakhir candle
+ * 1. Volatilitas untuk generate 240 candle = 200x dari settingan aset
+ * 2. Contoh: 0.00001-0.00008 → 0.002-0.016 untuk candle
+ * 3. Price terakhir disimpan ke current_price (tidak loncat ke initial)
  */
 
 @Injectable()
@@ -30,8 +30,8 @@ export class InitializeAssetCandlesHelper {
 
   private readonly CANDLES_TO_CREATE = 240;
   
-  // ✅ Multiplier untuk initialization volatility (50x)
-  private readonly VOLATILITY_MULTIPLIER = 50;
+  // ✅ Multiplier untuk initialization volatility (200x)
+  private readonly VOLATILITY_MULTIPLIER = 200;
 
   constructor() {}
 
@@ -45,9 +45,6 @@ export class InitializeAssetCandlesHelper {
     return this.realtimeDb;
   }
 
-  /**
-   * ✅ UPDATED: Initialize candles dengan volatilitas 50x dan price continuity
-   */
   async initializeAssetCandles(
     assetId: string,
     symbol: string,
@@ -64,7 +61,6 @@ export class InitializeAssetCandlesHelper {
   ): Promise<void> {
     this.logger.log(`🚀 Initializing 240 candles for asset: ${symbol} (${assetId})`);
     
-    // ✅ ENHANCED: Gunakan volatilitas 50x untuk generate candle历史
     const originalSettings = {
       dailyVolatilityMin: simulatorSettings?.dailyVolatilityMin ?? 0.001,
       dailyVolatilityMax: simulatorSettings?.dailyVolatilityMax ?? 0.005,
@@ -72,7 +68,7 @@ export class InitializeAssetCandlesHelper {
       secondVolatilityMax: simulatorSettings?.secondVolatilityMax ?? 0.00008,
     };
 
-    // Kalikan dengan 50 untuk initialization
+    // Kalikan dengan 200 untuk initialization
     const settings = {
       dailyVolatilityMin: originalSettings.dailyVolatilityMin * this.VOLATILITY_MULTIPLIER,
       dailyVolatilityMax: originalSettings.dailyVolatilityMax * this.VOLATILITY_MULTIPLIER,
@@ -92,37 +88,31 @@ export class InitializeAssetCandlesHelper {
 
     try {
       const now = Math.floor(Date.now() / 1000);
-      let finalPrice = initialPrice; // ✅ Track price terakhir
+      let finalPrice = initialPrice;
 
-      // Generate candles untuk setiap timeframe
       for (const [timeframe, durationInSeconds] of Object.entries(this.TIMEFRAMES)) {
         this.logger.log(`📈 Generating ${this.CANDLES_TO_CREATE} candles for ${symbol} - ${timeframe}`);
         
-        // Pilih volatility yang sesuai dengan timeframe
         const volatility = this.getVolatilityForTimeframe(timeframe, settings);
         
-        // ✅ Simpan price terakhir dari generate
         const timeframeFinalPrice = await this.generateCandlesForTimeframe(
           realtimeDbPath,
           timeframe,
           durationInSeconds,
           now,
-          initialPrice, // Gunakan initialPrice untuk tiap timeframe agar konsisten
+          initialPrice,
           volatility,
           settings.minPrice,
           settings.maxPrice,
         );
         
-        // Untuk 1s timeframe, simpan sebagai final price untuk current_price
         if (timeframe === '1s') {
           finalPrice = timeframeFinalPrice;
         }
       }
 
-      // ✅ SET CURRENT_PRICE ke price terakhir dari candle 1s, bukan initialPrice!
       await this.setLastPrice(realtimeDbPath, finalPrice);
       this.logger.log(`✅ Set current_price to final candle price: ${finalPrice} (was ${initialPrice})`);
-
       this.logger.log(`✅ Successfully initialized all candles for ${symbol} (${this.VOLATILITY_MULTIPLIER}x volatility mode)`);
     } catch (error) {
       this.logger.error(`❌ Failed to initialize candles for ${symbol}: ${error.message}`);
@@ -130,9 +120,6 @@ export class InitializeAssetCandlesHelper {
     }
   }
 
-  /**
-   * Pilih volatility yang sesuai dengan timeframe
-   */
   private getVolatilityForTimeframe(
     timeframe: string,
     settings: {
@@ -145,29 +132,20 @@ export class InitializeAssetCandlesHelper {
     let volatilityMin: number;
     let volatilityMax: number;
 
-    // Timeframe kecil menggunakan secondVolatility
     if (timeframe === '1s' || timeframe === '1m') {
       volatilityMin = settings.secondVolatilityMin;
       volatilityMax = settings.secondVolatilityMax;
-    }
-    // Timeframe menengah menggunakan blend
-    else if (timeframe === '5m' || timeframe === '15m' || timeframe === '30m') {
+    } else if (timeframe === '5m' || timeframe === '15m' || timeframe === '30m') {
       volatilityMin = (settings.secondVolatilityMin + settings.dailyVolatilityMin) / 2;
       volatilityMax = (settings.secondVolatilityMax + settings.dailyVolatilityMax) / 2;
-    }
-    // Timeframe besar menggunakan dailyVolatility
-    else {
+    } else {
       volatilityMin = settings.dailyVolatilityMin;
       volatilityMax = settings.dailyVolatilityMax;
     }
 
-    // Return random value between min and max
     return volatilityMin + Math.random() * (volatilityMax - volatilityMin);
   }
 
-  /**
-   * ✅ UPDATED: Generate candles dengan boundaries dan return final price
-   */
   private async generateCandlesForTimeframe(
     realtimeDbPath: string,
     timeframe: string,
@@ -177,52 +155,40 @@ export class InitializeAssetCandlesHelper {
     volatility: number,
     minPrice: number,
     maxPrice: number,
-  ): Promise<number> { // ✅ Return type number (final price)
+  ): Promise<number> {
     
     const candles: Record<string, any> = {};
     let price = basePrice;
 
-    // Generate 240 candles mundur dari waktu sekarang
     for (let i = this.CANDLES_TO_CREATE - 1; i >= 0; i--) {
       const candleTimestamp = currentTimestamp - (i * durationInSeconds);
       
-      // Generate OHLC data dengan simulasi random walk
       const open = price;
       const priceChange = this.generatePriceMovement(price, volatility);
       
-      // Calculate potential close price
       let close = open + priceChange;
-      
-      // ENFORCE BOUNDARIES: Pastikan close tidak keluar dari range
       close = Math.max(minPrice, Math.min(maxPrice, close));
       
-      // Generate high and low dengan variasi
       const variationFactor = Math.abs(priceChange) * Math.random() * 1.5;
       let high = Math.max(open, close) + variationFactor;
       let low = Math.min(open, close) - variationFactor;
       
-      // ENFORCE BOUNDARIES: Pastikan high dan low juga dalam range
       high = Math.max(minPrice, Math.min(maxPrice, high));
       low = Math.max(minPrice, Math.min(maxPrice, low));
       
-      // Update price untuk candle berikutnya
       price = close;
       
-      // PULL BACK: Jika price mendekati boundaries, tarik kembali ke center
       const priceRange = maxPrice - minPrice;
       const distanceToMin = price - minPrice;
       const distanceToMax = maxPrice - price;
       
       if (distanceToMin < priceRange * 0.1) {
-        // Terlalu dekat dengan minPrice, tarik ke atas
         price = price + priceRange * 0.05;
       } else if (distanceToMax < priceRange * 0.1) {
-        // Terlalu dekat dengan maxPrice, tarik ke bawah
         price = price - priceRange * 0.05;
       }
 
-      // Format candle data
-      const candleData = {
+      candles[candleTimestamp.toString()] = {
         o: this.roundPrice(open),
         h: this.roundPrice(high),
         l: this.roundPrice(low),
@@ -230,63 +196,43 @@ export class InitializeAssetCandlesHelper {
         t: candleTimestamp,
         v: this.generateVolume(),
       };
-
-      candles[candleTimestamp.toString()] = candleData;
     }
 
-    // Write to Realtime Database
     const path = `${realtimeDbPath}/ohlc_${timeframe}`;
     
     try {
       await this.getRealtimeDb().ref(path).set(candles);
-      this.logger.debug(`✅ Written ${this.CANDLES_TO_CREATE} candles to ${path}`);
-      this.logger.debug(`   Final price: ${price.toFixed(6)}, Initial was: ${basePrice.toFixed(6)}`);
+      this.logger.debug(`✅ Written ${this.CANDLES_TO_CREATE} candles to ${path} (volatility: ${volatility.toExponential(2)})`);
     } catch (error) {
       this.logger.error(`❌ Failed to write candles to ${path}: ${error.message}`);
       throw error;
     }
 
-    return price; // ✅ Return final price (close price of last candle)
+    return price;
   }
 
-  /**
-   * Generate price movement menggunakan Box-Muller transform untuk distribusi normal
-   */
   private generatePriceMovement(currentPrice: number, volatility: number): number {
     const u1 = Math.random();
     const u2 = Math.random();
-    
-    // Box-Muller transform untuk distribusi normal
     const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
-    
     return currentPrice * volatility * z;
   }
 
-  /**
-   * Generate volume dengan variasi random
-   */
   private generateVolume(): number {
     return Math.floor(1000 + Math.random() * 9000);
   }
 
-  /**
-   * Round price ke 6 desimal
-   */
   private roundPrice(price: number): number {
-    return Math.round(price * 1000000) / 1000006;
+    return Math.round(price * 1000000) / 1000000;
   }
 
-  /**
-   * Set current price di Realtime Database dengan struktur lengkap
-   */
   private async setLastPrice(realtimeDbPath: string, price: number): Promise<void> {
     try {
       const timestamp = Math.floor(Date.now() / 1000);
       
-      // ✅ Struktur lengkap seperti simulator
       const priceData = {
         price: this.roundPrice(price),
-        current: this.roundPrice(price), // Untuk kompatibilitas
+        current: this.roundPrice(price),
         timestamp: timestamp,
         datetime: this.formatDateTime(new Date(timestamp * 1000)),
         datetime_iso: new Date(timestamp * 1000).toISOString(),
@@ -302,9 +248,6 @@ export class InitializeAssetCandlesHelper {
     }
   }
 
-  /**
-   * Format datetime untuk Asia/Jakarta
-   */
   private formatDateTime(date: Date): string {
     const jakartaDate = new Date(date.toLocaleString('en-US', { timeZone: 'Asia/Jakarta' }));
     const year = jakartaDate.getFullYear();
@@ -316,9 +259,6 @@ export class InitializeAssetCandlesHelper {
     return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
   }
 
-  /**
-   * BATCH PROCESSING: Initialize multiple assets sekaligus
-   */
   async initializeMultipleAssets(
     assets: Array<{
       assetId: string;
