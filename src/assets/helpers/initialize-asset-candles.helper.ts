@@ -4,12 +4,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import * as admin from 'firebase-admin';
 
 /**
- * ✅ IMPROVED VERSION: Smoother candle generation with realistic wicks
- * 
- * Changes:
- * 1. Momentum-based price movement (tidak random murni)
- * 2. Realistic wick calculation (dibatasi maksimal 0.3%)
- * 3. Mean reversion untuk menjaga harga tetap realistic
+ * ✅ ULTRA-SMOOTH VERSION: Minimal wick length
  */
 
 @Injectable()
@@ -18,14 +13,8 @@ export class InitializeAssetCandlesHelper {
   private realtimeDb: admin.database.Database | null = null;
 
   private readonly TIMEFRAMES = {
-    '1s': 1,
-    '1m': 60,
-    '5m': 300,
-    '15m': 900,
-    '30m': 1800,
-    '1h': 3600,
-    '4h': 14400,
-    '1d': 86400,
+    '1s': 1, '1m': 60, '5m': 300, '15m': 900, 
+    '30m': 1800, '1h': 3600, '4h': 14400, '1d': 86400,
   };
 
   private readonly CANDLES_TO_CREATE = 240;
@@ -47,16 +36,9 @@ export class InitializeAssetCandlesHelper {
     symbol: string,
     realtimeDbPath: string,
     initialPrice: number,
-    simulatorSettings?: {
-      dailyVolatilityMin?: number;
-      dailyVolatilityMax?: number;
-      secondVolatilityMin?: number;
-      secondVolatilityMax?: number;
-      minPrice?: number;
-      maxPrice?: number;
-    },
+    simulatorSettings?: any,
   ): Promise<void> {
-    this.logger.log(`🚀 Initializing 240 smooth candles for asset: ${symbol}`);
+    this.logger.log(`🚀 Initializing 240 ultra-smooth candles for: ${symbol}`);
     
     const settings = {
       dailyVolatilityMin: simulatorSettings?.dailyVolatilityMin ?? 0.001,
@@ -71,11 +53,11 @@ export class InitializeAssetCandlesHelper {
       const now = Math.floor(Date.now() / 1000);
 
       for (const [timeframe, durationInSeconds] of Object.entries(this.TIMEFRAMES)) {
-        this.logger.log(`📈 Generating ${timeframe} candles...`);
+        this.logger.log(`📈 Generating ${timeframe}...`);
         
         const volatility = this.getVolatilityForTimeframe(timeframe, settings);
         
-        await this.generateSmoothCandlesForTimeframe(
+        await this.generateUltraSmoothCandles(
           realtimeDbPath,
           timeframe,
           durationInSeconds,
@@ -88,17 +70,14 @@ export class InitializeAssetCandlesHelper {
       }
 
       await this.setLastPrice(realtimeDbPath, initialPrice);
-      this.logger.log(`✅ Successfully initialized smooth candles for ${symbol}`);
+      this.logger.log(`✅ Smooth candles initialized for ${symbol}`);
     } catch (error) {
       this.logger.error(`❌ Failed: ${error.message}`);
       throw error;
     }
   }
 
-  private getVolatilityForTimeframe(
-    timeframe: string,
-    settings: any,
-  ): number {
+  private getVolatilityForTimeframe(timeframe: string, settings: any): number {
     if (timeframe === '1s' || timeframe === '1m') {
       return settings.secondVolatilityMax;
     } else if (['5m', '15m', '30m'].includes(timeframe)) {
@@ -108,7 +87,7 @@ export class InitializeAssetCandlesHelper {
     }
   }
 
-  private async generateSmoothCandlesForTimeframe(
+  private async generateUltraSmoothCandles(
     realtimeDbPath: string,
     timeframe: string,
     durationInSeconds: number,
@@ -126,45 +105,48 @@ export class InitializeAssetCandlesHelper {
       const candleTimestamp = currentTimestamp - (i * durationInSeconds);
       const open = price;
       
-      // ✅ IMPROVED: Smoothed price dengan momentum
-      const change = this.calculateSmoothChange(price, volatility, momentum);
-      momentum = (momentum * 0.7) + (change * 0.3); // 70% momentum lama + 30% baru
+      // Smooth price movement dengan momentum
+      const change = this.calculateSmoothChange(price, volatility);
+      momentum = (momentum * 0.8) + (change * 0.2); // 80% momentum lama
       
       let close = open + momentum;
       
-      // ✅ Boundary check dengan soft bounce
-      if (close < minPrice * 1.05) {
-        close += Math.abs(momentum) * 2; // Bounce up
-        momentum = Math.abs(momentum);
-      } else if (close > maxPrice * 0.95) {
-        close -= Math.abs(momentum) * 2; // Bounce down
-        momentum = -Math.abs(momentum);
+      // Boundary check
+      if (close < minPrice) {
+        close = minPrice + (Math.random() * minPrice * 0.001);
+        momentum = Math.abs(momentum) * 0.5; // Reverse dengan damping
+      } else if (close > maxPrice) {
+        close = maxPrice - (Math.random() * maxPrice * 0.001);
+        momentum = -Math.abs(momentum) * 0.5;
       }
       
       close = Math.max(minPrice, Math.min(maxPrice, close));
       
-      // ✅ IMPROVED: Realistic wicks (maksimal 0.3% dari harga atau 1.5x body)
+      // ✅ ULTRA-KETAT: Wick hanya 0.1% atau lebih kecil
       const bodySize = Math.abs(close - open);
-      const midPrice = (open + close) / 2;
+      const maxWickPercent = 0.001; // 0.1% saja! (Sebelumnya 0.3%)
+      const maxWick = price * maxWickPercent; 
       
-      // Batasi wick agar tidak seperti jarum
-      const maxWickPercent = 0.003; // 0.3% max
-      const maxWickFromBody = bodySize * 1.5;
-      const maxWickFromPrice = midPrice * maxWickPercent;
-      const maxWick = Math.max(maxWickFromBody, maxWickFromPrice * 0.3); // Gunakan yang lebih kecil
-      
-      const upperWick = Math.random() * maxWick * 0.6; // 60% dari max
-      const lowerWick = Math.random() * maxWick * 0.6;
+      // Wick bahkan lebih pendek: hanya 20-50% dari max allowable
+      const wickMultiplier = 0.2 + (Math.random() * 0.3); // 20-50%
+      const upperWick = maxWick * wickMultiplier * 0.5; // Setengah untuk atas
+      const lowerWick = maxWick * wickMultiplier * 0.5; // Setengah untuk bawah
       
       let high = Math.max(open, close) + upperWick;
       let low = Math.min(open, close) - lowerWick;
       
-      // Enforce min/max
+      // Pastikan wick tidak lebih panjang dari body untuk candle kecil
+      if (bodySize > 0) {
+        const maxWickFromBody = bodySize * 0.3; // Wick max 30% dari body
+        high = Math.min(high, Math.max(open, close) + maxWickFromBody);
+        low = Math.max(low, Math.min(open, close) - maxWickFromBody);
+      }
+      
+      // Enforce absolute boundaries
       high = Math.min(high, maxPrice);
       low = Math.max(low, minPrice);
       
-      // ✅ Mean reversion ke initial price (jangan terlalu jauh)
-      price = close + ((basePrice - close) * 0.02); // 2% pull to center
+      price = close;
       
       candles[candleTimestamp.toString()] = {
         o: this.roundPrice(open),
@@ -172,35 +154,20 @@ export class InitializeAssetCandlesHelper {
         l: this.roundPrice(low),
         c: this.roundPrice(close),
         t: candleTimestamp,
-        v: this.generateVolume(timeframe),
+        v: Math.floor(1000 + Math.random() * 9000),
       };
     }
 
     await this.getRealtimeDb().ref(`${realtimeDbPath}/ohlc_${timeframe}`).set(candles);
   }
 
-  private calculateSmoothChange(price: number, volatility: number, momentum: number): number {
-    // Box-Muller untuk distribusi normal
+  private calculateSmoothChange(price: number, volatility: number): number {
     const u1 = Math.random();
     const u2 = Math.random();
     const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
     
-    // Scale dengan volatility tapi kurangi ekstrim (0.3 factor)
-    const baseChange = price * volatility * z * 0.3;
-    
-    // Tambahkan mean reversion kecil
-    const meanReversion = -momentum * 0.1; // 10% mean reversion
-    
-    return baseChange + meanReversion;
-  }
-
-  private generateVolume(timeframe: string): number {
-    const base = 1000 + Math.random() * 9000;
-    const multiplier = {
-      '1s': 0.3, '1m': 1, '5m': 1.2, '15m': 1.5, 
-      '30m': 1.8, '1h': 2.2, '4h': 3, '1d': 4
-    }[timeframe] || 1;
-    return Math.floor(base * multiplier);
+    // Volatility dikurangi lagi biar gak spiky (factor 0.2)
+    return price * volatility * z * 0.2;
   }
 
   private roundPrice(price: number): number {
@@ -214,17 +181,11 @@ export class InitializeAssetCandlesHelper {
     });
   }
 
-  async initializeMultipleAssets(
-    assets: Array<any>,
-  ): Promise<void> {
-    this.logger.log(`🚀 Initializing candles for ${assets.length} assets`);
+  async initializeMultipleAssets(assets: Array<any>): Promise<void> {
     await Promise.all(
       assets.map((asset) => this.initializeAssetCandles(
-        asset.assetId,
-        asset.symbol,
-        asset.realtimeDbPath,
-        asset.initialPrice,
-        asset.simulatorSettings,
+        asset.assetId, asset.symbol, asset.realtimeDbPath, 
+        asset.initialPrice, asset.simulatorSettings,
       ))
     );
   }
