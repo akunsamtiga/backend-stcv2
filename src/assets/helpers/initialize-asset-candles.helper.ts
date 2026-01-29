@@ -3,10 +3,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import * as admin from 'firebase-admin';
 
-/**
- * ✅ ULTRA-SMOOTH VERSION: Minimal wick length
- */
-
 @Injectable()
 export class InitializeAssetCandlesHelper {
   private readonly logger = new Logger(InitializeAssetCandlesHelper.name);
@@ -23,9 +19,7 @@ export class InitializeAssetCandlesHelper {
 
   private getRealtimeDb(): admin.database.Database {
     if (!this.realtimeDb) {
-      if (!admin.apps.length) {
-        throw new Error('Firebase Admin SDK not initialized.');
-      }
+      if (!admin.apps.length) throw new Error('Firebase not initialized');
       this.realtimeDb = admin.database();
     }
     return this.realtimeDb;
@@ -38,155 +32,127 @@ export class InitializeAssetCandlesHelper {
     initialPrice: number,
     simulatorSettings?: any,
   ): Promise<void> {
-    this.logger.log(`🚀 Initializing 240 ultra-smooth candles for: ${symbol}`);
+    this.logger.log(`🚀 Initializing smooth trend candles for: ${symbol}`);
     
     const settings = {
-      dailyVolatilityMin: simulatorSettings?.dailyVolatilityMin ?? 0.001,
-      dailyVolatilityMax: simulatorSettings?.dailyVolatilityMax ?? 0.005,
-      secondVolatilityMin: simulatorSettings?.secondVolatilityMin ?? 0.00001,
-      secondVolatilityMax: simulatorSettings?.secondVolatilityMax ?? 0.00008,
-      minPrice: simulatorSettings?.minPrice ?? initialPrice * 0.5,
-      maxPrice: simulatorSettings?.maxPrice ?? initialPrice * 2.0,
+      volatility: (simulatorSettings?.secondVolatilityMax ?? 0.00008) * 0.3, // Kurangi 70%
+      minPrice: simulatorSettings?.minPrice ?? initialPrice * 0.8,
+      maxPrice: simulatorSettings?.maxPrice ?? initialPrice * 1.2,
     };
 
     try {
       const now = Math.floor(Date.now() / 1000);
 
       for (const [timeframe, durationInSeconds] of Object.entries(this.TIMEFRAMES)) {
-        this.logger.log(`📈 Generating ${timeframe}...`);
+        this.logger.log(`📈 Generating ${timeframe} trend candles...`);
         
-        const volatility = this.getVolatilityForTimeframe(timeframe, settings);
-        
-        await this.generateUltraSmoothCandles(
+        // Generate dengan trend cycle yang smooth menggunakan sine wave
+        await this.generateTrendCandles(
           realtimeDbPath,
           timeframe,
           durationInSeconds,
           now,
           initialPrice,
-          volatility,
+          settings.volatility,
           settings.minPrice,
           settings.maxPrice,
         );
       }
 
       await this.setLastPrice(realtimeDbPath, initialPrice);
-      this.logger.log(`✅ Smooth candles initialized for ${symbol}`);
+      this.logger.log(`✅ Trend candles created for ${symbol}`);
     } catch (error) {
       this.logger.error(`❌ Failed: ${error.message}`);
       throw error;
     }
   }
 
-  private getVolatilityForTimeframe(timeframe: string, settings: any): number {
-    if (timeframe === '1s' || timeframe === '1m') {
-      return settings.secondVolatilityMax;
-    } else if (['5m', '15m', '30m'].includes(timeframe)) {
-      return (settings.secondVolatilityMax + settings.dailyVolatilityMin) / 2;
-    } else {
-      return settings.dailyVolatilityMax;
-    }
-  }
-
-  private async generateUltraSmoothCandles(
+  private async generateTrendCandles(
     realtimeDbPath: string,
     timeframe: string,
     durationInSeconds: number,
     currentTimestamp: number,
     basePrice: number,
-    volatility: number,
+    baseVolatility: number,
     minPrice: number,
     maxPrice: number,
   ): Promise<void> {
     const candles: Record<string, any> = {};
-    let price = basePrice;
-    let momentum = 0;
+    
+    // ✅ KUNCI SMOOTHNESS: Gunakan trend cycle (sine wave + noise kecil)
+    // Ini membuat harga bergerak naik turun secara gradual, bukan acak
+    let currentPrice = basePrice;
+    let trendPhase = Math.random() * Math.PI * 2; // Phase random awal
     
     for (let i = this.CANDLES_TO_CREATE - 1; i >= 0; i--) {
       const candleTimestamp = currentTimestamp - (i * durationInSeconds);
-      const open = price;
       
-      // Smooth price movement dengan momentum
-      const change = this.calculateSmoothChange(price, volatility);
-      momentum = (momentum * 0.8) + (change * 0.2); // 80% momentum lama
+      // ✅ SMOOTH TREND: Kombinasi trend sine wave + micro noise
+      // Sine wave memberikan arah (trend) yang berubah perlahan
+      trendPhase += 0.05; // Increment kecil untuk perubahan gradual
       
-      let close = open + momentum;
+      const trendForce = Math.sin(trendPhase) * baseVolatility * basePrice * 0.5; // Dampening trend
+      const noise = (Math.random() - 0.5) * baseVolatility * basePrice * 0.2; // Noise sangat kecil (20%)
       
-      // Boundary check
-      if (close < minPrice) {
-        close = minPrice + (Math.random() * minPrice * 0.001);
-        momentum = Math.abs(momentum) * 0.5; // Reverse dengan damping
-      } else if (close > maxPrice) {
-        close = maxPrice - (Math.random() * maxPrice * 0.001);
-        momentum = -Math.abs(momentum) * 0.5;
+      const priceChange = trendForce + noise;
+      let closePrice = currentPrice + priceChange;
+      
+      // Soft boundaries - bounce pelan
+      if (closePrice > maxPrice) {
+        closePrice = maxPrice - (Math.random() * basePrice * 0.0001);
+        trendPhase += Math.PI; // Reverse trend
+      } else if (closePrice < minPrice) {
+        closePrice = minPrice + (Math.random() * basePrice * 0.0001);
+        trendPhase += Math.PI; // Reverse trend
       }
       
-      close = Math.max(minPrice, Math.min(maxPrice, close));
+      // Open = close sebelumnya (continuous!)
+      const openPrice = currentPrice;
       
-      // ✅ ULTRA-KETAT: Wick hanya 0.1% atau lebih kecil
-      const bodySize = Math.abs(close - open);
-      const maxWickPercent = 0.001; // 0.1% saja! (Sebelumnya 0.3%)
-      const maxWick = price * maxWickPercent; 
+      // ✅ WICK MINIMAL: Hanya 0.05% (sangat kecil) dan proporsional dengan body
+      const bodySize = Math.abs(closePrice - openPrice);
+      const maxWick = Math.max(
+        basePrice * 0.0005, // 0.05% dari harga base (minimal)
+        bodySize * 0.2      // Atau 20% dari body (jika body besar)
+      );
       
-      // Wick bahkan lebih pendek: hanya 20-50% dari max allowable
-      const wickMultiplier = 0.2 + (Math.random() * 0.3); // 20-50%
-      const upperWick = maxWick * wickMultiplier * 0.5; // Setengah untuk atas
-      const lowerWick = maxWick * wickMultiplier * 0.5; // Setengah untuk bawah
+      const upperWick = Math.random() * maxWick;
+      const lowerWick = Math.random() * maxWick;
       
-      let high = Math.max(open, close) + upperWick;
-      let low = Math.min(open, close) - lowerWick;
+      let high = Math.max(openPrice, closePrice) + upperWick;
+      let low = Math.min(openPrice, closePrice) - lowerWick;
       
-      // Pastikan wick tidak lebih panjang dari body untuk candle kecil
-      if (bodySize > 0) {
-        const maxWickFromBody = bodySize * 0.3; // Wick max 30% dari body
-        high = Math.min(high, Math.max(open, close) + maxWickFromBody);
-        low = Math.max(low, Math.min(open, close) - maxWickFromBody);
-      }
-      
-      // Enforce absolute boundaries
+      // Absolute limits
       high = Math.min(high, maxPrice);
       low = Math.max(low, minPrice);
       
-      price = close;
-      
+      // Simpan candle
       candles[candleTimestamp.toString()] = {
-        o: this.roundPrice(open),
-        h: this.roundPrice(high),
-        l: this.roundPrice(low),
-        c: this.roundPrice(close),
+        o: this.round6(openPrice),
+        h: this.round6(high),
+        l: this.round6(low),
+        c: this.round6(closePrice),
         t: candleTimestamp,
-        v: Math.floor(1000 + Math.random() * 9000),
+        v: Math.floor(1000 + Math.random() * 5000),
       };
+      
+      // ✅ SMOOTH TRANSITION: Close candle ini = Open candle berikutnya
+      currentPrice = closePrice;
     }
 
-    await this.getRealtimeDb().ref(`${realtimeDbPath}/ohlc_${timeframe}`).set(candles);
+    await this.getRealtimeDb()
+      .ref(`${realtimeDbPath}/ohlc_${timeframe}`)
+      .set(candles);
   }
 
-  private calculateSmoothChange(price: number, volatility: number): number {
-    const u1 = Math.random();
-    const u2 = Math.random();
-    const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
-    
-    // Volatility dikurangi lagi biar gak spiky (factor 0.2)
-    return price * volatility * z * 0.2;
-  }
-
-  private roundPrice(price: number): number {
-    return Math.round(price * 1000000) / 1000000;
+  private round6(n: number): number {
+    return Math.round(n * 1000000) / 1000000;
   }
 
   private async setLastPrice(realtimeDbPath: string, price: number): Promise<void> {
     await this.getRealtimeDb().ref(`${realtimeDbPath}/current_price`).set({
-      current: this.roundPrice(price),
+      current: this.round6(price),
       timestamp: Math.floor(Date.now() / 1000),
     });
-  }
-
-  async initializeMultipleAssets(assets: Array<any>): Promise<void> {
-    await Promise.all(
-      assets.map((asset) => this.initializeAssetCandles(
-        asset.assetId, asset.symbol, asset.realtimeDbPath, 
-        asset.initialPrice, asset.simulatorSettings,
-      ))
-    );
   }
 }
