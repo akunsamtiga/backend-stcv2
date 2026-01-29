@@ -4,11 +4,11 @@ import { Injectable, Logger } from '@nestjs/common';
 import * as admin from 'firebase-admin';
 
 /**
- * ✅ UPDATED VERSION: Candle initialization dengan volatilitas 200x
+ * ✅ UPDATED VERSION: Candle initialization dengan volatilitas 10x
  * 
  * Perubahan utama:
- * 1. Volatilitas untuk generate 240 candle = 200x dari settingan aset
- * 2. Contoh: 0.00001-0.00008 → 0.002-0.016 untuk candle
+ * 1. Volatilitas untuk generate 240 candle = 10x dari settingan aset
+ * 2. Contoh: 0.00001-0.00008 → 0.0001-0.0008 untuk candle
  * 3. Price terakhir disimpan ke current_price (tidak loncat ke initial)
  */
 
@@ -30,8 +30,8 @@ export class InitializeAssetCandlesHelper {
 
   private readonly CANDLES_TO_CREATE = 240;
   
-  // ✅ Multiplier untuk initialization volatility (200x)
-  private readonly VOLATILITY_MULTIPLIER = 200;
+  // ✅ Multiplier untuk initialization volatility (10x) - Tidak terlalu agresif
+  private readonly VOLATILITY_MULTIPLIER = 10;
 
   constructor() {}
 
@@ -68,7 +68,7 @@ export class InitializeAssetCandlesHelper {
       secondVolatilityMax: simulatorSettings?.secondVolatilityMax ?? 0.00008,
     };
 
-    // Kalikan dengan 200 untuk initialization
+    // Kalikan dengan 10 untuk initialization
     const settings = {
       dailyVolatilityMin: originalSettings.dailyVolatilityMin * this.VOLATILITY_MULTIPLIER,
       dailyVolatilityMax: originalSettings.dailyVolatilityMax * this.VOLATILITY_MULTIPLIER,
@@ -223,7 +223,7 @@ export class InitializeAssetCandlesHelper {
   }
 
   private roundPrice(price: number): number {
-    return Math.round(price * 1000000) / 1000000;
+    return Math.round(price * 1000000) / 1000006;
   }
 
   private async setLastPrice(realtimeDbPath: string, price: number): Promise<void> {
