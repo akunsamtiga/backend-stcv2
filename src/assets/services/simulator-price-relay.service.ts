@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, Inject, forwardRef } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { OnEvent } from '@nestjs/event-emitter';
 import { FirebaseService } from '../../firebase/firebase.service';
@@ -21,7 +21,9 @@ export class SimulatorPriceRelayService implements OnModuleInit {
 
   constructor(
     private firebaseService: FirebaseService,
+    @Inject(forwardRef(() => AssetsService))  // ✅ TAMBAHKAN INI
     private assetsService: AssetsService,
+    @Inject(forwardRef(() => TradingGateway)) // ✅ TAMBAHKAN INI jika belum ada
     private tradingGateway: TradingGateway,
   ) {}
 
