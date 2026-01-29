@@ -80,19 +80,59 @@ export class InitializeAssetCandlesHelper {
     const candles: Record<string, any> = {};
     let price = basePrice;
 
+    // ✅ RANDOM NATURAL SETTINGS - Tidak terkekang oleh volatility asset
+    // Volatility dinamis antara 0.2% - 2% per candle (natural market movement)
+    const minVolatility = 0.002;  // 0.2%
+    const maxVolatility = 0.02;   // 2%
+    
+    // Probabilitas trend: 40% bullish, 40% bearish, 20% sideways
+    const trendProbability = Math.random();
+    let trendDirection = 0;
+    if (trendProbability < 0.4) {
+      trendDirection = 1;  // Bullish trend
+    } else if (trendProbability < 0.8) {
+      trendDirection = -1; // Bearish trend
+    }
+    // else sideways (0)
+
     // Generate 240 candles mundur dari waktu sekarang
     for (let i = this.CANDLES_TO_CREATE - 1; i >= 0; i--) {
       const candleTimestamp = currentTimestamp - (i * durationInSeconds);
       
-      // Generate OHLC data dengan simulasi random walk
-      const open = price;
-      const priceChange = this.generatePriceMovement(price, volatility);
+      // ✅ RANDOM NATURAL PRICE MOVEMENT
+      // Volatility random untuk setiap candle
+      const candleVolatility = minVolatility + Math.random() * (maxVolatility - minVolatility);
       
-      const high = open + Math.abs(priceChange) * Math.random() * 1.5;
-      const low = open - Math.abs(priceChange) * Math.random() * 1.5;
+      // Generate price change dengan trend bias
+      const randomWalk = this.generateNaturalPriceMovement(price, candleVolatility);
+      const trendBias = price * candleVolatility * trendDirection * 0.3; // 30% trend influence
+      const priceChange = randomWalk + trendBias;
+      
+      const open = price;
+      
+      // ✅ Generate natural OHLC dengan variasi yang lebih besar
+      // High dan Low bisa lebih ekstrem (1-3x dari price change)
+      const wickMultiplier = 1 + Math.random() * 2; // 1x - 3x
+      
+      const high = Math.max(
+        open,
+        open + Math.abs(priceChange) * wickMultiplier * (Math.random() * 0.5 + 0.5)
+      );
+      
+      const low = Math.min(
+        open,
+        open - Math.abs(priceChange) * wickMultiplier * (Math.random() * 0.5 + 0.5)
+      );
+      
       const close = open + priceChange;
 
+      // Update price untuk candle berikutnya
       price = close;
+
+      // Kadang-kadang reverse trend (20% chance setiap 40 candles)
+      if (i % 40 === 0 && Math.random() < 0.2) {
+        trendDirection = -trendDirection;
+      }
 
       // Format candle data
       const candleData = {
@@ -101,7 +141,7 @@ export class InitializeAssetCandlesHelper {
         l: this.roundPrice(Math.min(open, close, low)),
         c: this.roundPrice(close),
         t: candleTimestamp,
-        v: this.generateVolume(),
+        v: this.generateNaturalVolume(basePrice, Math.abs(priceChange / open)),
       };
 
       candles[candleTimestamp.toString()] = candleData;
@@ -119,15 +159,26 @@ export class InitializeAssetCandlesHelper {
     }
   }
 
-  private generatePriceMovement(currentPrice: number, volatility: number): number {
+  // ✅ NATURAL PRICE MOVEMENT menggunakan Box-Muller Transform
+  private generateNaturalPriceMovement(currentPrice: number, volatility: number): number {
+    // Box-Muller transform untuk distribusi normal
     const u1 = Math.random();
     const u2 = Math.random();
     const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+    
     return currentPrice * volatility * z;
   }
 
-  private generateVolume(): number {
-    return Math.floor(1000 + Math.random() * 9000);
+  // ✅ NATURAL VOLUME - Korelasi dengan price movement
+  private generateNaturalVolume(basePrice: number, priceChangePercent: number): number {
+    // Base volume: 1000 - 10000
+    const baseVolume = 1000 + Math.random() * 9000;
+    
+    // Volume lebih tinggi saat price movement besar
+    // Volume multiplier: 1x - 5x tergantung price movement
+    const volumeMultiplier = 1 + (priceChangePercent * 100) * (Math.random() * 4);
+    
+    return Math.floor(baseVolume * Math.min(volumeMultiplier, 5));
   }
 
   private roundPrice(price: number): number {
