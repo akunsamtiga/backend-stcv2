@@ -1,9 +1,8 @@
-// src\assets\services\simulator-price-relay.service.ts
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import { OnEvent } from '@nestjs/event-emitter'; // TAMBAHKAN INI
+import { OnEvent } from '@nestjs/event-emitter';
 import { FirebaseService } from '../../firebase/firebase.service';
-import { AssetsService } from '../assets.service'; // TAMBAHKAN INI (jika belum ada)
+import { AssetsService } from '../assets.service';
 import { TradingGateway } from '../../websocket/trading.gateway';
 import { ASSET_CATEGORY } from '../../common/constants';
 import { Asset } from '../../common/interfaces';
@@ -19,17 +18,20 @@ export class SimulatorPriceRelayService implements OnModuleInit {
   private relayCount = 0;
   private errorCount = 0;
   private lastSuccessTime = 0;
+  
+  // ✅ Tambahkan listener
+  private assetsListenerUnsubscribe: (() => void) | null = null;
 
   constructor(
     private firebaseService: FirebaseService,
-    private assetsService: AssetsService, // INJECT AssetsService
+    private assetsService: AssetsService,
     private tradingGateway: TradingGateway,
   ) {}
 
   async onModuleInit() {
     setTimeout(async () => {
       await this.initialize();
-    }, 5000);
+    }, 6000); // Delay 6 detik (setelah crypto scheduler)
   }
 
   private async initialize() {
@@ -41,15 +43,52 @@ export class SimulatorPriceRelayService implements OnModuleInit {
       } else {
         this.logger.warn('⚠️ No normal assets found, relay not started');
       }
+      
+      // ✅ Setup listener setelah init
+      this.setupAssetsListener();
+      
     } catch (error) {
       this.logger.error(`❌ Relay initialization failed: ${error.message}`);
     }
   }
 
-  // ============================================
-  // 🎯 EVENT LISTENER: Asset Baru Dibuat
-  // ============================================
-  
+  // ✅ METHOD BARU: Real-time listener
+  private setupAssetsListener(): void {
+    try {
+      this.logger.log('📡 Setting up normal assets listener...');
+      
+      const unsubscribe = this.firebaseService.getFirestore()
+        .collection('assets')
+        .where('category', '==', ASSET_CATEGORY.NORMAL)
+        .where('isActive', '==', true)
+        .onSnapshot(
+          snapshot => {
+            const changes = snapshot.docChanges();
+            
+            if (changes.length > 0) {
+              this.logger.log(`📡 Detected ${changes.length} changes in normal assets`);
+              
+              this.loadNormalAssets().then(() => {
+                if (this.normalAssets.length > 0 && !this.isRunning) {
+                  this.startRelay();
+                }
+              });
+            }
+          },
+          error => {
+            this.logger.error(`❌ Normal assets listener error: ${error.message}`);
+          }
+        );
+      
+      this.assetsListenerUnsubscribe = unsubscribe;
+      this.logger.log('✅ Normal assets listener active');
+      
+    } catch (error) {
+      this.logger.error(`❌ Failed to setup normal assets listener: ${error.message}`);
+    }
+  }
+
+  // ✅ FIXED: Event handler lengkap
   @OnEvent('simulator.asset.new')
   async handleNewSimulatorAsset(payload: { 
     assetId: string; 
@@ -60,7 +99,7 @@ export class SimulatorPriceRelayService implements OnModuleInit {
     this.logger.log(`🆕 New simulator asset detected via event: ${payload.symbol}`);
     
     try {
-      // Reload assets dari database untuk mendapatkan asset terbaru
+      // Reload assets
       await this.loadNormalAssets();
       
       // Jika relay belum jalan, start sekarang
@@ -75,15 +114,16 @@ export class SimulatorPriceRelayService implements OnModuleInit {
     }
   }
 
-  @OnEvent('asset.refresh.requested') // Untuk manual refresh
+  @OnEvent('asset.refresh.requested')
   async handleRefreshRequest() {
     this.logger.log('🔄 Manual refresh requested for simulator relay');
     await this.loadNormalAssets();
+    if (this.normalAssets.length > 0 && !this.isRunning) {
+      await this.startRelay();
+    }
   }
 
-  // (Sisanya sama seperti kode sebelumnya...)
-
-  @Cron('*/10 * * * *')
+  @Cron('*/1 * * * *') // ✅ Setiap 1 menit
   async refreshAssets() {
     const previousCount = this.normalAssets.length;
     await this.loadNormalAssets();
@@ -104,7 +144,6 @@ export class SimulatorPriceRelayService implements OnModuleInit {
 
   private async loadNormalAssets() {
     try {
-      // ✅ Gunakan getAllAssets dari AssetsService untuk mendapatkan data terbaru
       const { assets } = await this.assetsService.getAllAssets(true);
       
       this.normalAssets = assets.filter(a => a.category === ASSET_CATEGORY.NORMAL);
@@ -243,5 +282,8 @@ export class SimulatorPriceRelayService implements OnModuleInit {
 
   async onModuleDestroy() {
     this.stopRelay();
+    if (this.assetsListenerUnsubscribe) {
+      this.assetsListenerUnsubscribe();
+    }
   }
 }

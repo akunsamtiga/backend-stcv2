@@ -1,4 +1,3 @@
-// src/assets/services/crypto-price-scheduler.service.ts
 import { Injectable, Logger, OnModuleInit, Inject, forwardRef } from '@nestjs/common';
 import { Cron, SchedulerRegistry } from '@nestjs/schedule';
 import { FirebaseService } from '../../firebase/firebase.service';
@@ -42,6 +41,9 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
   
   private initAttempts = 0;
   private readonly MAX_INIT_ATTEMPTS = 10;
+  
+  // ✅ Tambahkan listener unsubscribe function
+  private assetsListenerUnsubscribe: (() => void) | null = null;
 
   constructor(
     private firebaseService: FirebaseService,
@@ -53,9 +55,11 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
+    // ✅ Tambahkan delay lebih lama agar semua service siap
     setTimeout(async () => {
       await this.initializeScheduler();
-    }, 3000);
+      this.setupAssetsListener(); // ✅ Setup real-time listener
+    }, 5000); // Delay 5 detik
     
     const retryInterval = setInterval(async () => {
       if (!this.schedulerActive && this.initAttempts < this.MAX_INIT_ATTEMPTS) {
@@ -70,6 +74,47 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
         this.logger.log('Scheduler active, stopping retry interval');
       }
     }, 30000);
+  }
+
+  // ✅ METHOD BARU: Real-time Firestore Listener
+  private setupAssetsListener(): void {
+    try {
+      this.logger.log('📡 Setting up real-time assets listener...');
+      
+      const unsubscribe = this.firebaseService.getFirestore()
+        .collection('assets')
+        .where('category', '==', ASSET_CATEGORY.CRYPTO)
+        .where('isActive', '==', true)
+        .onSnapshot(
+          snapshot => {
+            const changes = snapshot.docChanges();
+            
+            if (changes.length > 0) {
+              this.logger.log(`📡 Detected ${changes.length} changes in crypto assets`);
+              
+              // Jika ada perubahan dan scheduler belum aktif, trigger reload
+              if (!this.schedulerActive) {
+                this.logger.log('🚀 Changes detected, initializing scheduler...');
+                this.initializeScheduler();
+              } else {
+                // Jika sudah aktif, refresh saja list assets
+                this.loadCryptoAssets().then(() => {
+                  this.logger.log(`🔄 Refreshed crypto assets: ${this.cryptoAssets.length} active`);
+                });
+              }
+            }
+          },
+          error => {
+            this.logger.error(`❌ Assets listener error: ${error.message}`);
+          }
+        );
+      
+      this.assetsListenerUnsubscribe = unsubscribe;
+      this.logger.log('✅ Real-time assets listener active');
+      
+    } catch (error) {
+      this.logger.error(`❌ Failed to setup assets listener: ${error.message}`);
+    }
   }
 
   private async initializeScheduler() {
@@ -165,16 +210,16 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     }, this.CLEANUP_INTERVAL);
     
     this.logger.log('✅ Cleanup schedulers started:');
-    this.logger.log('   • 1s bars: Every 1 minute (time-based, 4 min retention = 240 bars)');
+    this.logger.log('   • 1s bars: Every 1 minute (time-based, 10 min retention = ~600 bars)');
     this.logger.log('   • Other timeframes: Every 30 minutes');
   }
 
-  // ✅ FIXED: Time-based cleanup ONLY for 1s bars
+  // ✅ FIXED: Time-based cleanup ONLY for 1s bars dengan retention 10 menit
   private async aggressiveCleanup1sBars(): Promise<void> {
     if (this.cryptoAssets.length === 0) return;
 
     const startTime = Date.now();
-    this.logger.log('🗑️ 1S CLEANUP STARTED (4-min retention, time-based only)...');
+    this.logger.log('🗑️ 1S CLEANUP STARTED (10-min retention, time-based only)...');
 
     try {
       let totalDeleted = 0;
@@ -190,10 +235,12 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
         results.forEach((result, index) => {
           if (result.status === 'fulfilled') {
             totalDeleted += result.value.deleted;
-            this.logger.log(
-              `${batch[index].symbol}: ${result.value.deleted} deleted, ` +
-              `${result.value.remaining} remaining (retention: 4 min, oldest: ${result.value.oldestAge}s)`
-            );
+            if (result.value.deleted > 0) {
+              this.logger.log(
+                `${batch[index].symbol}: ${result.value.deleted} deleted, ` +
+                `${result.value.remaining} remaining (oldest: ${result.value.oldestAge}s)`
+              );
+            }
           } else {
             this.logger.error(`Cleanup failed for ${batch[index].symbol}: ${result.reason}`);
           }
@@ -209,7 +256,9 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       this.cleanupStats.lastRun = Date.now();
       this.cleanupStats.byTimeframe['1s'] = (this.cleanupStats.byTimeframe['1s'] || 0) + totalDeleted;
 
-      this.logger.log(`✅ 1S CLEANUP DONE: ${totalDeleted} bars deleted in ${duration}ms (time-based only)`);
+      if (totalDeleted > 0) {
+        this.logger.log(`✅ 1S CLEANUP DONE: ${totalDeleted} bars deleted in ${duration}ms`);
+      }
 
     } catch (error) {
       this.logger.error(`❌ Aggressive 1s cleanup failed: ${error.message}`);
@@ -217,24 +266,23 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     }
   }
 
-  // ✅ FIXED: Time-based cleanup ONLY - NO max bars limit!
+  // ✅ FIXED: Retention 10 menit (600 detik)
   private async cleanupAsset1sTimeBased(asset: Asset) {
     const path = this.getAssetPath(asset);
     const ohlcPath = `${path}/ohlc_1s`;
     const now = Math.floor(Date.now() / 1000);
     
-    // ✅ RETENTION: 4 minutes = 240 seconds
-    const FOUR_MINUTES_AGO = now - 240;
+    // ✅ RETENTION: 10 minutes = 600 seconds (buffer aman untuk 240 candles)
+    const TEN_MINUTES_AGO = now - 600;
 
     try {
       const useAdminSDK = this.firebaseService.isRealtimeDbAdminAvailable();
 
       if (useAdminSDK) {
-        // ✅ Admin SDK method
         const snapshot = await this.firebaseService.getRealtimeDatabase()
           .ref(ohlcPath)
           .orderByKey()
-          .endAt(FOUR_MINUTES_AGO.toString())
+          .endAt(TEN_MINUTES_AGO.toString())
           .limitToLast(1000)
           .once('value');
 
@@ -244,7 +292,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
         }
 
         const keysToDelete = Object.keys(data)
-          .filter(key => parseInt(key) < FOUR_MINUTES_AGO);
+          .filter(key => parseInt(key) < TEN_MINUTES_AGO);
 
         if (keysToDelete.length === 0) {
           const allSnapshot = await this.firebaseService.getRealtimeDatabase()
@@ -260,7 +308,6 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
           return { deleted: 0, remaining, oldestAge };
         }
 
-        // ✅ Batch delete
         const updates: Record<string, null> = {};
         keysToDelete.forEach(key => {
           updates[key] = null;
@@ -270,7 +317,6 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
           .ref(ohlcPath)
           .update(updates);
 
-        // Count remaining
         const remainingSnapshot = await this.firebaseService.getRealtimeDatabase()
           .ref(ohlcPath)
           .limitToLast(1)
@@ -284,7 +330,6 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
         return { deleted: keysToDelete.length, remaining, oldestAge };
 
       } else {
-        // ✅ REST API method
         const response = await this.firebaseService.getRealtimeDbValue(
           ohlcPath,
           false
@@ -295,7 +340,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
         }
 
         const keysToDelete = Object.keys(response)
-          .filter(key => parseInt(key) < FOUR_MINUTES_AGO);
+          .filter(key => parseInt(key) < TEN_MINUTES_AGO);
 
         if (keysToDelete.length === 0) {
           const allKeys = Object.keys(response);
@@ -306,7 +351,6 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
           return { deleted: 0, remaining, oldestAge };
         }
 
-        // Delete via REST API
         for (const key of keysToDelete) {
           await this.firebaseService.setRealtimeDbValue(
             `${ohlcPath}/${key}`,
@@ -329,7 +373,6 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     }
   }
 
-  // ✅ Regular cleanup for other timeframes
   private async regularCleanup(): Promise<void> {
     if (this.cryptoAssets.length === 0) return;
 
@@ -439,7 +482,8 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     }
   }
 
-  @Cron('*/10 * * * *')
+  // ✅ CRON: Setiap 1 menit (bukan 10 menit)
+  @Cron('*/1 * * * *') 
   async refreshCryptoAssets() {
     this.logger.debug('Refreshing crypto assets list...');
     
@@ -565,31 +609,32 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     }
   }
 
+  // ✅ FIXED: Event handler dengan inisialisasi ulang
   @OnEvent('crypto.asset.new')
-async handleNewCryptoAsset(payload: {
-  assetId: string;
-  symbol: string;
-  cryptoConfig: any;
-  realtimeDbPath: string;
-}) {
-  this.logger.log(`🆕 New crypto asset detected via event: ${payload.symbol}`);
-  
-  try {
-    // Reload assets
-    await this.loadCryptoAssets();
+  async handleNewCryptoAsset(payload: {
+    assetId: string;
+    symbol: string;
+    cryptoConfig: any;
+    realtimeDbPath: string;
+  }) {
+    this.logger.log(`🆕 New crypto asset detected via event: ${payload.symbol}`);
     
-    // Jika scheduler belum aktif, start sekarang
-    if (!this.schedulerActive && this.cryptoAssets.length > 0) {
-      this.logger.log('🚀 Starting crypto scheduler for new asset...');
-      await this.startScheduler();
-    } else {
-      this.logger.log(`⚡ Scheduler already active with ${this.cryptoAssets.length} crypto assets`);
+    try {
+      // Reload assets dari database untuk mendapatkan asset terbaru
+      await this.loadCryptoAssets();
+      
+      // Jika scheduler belum aktif, start sekarang
+      if (!this.schedulerActive && this.cryptoAssets.length > 0) {
+        this.logger.log('🚀 Starting crypto scheduler for new asset...');
+        await this.startScheduler();
+        this.startCleanupSchedulers();
+      } else if (this.schedulerActive) {
+        this.logger.log(`⚡ Scheduler already active with ${this.cryptoAssets.length} crypto assets`);
+      }
+    } catch (error) {
+      this.logger.error(`❌ Failed to handle new crypto asset: ${error.message}`);
     }
-  } catch (error) {
-    this.logger.error(`❌ Failed to handle new crypto asset: ${error.message}`);
   }
-}
-
 
   private cleanBarData(bar: any): any {
     return {
@@ -644,7 +689,7 @@ async handleNewCryptoAsset(payload: {
     this.logger.log(`Total Runs: ${this.cleanupStats.totalRuns}`);
     this.logger.log(`Total Deleted: ${this.cleanupStats.totalDeleted}`);
     this.logger.log(`Errors: ${this.cleanupStats.errors}`);
-    this.logger.log(`1s Retention: 4 minutes (240 bars) - NO MAX LIMIT ✅`);
+    this.logger.log(`1s Retention: 10 minutes (600 detik) - NO MAX LIMIT ✅`);
     this.logger.log('By Timeframe:');
     Object.entries(this.cleanupStats.byTimeframe).forEach(([tf, count]) => {
       this.logger.log(`  ${tf}: ${count} bars`);
@@ -698,7 +743,7 @@ async handleNewCryptoAsset(payload: {
           lastRun: this.lastAggressiveCleanupTime > 0
             ? `${Math.floor((Date.now() - this.lastAggressiveCleanupTime) / 60000)}m ago`
             : 'Never',
-          retention: '4 minutes (240 bars) - Time-based only ✅',
+          retention: '10 minutes (600 detik) - Time-based only ✅',
           method: 'Time-based cleanup ONLY, NO max bars limit',
         },
         regular: {
@@ -728,6 +773,12 @@ async handleNewCryptoAsset(payload: {
     if (this.updateIntervalHandle) {
       clearInterval(this.updateIntervalHandle);
       this.updateIntervalHandle = null;
+    }
+    
+    // ✅ Cleanup listener
+    if (this.assetsListenerUnsubscribe) {
+      this.assetsListenerUnsubscribe();
+      this.assetsListenerUnsubscribe = null;
     }
     
     this.logger.log('Crypto price scheduler stopped');

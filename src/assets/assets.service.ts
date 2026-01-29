@@ -1,5 +1,4 @@
-// backendv2\src\assets\assets.service.ts
-import { Injectable, NotFoundException, ConflictException, Logger, RequestTimeoutException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, Logger, RequestTimeoutException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
 import { FirebaseService } from '../firebase/firebase.service';
 import { PriceFetcherService } from './services/price-fetcher.service';
 import { BinanceService } from './services/binance.service';
@@ -10,6 +9,8 @@ import { COLLECTIONS, ALL_DURATIONS, ASSET_CATEGORY, ASSET_DATA_SOURCE } from '.
 import { CalculationUtil, TimezoneUtil } from '../common/utils';
 import { Asset } from '../common/interfaces';
 import { InitializeAssetCandlesHelper } from './helpers/initialize-asset-candles.helper';
+import { CryptoPriceSchedulerService } from './services/crypto-price-scheduler.service';
+import { SimulatorPriceRelayService } from './services/simulator-price-relay.service';
 
 @Injectable()
 export class AssetsService {
@@ -46,6 +47,11 @@ export class AssetsService {
     private binanceService: BinanceService,
     private readonly eventEmitter: EventEmitter2,
     private initializeCandlesHelper: InitializeAssetCandlesHelper,
+    // ✅ Inject langsung untuk direct call (lebih reliable daripada event)
+    @Inject(forwardRef(() => CryptoPriceSchedulerService))
+    private cryptoScheduler: CryptoPriceSchedulerService,
+    @Inject(forwardRef(() => SimulatorPriceRelayService))
+    private simulatorRelay: SimulatorPriceRelayService,
   ) {
     setTimeout(async () => {
       try {
@@ -381,46 +387,43 @@ export class AssetsService {
           this.logger.log(`✅ 240 candles initialized successfully for ${createAssetDto.symbol}`);
         } catch (candleError) {
           this.logger.error(`❌ Failed to initialize candles: ${candleError.message}`);
+          // Jangan throw, asset tetap dibuat meski candles gagal
         }
       }
 
       this.invalidateCache();
 
       // ============================================
-      // 🔔 EMIT EVENT UNTUK NOTIFY SERVICE LAIN
+      // 🚀 TRIGGER SCHEDULER DIRECTLY (LEBIH RELIABLE)
       // ============================================
-      // Emit event agar simulator langsung pick up asset baru tanpa restart
-      this.eventEmitter.emit('asset.created', {
-        assetId,
-        symbol: createAssetDto.symbol,
-        name: createAssetDto.name,
-        category: createAssetDto.category,
-        type: createAssetDto.type,
-        dataSource: createAssetDto.dataSource,
-        realtimeDbPath: plainAssetData.realtimeDbPath,
-        simulatorSettings: plainAssetData.simulatorSettings,
-      });
-
-      // Emit event khusus untuk simulator relay
-      if (createAssetDto.category === ASSET_CATEGORY.NORMAL) {
-        this.eventEmitter.emit('simulator.asset.new', {
-          assetId,
-          symbol: createAssetDto.symbol,
-          realtimeDbPath: plainAssetData.realtimeDbPath,
-          simulatorSettings: plainAssetData.simulatorSettings,
-        });
-        this.logger.log(`📡 Emitted simulator.asset.new event for ${createAssetDto.symbol}`);
-      }
-
-      // Emit event khusus untuk crypto scheduler
-      if (createAssetDto.category === ASSET_CATEGORY.CRYPTO) {
-        this.eventEmitter.emit('crypto.asset.new', {
-          assetId,
-          symbol: createAssetDto.symbol,
-          cryptoConfig: plainAssetData.cryptoConfig,
-          realtimeDbPath: plainAssetData.realtimeDbPath,
-        });
-        this.logger.log(`📡 Emitted crypto.asset.new event for ${createAssetDto.symbol}`);
+      try {
+        if (createAssetDto.category === ASSET_CATEGORY.CRYPTO) {
+          this.logger.log(`🚀 Triggering crypto scheduler for ${createAssetDto.symbol}...`);
+          
+          // Direct call ke scheduler (lebih reliable dari pada event)
+          await this.cryptoScheduler.handleNewCryptoAsset({
+            assetId,
+            symbol: createAssetDto.symbol,
+            cryptoConfig: plainAssetData.cryptoConfig,
+            realtimeDbPath: plainAssetData.realtimeDbPath,
+          });
+          
+          this.logger.log(`✅ Crypto scheduler triggered successfully`);
+        } else {
+          this.logger.log(`🚀 Triggering simulator relay for ${createAssetDto.symbol}...`);
+          
+          await this.simulatorRelay.handleNewSimulatorAsset({
+            assetId,
+            symbol: createAssetDto.symbol,
+            realtimeDbPath: plainAssetData.realtimeDbPath,
+            simulatorSettings: plainAssetData.simulatorSettings,
+          });
+          
+          this.logger.log(`✅ Simulator relay triggered successfully`);
+        }
+      } catch (schedulerError) {
+        // Jangan gagalkan creation jika scheduler error, cuma log warning
+        this.logger.warn(`⚠️ Scheduler trigger failed (asset created but may need restart): ${schedulerError.message}`);
       }
 
       this.logger.log('');
