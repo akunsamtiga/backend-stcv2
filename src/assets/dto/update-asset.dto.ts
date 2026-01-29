@@ -1,3 +1,4 @@
+// src/assets/dto/update-asset.dto.ts
 import { PartialType, OmitType } from '@nestjs/swagger';
 import { CreateAssetDto } from './create-asset.dto';
 

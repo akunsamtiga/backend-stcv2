@@ -1,14 +1,19 @@
-// src/assets/helpers/initialize-asset-candles.helper.ts
+// backendv2/src/assets/helpers/initialize-asset-candles.helper.ts
+// ✅ FIXED VERSION - Menggunakan field names lengkap, bukan singkatan
 
 import { Injectable, Logger } from '@nestjs/common';
-import * as admin from 'firebase-admin';
+import { FirebaseService } from '../../firebase/firebase.service';
+import { TimezoneUtil } from '../../common/utils';
 
 @Injectable()
 export class InitializeAssetCandlesHelper {
   private readonly logger = new Logger(InitializeAssetCandlesHelper.name);
-  private realtimeDb: admin.database.Database | null = null;
 
-  private readonly TIMEFRAMES = {
+  // 240 candles untuk setiap timeframe
+  private readonly CANDLES_TO_CREATE = 240;
+
+  // Timeframe dalam detik
+  private readonly TIMEFRAMES: Record<string, number> = {
     '1s': 1,
     '1m': 60,
     '5m': 300,
@@ -19,18 +24,12 @@ export class InitializeAssetCandlesHelper {
     '1d': 86400,
   };
 
-  private readonly CANDLES_TO_CREATE = 240;
+  constructor(
+    private readonly firebase: FirebaseService,
+  ) {}
 
-  constructor() {}
-
-  private getRealtimeDb(): admin.database.Database {
-    if (!this.realtimeDb) {
-      if (!admin.apps.length) {
-        throw new Error('Firebase Admin SDK not initialized.');
-      }
-      this.realtimeDb = admin.database();
-    }
-    return this.realtimeDb;
+  private getRealtimeDb() {
+    return this.firebase.getRealtimeDatabase();
   }
 
   async initializeAssetCandles(
@@ -94,20 +93,26 @@ export class InitializeAssetCandlesHelper {
 
       price = close;
 
-      // Format candle data
+      // ✅ FIX: Gunakan field names LENGKAP seperti yang diharapkan
+      const dateInfo = TimezoneUtil.getDateTimeInfo(new Date(candleTimestamp * 1000));
+      
       const candleData = {
-        o: this.roundPrice(open),
-        h: this.roundPrice(Math.max(open, close, high)),
-        l: this.roundPrice(Math.min(open, close, low)),
-        c: this.roundPrice(close),
-        t: candleTimestamp,
-        v: this.generateVolume(),
+        open: this.roundPrice(open),
+        high: this.roundPrice(Math.max(open, close, high)),
+        low: this.roundPrice(Math.min(open, close, low)),
+        close: this.roundPrice(close),
+        timestamp: candleTimestamp,
+        datetime: dateInfo.datetime,
+        datetime_iso: dateInfo.datetime_iso,
+        timezone: 'Asia/Jakarta',
+        volume: this.generateVolume(),
+        isCompleted: true,  // Historical candles are always completed
       };
 
       candles[candleTimestamp.toString()] = candleData;
     }
 
-    // ✅ FIX: Gunakan flat path ohlc_{timeframe}, bukan nested ohlc/{timeframe}
+    // ✅ Gunakan flat path ohlc_{timeframe}, bukan nested ohlc/{timeframe}
     const path = `${realtimeDbPath}/ohlc_${timeframe}`;
     
     try {
@@ -136,7 +141,7 @@ export class InitializeAssetCandlesHelper {
 
   private async setLastPrice(realtimeDbPath: string, price: number): Promise<void> {
     try {
-      // ✅ FIX: Gunakan current_price, bukan price
+      // ✅ Gunakan current_price, bukan price
       await this.getRealtimeDb().ref(`${realtimeDbPath}/current_price`).set({
         current: this.roundPrice(price),
         timestamp: Math.floor(Date.now() / 1000),
