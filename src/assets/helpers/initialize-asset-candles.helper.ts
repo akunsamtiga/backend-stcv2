@@ -4,11 +4,11 @@ import { Injectable, Logger } from '@nestjs/common';
 import * as admin from 'firebase-admin';
 
 /**
- * ✅ UPDATED VERSION: Candle initialization dengan volatilitas 100x
+ * ✅ UPDATED VERSION: Candle initialization dengan volatilitas 50x
  * 
  * Perubahan utama:
- * 1. Volatilitas untuk generate 240 candle = 100x dari settingan aset
- * 2. Contoh: Jika setting 0.00001-0.00008 → digunakan 0.001-0.008 untuk candle
+ * 1. Volatilitas untuk generate 240 candle = 50x dari settingan aset
+ * 2. Contoh: Jika setting 0.00001-0.00008 → digunakan 0.0005-0.004 untuk candle
  * 3. Setelah initialization, simulator berjalan normal dengan volatilitas asli
  */
 
@@ -29,6 +29,9 @@ export class InitializeAssetCandlesHelper {
   };
 
   private readonly CANDLES_TO_CREATE = 240;
+  
+  // ✅ Multiplier untuk initialization volatility (50x)
+  private readonly VOLATILITY_MULTIPLIER = 50;
 
   constructor() {}
 
@@ -43,7 +46,7 @@ export class InitializeAssetCandlesHelper {
   }
 
   /**
-   * ✅ UPDATED: Initialize candles dengan volatilitas 100x untuk generating
+   * ✅ UPDATED: Initialize candles dengan volatilitas 50x untuk generating
    */
   async initializeAssetCandles(
     assetId: string,
@@ -61,8 +64,7 @@ export class InitializeAssetCandlesHelper {
   ): Promise<void> {
     this.logger.log(`🚀 Initializing 240 candles for asset: ${symbol} (${assetId})`);
     
-    // ✅ ENHANCED: Gunakan volatilitas 100x untuk generate candle历史
-    // Ini membuat candle history terlihat lebih "hidup" dan tidak flat
+    // ✅ ENHANCED: Gunakan volatilitas 50x untuk generate candle历史
     const originalSettings = {
       dailyVolatilityMin: simulatorSettings?.dailyVolatilityMin ?? 0.001,
       dailyVolatilityMax: simulatorSettings?.dailyVolatilityMax ?? 0.005,
@@ -70,21 +72,21 @@ export class InitializeAssetCandlesHelper {
       secondVolatilityMax: simulatorSettings?.secondVolatilityMax ?? 0.00008,
     };
 
-    // Kalikan dengan 100 untuk initialization
+    // Kalikan dengan 50 untuk initialization
     const settings = {
-      dailyVolatilityMin: originalSettings.dailyVolatilityMin * 100,
-      dailyVolatilityMax: originalSettings.dailyVolatilityMax * 100,
-      secondVolatilityMin: originalSettings.secondVolatilityMin * 100,
-      secondVolatilityMax: originalSettings.secondVolatilityMax * 100,
+      dailyVolatilityMin: originalSettings.dailyVolatilityMin * this.VOLATILITY_MULTIPLIER,
+      dailyVolatilityMax: originalSettings.dailyVolatilityMax * this.VOLATILITY_MULTIPLIER,
+      secondVolatilityMin: originalSettings.secondVolatilityMin * this.VOLATILITY_MULTIPLIER,
+      secondVolatilityMax: originalSettings.secondVolatilityMax * this.VOLATILITY_MULTIPLIER,
       minPrice: simulatorSettings?.minPrice ?? initialPrice * 0.5,
       maxPrice: simulatorSettings?.maxPrice ?? initialPrice * 2.0,
     };
 
-    this.logger.log(`📊 Initialization Settings (100x Volatility):`);
+    this.logger.log(`📊 Initialization Settings (${this.VOLATILITY_MULTIPLIER}x Volatility):`);
     this.logger.log(`   Original Daily: ${originalSettings.dailyVolatilityMin} - ${originalSettings.dailyVolatilityMax}`);
-    this.logger.log(`   Used Daily: ${settings.dailyVolatilityMin} - ${settings.dailyVolatilityMax} (100x)`);
+    this.logger.log(`   Used Daily: ${settings.dailyVolatilityMin} - ${settings.dailyVolatilityMax} (${this.VOLATILITY_MULTIPLIER}x)`);
     this.logger.log(`   Original Second: ${originalSettings.secondVolatilityMin} - ${originalSettings.secondVolatilityMax}`);
-    this.logger.log(`   Used Second: ${settings.secondVolatilityMin} - ${settings.secondVolatilityMax} (100x)`);
+    this.logger.log(`   Used Second: ${settings.secondVolatilityMin} - ${settings.secondVolatilityMax} (${this.VOLATILITY_MULTIPLIER}x)`);
     this.logger.log(`   Price Range: ${settings.minPrice} - ${settings.maxPrice}`);
     this.logger.log(`   Initial Price: ${initialPrice}`);
 
@@ -113,7 +115,7 @@ export class InitializeAssetCandlesHelper {
       // Set last price di Realtime Database
       await this.setLastPrice(realtimeDbPath, initialPrice);
 
-      this.logger.log(`✅ Successfully initialized all candles for ${symbol} with enhanced volatility`);
+      this.logger.log(`✅ Successfully initialized all candles for ${symbol} (${this.VOLATILITY_MULTIPLIER}x volatility mode)`);
     } catch (error) {
       this.logger.error(`❌ Failed to initialize candles for ${symbol}: ${error.message}`);
       throw error;
@@ -228,7 +230,7 @@ export class InitializeAssetCandlesHelper {
     
     try {
       await this.getRealtimeDb().ref(path).set(candles);
-      this.logger.debug(`✅ Written ${this.CANDLES_TO_CREATE} candles to ${path} (volatility: ${volatility})`);
+      this.logger.debug(`✅ Written ${this.CANDLES_TO_CREATE} candles to ${path} (volatility: ${volatility.toFixed(6)})`);
     } catch (error) {
       this.logger.error(`❌ Failed to write candles to ${path}: ${error.message}`);
       throw error;
@@ -297,7 +299,7 @@ export class InitializeAssetCandlesHelper {
       };
     }>,
   ): Promise<void> {
-    this.logger.log(`🚀 Initializing candles for ${assets.length} assets with 100x volatility`);
+    this.logger.log(`🚀 Initializing candles for ${assets.length} assets with ${this.VOLATILITY_MULTIPLIER}x volatility`);
 
     const promises = assets.map((asset) =>
       this.initializeAssetCandles(
