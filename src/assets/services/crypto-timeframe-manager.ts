@@ -154,10 +154,11 @@ export class CryptoTimeframeManager {
     this.logger.log(`🔄 Reset OHLC bars for ${assetId}`);
   }
   
-  // ✅ FIXED: Retention 1s diperbesar jadi 10 menit (600 detik)
+  // ✅ FIXED: Retention 1s diubah dari 0.002778 (4 menit) menjadi 0.00694 (10 menit)
+  // Agar 240 candles historical (4 menit) aman dari cleanup
   getRetentionDays(): Record<string, number> {
     return {
-      '1s': 0.00694,   // ✅ 10 menit (600 detik) - buffer aman untuk 240 candles
+      '1s': 0.00694,   // ✅ 10 menit = 600 detik (buffer aman untuk 240 candles = 4 menit)
       '1m': 0.1667,    // 4 jam (240 candles)
       '5m': 0.8333,    // 20 jam (240 candles)
       '15m': 2.5,      // 2.5 hari (240 candles)

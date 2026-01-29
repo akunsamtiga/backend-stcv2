@@ -18,9 +18,6 @@ export class SimulatorPriceRelayService implements OnModuleInit {
   private relayCount = 0;
   private errorCount = 0;
   private lastSuccessTime = 0;
-  
-  // ✅ Tambahkan listener
-  private assetsListenerUnsubscribe: (() => void) | null = null;
 
   constructor(
     private firebaseService: FirebaseService,
@@ -29,12 +26,62 @@ export class SimulatorPriceRelayService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
+    // Tunggu sebentar agar Firebase dan service lain siap
     setTimeout(async () => {
       await this.initialize();
-    }, 6000); // Delay 6 detik (setelah crypto scheduler)
+    }, 5000);
+    
+    // ✅ TAMBAHAN: Setup Firestore listener untuk auto-detect perubahan
+    this.setupAssetsListener();
   }
 
-  private async initialize() {
+  // ✅ METHOD BARU: Firestore listener real-time
+  private setupAssetsListener(): void {
+    try {
+      this.logger.log('📡 Setting up Firestore listener for normal assets...');
+      
+      this.firebaseService.getFirestore()
+        .collection('assets')
+        .where('category', '==', 'normal')
+        .where('isActive', '==', true)
+        .onSnapshot(snapshot => {
+          const changes = snapshot.docChanges();
+          
+          if (changes.length > 0) {
+            this.logger.log(`📡 Firestore detected ${changes.length} changes in normal assets`);
+            
+            // Cek apakah ada asset baru
+            const currentIds = new Set(this.normalAssets.map(a => a.id));
+            let hasNewAsset = false;
+            
+            for (const change of changes) {
+              if (change.type === 'added' && !currentIds.has(change.doc.id)) {
+                hasNewAsset = true;
+                break;
+              }
+            }
+            
+            if (hasNewAsset || !this.isRunning) {
+              this.logger.log('🚀 New normal asset detected via Firestore, reloading...');
+              this.handleNewSimulatorAsset({
+                assetId: 'bulk-update',
+                symbol: 'bulk-update',
+                realtimeDbPath: '',
+              }).catch(err => {
+                this.logger.error(`Failed to reload relay: ${err.message}`);
+              });
+            }
+          }
+        }, error => {
+          this.logger.error(`❌ Firestore listener error: ${error.message}`);
+        });
+        
+    } catch (error) {
+      this.logger.error(`❌ Failed to setup Firestore listener: ${error.message}`);
+    }
+  }
+
+  async initialize() {
     try {
       await this.loadNormalAssets();
       
@@ -43,52 +90,15 @@ export class SimulatorPriceRelayService implements OnModuleInit {
       } else {
         this.logger.warn('⚠️ No normal assets found, relay not started');
       }
-      
-      // ✅ Setup listener setelah init
-      this.setupAssetsListener();
-      
     } catch (error) {
       this.logger.error(`❌ Relay initialization failed: ${error.message}`);
     }
   }
 
-  // ✅ METHOD BARU: Real-time listener
-  private setupAssetsListener(): void {
-    try {
-      this.logger.log('📡 Setting up normal assets listener...');
-      
-      const unsubscribe = this.firebaseService.getFirestore()
-        .collection('assets')
-        .where('category', '==', ASSET_CATEGORY.NORMAL)
-        .where('isActive', '==', true)
-        .onSnapshot(
-          snapshot => {
-            const changes = snapshot.docChanges();
-            
-            if (changes.length > 0) {
-              this.logger.log(`📡 Detected ${changes.length} changes in normal assets`);
-              
-              this.loadNormalAssets().then(() => {
-                if (this.normalAssets.length > 0 && !this.isRunning) {
-                  this.startRelay();
-                }
-              });
-            }
-          },
-          error => {
-            this.logger.error(`❌ Normal assets listener error: ${error.message}`);
-          }
-        );
-      
-      this.assetsListenerUnsubscribe = unsubscribe;
-      this.logger.log('✅ Normal assets listener active');
-      
-    } catch (error) {
-      this.logger.error(`❌ Failed to setup normal assets listener: ${error.message}`);
-    }
-  }
-
-  // ✅ FIXED: Event handler lengkap
+  // ============================================
+  // 🎯 EVENT LISTENER: Asset Baru Dibuat
+  // ============================================
+  
   @OnEvent('simulator.asset.new')
   async handleNewSimulatorAsset(payload: { 
     assetId: string; 
@@ -96,18 +106,20 @@ export class SimulatorPriceRelayService implements OnModuleInit {
     realtimeDbPath: string;
     simulatorSettings?: any;
   }) {
-    this.logger.log(`🆕 New simulator asset detected via event: ${payload.symbol}`);
+    this.logger.log(`🆕 New simulator asset detected: ${payload.symbol}`);
     
     try {
-      // Reload assets
+      // Reload assets dari database untuk mendapatkan asset terbaru
       await this.loadNormalAssets();
       
       // Jika relay belum jalan, start sekarang
       if (!this.isRunning && this.normalAssets.length > 0) {
         this.logger.log('🚀 Starting relay for new asset...');
         await this.startRelay();
-      } else {
+      } else if (this.isRunning) {
         this.logger.log(`📡 Relay already running with ${this.normalAssets.length} assets`);
+        // Force reload untuk memastikan asset baru masuk ke polling
+        await this.loadNormalAssets();
       }
     } catch (error) {
       this.logger.error(`❌ Failed to handle new simulator asset: ${error.message}`);
@@ -118,12 +130,17 @@ export class SimulatorPriceRelayService implements OnModuleInit {
   async handleRefreshRequest() {
     this.logger.log('🔄 Manual refresh requested for simulator relay');
     await this.loadNormalAssets();
+    
     if (this.normalAssets.length > 0 && !this.isRunning) {
       await this.startRelay();
     }
   }
 
-  @Cron('*/1 * * * *') // ✅ Setiap 1 menit
+  // ============================================
+  // CRON: Refresh assets setiap 1 menit (dari 10 menit)
+  // ============================================
+  
+  @Cron('*/1 * * * *')  // ✅ Diubah dari */10 * * * * menjadi */1 * * * *
   async refreshAssets() {
     const previousCount = this.normalAssets.length;
     await this.loadNormalAssets();
@@ -136,7 +153,7 @@ export class SimulatorPriceRelayService implements OnModuleInit {
     if (previousCount === 0 && currentCount > 0 && !this.isRunning) {
       this.logger.log('✅ Assets detected, starting relay...');
       await this.startRelay();
-    } else if (currentCount === 0 && this.isRunning) {
+    } else if (previousCount > 0 && currentCount === 0 && this.isRunning) {
       this.logger.warn('⚠️ No more assets, stopping relay...');
       this.stopRelay();
     }
@@ -282,8 +299,5 @@ export class SimulatorPriceRelayService implements OnModuleInit {
 
   async onModuleDestroy() {
     this.stopRelay();
-    if (this.assetsListenerUnsubscribe) {
-      this.assetsListenerUnsubscribe();
-    }
   }
 }

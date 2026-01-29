@@ -1,7 +1,9 @@
-import { Injectable, NotFoundException, ConflictException, Logger, RequestTimeoutException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, Logger, RequestTimeoutException, BadRequestException } from '@nestjs/common';
 import { FirebaseService } from '../firebase/firebase.service';
 import { PriceFetcherService } from './services/price-fetcher.service';
 import { BinanceService } from './services/binance.service';
+import { CryptoPriceSchedulerService } from './services/crypto-price-scheduler.service';
+import { SimulatorPriceRelayService } from './services/simulator-price-relay.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { CreateAssetDto } from './dto/create-asset.dto';
 import { UpdateAssetDto } from './dto/update-asset.dto';
@@ -9,8 +11,6 @@ import { COLLECTIONS, ALL_DURATIONS, ASSET_CATEGORY, ASSET_DATA_SOURCE } from '.
 import { CalculationUtil, TimezoneUtil } from '../common/utils';
 import { Asset } from '../common/interfaces';
 import { InitializeAssetCandlesHelper } from './helpers/initialize-asset-candles.helper';
-import { CryptoPriceSchedulerService } from './services/crypto-price-scheduler.service';
-import { SimulatorPriceRelayService } from './services/simulator-price-relay.service';
 
 @Injectable()
 export class AssetsService {
@@ -47,10 +47,8 @@ export class AssetsService {
     private binanceService: BinanceService,
     private readonly eventEmitter: EventEmitter2,
     private initializeCandlesHelper: InitializeAssetCandlesHelper,
-    // ✅ Inject langsung untuk direct call (lebih reliable daripada event)
-    @Inject(forwardRef(() => CryptoPriceSchedulerService))
+    // ✅ INJECT LANGSUNG: Untuk menghindari masalah EventEmitter yang tidak ter-trigger
     private cryptoScheduler: CryptoPriceSchedulerService,
-    @Inject(forwardRef(() => SimulatorPriceRelayService))
     private simulatorRelay: SimulatorPriceRelayService,
   ) {
     setTimeout(async () => {
@@ -387,44 +385,50 @@ export class AssetsService {
           this.logger.log(`✅ 240 candles initialized successfully for ${createAssetDto.symbol}`);
         } catch (candleError) {
           this.logger.error(`❌ Failed to initialize candles: ${candleError.message}`);
-          // Jangan throw, asset tetap dibuat meski candles gagal
         }
       }
 
       this.invalidateCache();
 
       // ============================================
-      // 🚀 TRIGGER SCHEDULER DIRECTLY (LEBIH RELIABLE)
+      // ✅ PERBAIKAN UTAMA: Panggil langsung service, jangan emit event
       // ============================================
       try {
         if (createAssetDto.category === ASSET_CATEGORY.CRYPTO) {
           this.logger.log(`🚀 Triggering crypto scheduler for ${createAssetDto.symbol}...`);
-          
-          // Direct call ke scheduler (lebih reliable dari pada event)
+          // Panggil langsung method, jangan pakai event emitter
           await this.cryptoScheduler.handleNewCryptoAsset({
             assetId,
             symbol: createAssetDto.symbol,
             cryptoConfig: plainAssetData.cryptoConfig,
             realtimeDbPath: plainAssetData.realtimeDbPath,
           });
-          
-          this.logger.log(`✅ Crypto scheduler triggered successfully`);
         } else {
           this.logger.log(`🚀 Triggering simulator relay for ${createAssetDto.symbol}...`);
-          
+          // Panggil langsung method, jangan pakai event emitter
           await this.simulatorRelay.handleNewSimulatorAsset({
             assetId,
             symbol: createAssetDto.symbol,
             realtimeDbPath: plainAssetData.realtimeDbPath,
             simulatorSettings: plainAssetData.simulatorSettings,
           });
-          
-          this.logger.log(`✅ Simulator relay triggered successfully`);
         }
-      } catch (schedulerError) {
-        // Jangan gagalkan creation jika scheduler error, cuma log warning
-        this.logger.warn(`⚠️ Scheduler trigger failed (asset created but may need restart): ${schedulerError.message}`);
+      } catch (triggerError) {
+        this.logger.error(`❌ Failed to trigger scheduler: ${triggerError.message}`);
+        // Jangan throw error di sini, biarkan asset tetap terbuat
       }
+
+      // Tetap emit event untuk kompatibilitas dengan service lain (jika ada)
+      this.eventEmitter.emit('asset.created', {
+        assetId,
+        symbol: createAssetDto.symbol,
+        name: createAssetDto.name,
+        category: createAssetDto.category,
+        type: createAssetDto.type,
+        dataSource: createAssetDto.dataSource,
+        realtimeDbPath: plainAssetData.realtimeDbPath,
+        simulatorSettings: plainAssetData.simulatorSettings,
+      });
 
       this.logger.log('');
       this.logger.log('');
