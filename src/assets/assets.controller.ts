@@ -1,4 +1,4 @@
-// src\assets\assets.controller.ts
+// src/assets/assets.controller.ts
 import { 
   Controller, 
   Get, 
@@ -138,47 +138,9 @@ export class AssetsController {
     return this.assetsService.bulkCreateAssets(assets, adminId);
   }
 
-  @Post(':assetId/reinitialize-candles')
-  @UseGuards(RolesGuard)
-  @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ 
-    summary: 'Reinitialize 240 candles for existing asset (Admin only)',
-    description: `Regenerates all historical candles for an existing asset. 
-    WARNING: This will overwrite existing OHLC data in Realtime Database!
-    Only works for 'normal' category assets with 'realtime_db' or 'mock' data source.`
-  })
-  @ApiParam({ 
-    name: 'assetId', 
-    description: 'Asset ID from Firestore',
-    example: 'abc123def456'
-  })
-  @ApiResponse({ 
-    status: 200, 
-    description: 'Candles reinitialized successfully',
-    schema: {
-      example: {
-        success: true,
-        message: 'Candles reinitialized for EUR/USD',
-        data: {
-          assetId: 'abc123',
-          symbol: 'EUR/USD',
-          realtimeDbPath: '/assets/EUR_USD'
-        }
-      }
-    }
-  })
-  @ApiResponse({ 
-    status: 404, 
-    description: 'Asset not found'
-  })
-  @ApiResponse({ 
-    status: 400, 
-    description: 'Cannot reinitialize candles for this asset type (crypto or api source)'
-  })
-  async reinitializeCandles(@Param('assetId') assetId: string) {
-    return this.assetsService.reinitializeAssetCandles(assetId);
-  }
+  // ==========================================
+  // ENDPOINT REINITIALIZE CANDLES DIHAPUS
+  // ==========================================
 
   @Get('types')
   @ApiOperation({ 

@@ -3,6 +3,16 @@
 import { Injectable, Logger } from '@nestjs/common';
 import * as admin from 'firebase-admin';
 
+/**
+ * ✅ UPDATED VERSION: Menggunakan simulatorSettings untuk generate candle
+ * 
+ * Perubahan utama:
+ * 1. Generate candle sekarang menggunakan volatility dari simulatorSettings
+ * 2. Mendukung dailyVolatility dan secondVolatility
+ * 3. Respects minPrice dan maxPrice boundaries
+ * 4. Generate realistic price movement sesuai dengan konfigurasi aset
+ */
+
 @Injectable()
 export class InitializeAssetCandlesHelper {
   private readonly logger = new Logger(InitializeAssetCandlesHelper.name);
@@ -33,21 +43,51 @@ export class InitializeAssetCandlesHelper {
     return this.realtimeDb;
   }
 
+  /**
+   * ✅ NEW: Initialize candles dengan simulatorSettings
+   * Ini adalah method utama yang sekarang menggunakan simulatorSettings
+   */
   async initializeAssetCandles(
     assetId: string,
     symbol: string,
     realtimeDbPath: string,
     initialPrice: number,
-    volatility: number = 0.001,
+    simulatorSettings?: {
+      dailyVolatilityMin?: number;
+      dailyVolatilityMax?: number;
+      secondVolatilityMin?: number;
+      secondVolatilityMax?: number;
+      minPrice?: number;
+      maxPrice?: number;
+    },
   ): Promise<void> {
-    this.logger.log(`Initializing 240 candles for asset: ${symbol} (${assetId})`);
+    this.logger.log(`🚀 Initializing 240 candles for asset: ${symbol} (${assetId})`);
+    
+    // ✅ Gunakan simulatorSettings jika tersedia, fallback ke default
+    const settings = {
+      dailyVolatilityMin: simulatorSettings?.dailyVolatilityMin ?? 0.001,
+      dailyVolatilityMax: simulatorSettings?.dailyVolatilityMax ?? 0.005,
+      secondVolatilityMin: simulatorSettings?.secondVolatilityMin ?? 0.00001,
+      secondVolatilityMax: simulatorSettings?.secondVolatilityMax ?? 0.00008,
+      minPrice: simulatorSettings?.minPrice ?? initialPrice * 0.5,
+      maxPrice: simulatorSettings?.maxPrice ?? initialPrice * 2.0,
+    };
+
+    this.logger.log(`📊 Simulator Settings:`);
+    this.logger.log(`   Initial Price: ${initialPrice}`);
+    this.logger.log(`   Daily Volatility: ${settings.dailyVolatilityMin} - ${settings.dailyVolatilityMax}`);
+    this.logger.log(`   Second Volatility: ${settings.secondVolatilityMin} - ${settings.secondVolatilityMax}`);
+    this.logger.log(`   Price Range: ${settings.minPrice} - ${settings.maxPrice}`);
 
     try {
       const now = Math.floor(Date.now() / 1000);
 
       // Generate candles untuk setiap timeframe
       for (const [timeframe, durationInSeconds] of Object.entries(this.TIMEFRAMES)) {
-        this.logger.log(`Generating ${this.CANDLES_TO_CREATE} candles for ${symbol} - ${timeframe}`);
+        this.logger.log(`📈 Generating ${this.CANDLES_TO_CREATE} candles for ${symbol} - ${timeframe}`);
+        
+        // ✅ Pilih volatility yang sesuai dengan timeframe
+        const volatility = this.getVolatilityForTimeframe(timeframe, settings);
         
         await this.generateCandlesForTimeframe(
           realtimeDbPath,
@@ -56,19 +96,61 @@ export class InitializeAssetCandlesHelper {
           now,
           initialPrice,
           volatility,
+          settings.minPrice,
+          settings.maxPrice,
         );
       }
 
       // Set last price di Realtime Database
       await this.setLastPrice(realtimeDbPath, initialPrice);
 
-      this.logger.log(`Successfully initialized all candles for ${symbol}`);
+      this.logger.log(`✅ Successfully initialized all candles for ${symbol}`);
     } catch (error) {
-      this.logger.error(`Failed to initialize candles for ${symbol}: ${error.message}`);
+      this.logger.error(`❌ Failed to initialize candles for ${symbol}: ${error.message}`);
       throw error;
     }
   }
 
+  /**
+   * ✅ NEW: Pilih volatility yang sesuai dengan timeframe
+   * - Timeframe kecil (1s, 1m) → gunakan secondVolatility
+   * - Timeframe besar (1h, 4h, 1d) → gunakan dailyVolatility
+   */
+  private getVolatilityForTimeframe(
+    timeframe: string,
+    settings: {
+      dailyVolatilityMin: number;
+      dailyVolatilityMax: number;
+      secondVolatilityMin: number;
+      secondVolatilityMax: number;
+    },
+  ): number {
+    let volatilityMin: number;
+    let volatilityMax: number;
+
+    // Timeframe kecil menggunakan secondVolatility
+    if (timeframe === '1s' || timeframe === '1m') {
+      volatilityMin = settings.secondVolatilityMin;
+      volatilityMax = settings.secondVolatilityMax;
+    }
+    // Timeframe menengah menggunakan blend
+    else if (timeframe === '5m' || timeframe === '15m' || timeframe === '30m') {
+      volatilityMin = (settings.secondVolatilityMin + settings.dailyVolatilityMin) / 2;
+      volatilityMax = (settings.secondVolatilityMax + settings.dailyVolatilityMax) / 2;
+    }
+    // Timeframe besar menggunakan dailyVolatility
+    else {
+      volatilityMin = settings.dailyVolatilityMin;
+      volatilityMax = settings.dailyVolatilityMax;
+    }
+
+    // Return random value between min and max
+    return volatilityMin + Math.random() * (volatilityMax - volatilityMin);
+  }
+
+  /**
+   * ✅ UPDATED: Generate candles dengan boundaries minPrice dan maxPrice
+   */
   private async generateCandlesForTimeframe(
     realtimeDbPath: string,
     timeframe: string,
@@ -76,6 +158,8 @@ export class InitializeAssetCandlesHelper {
     currentTimestamp: number,
     basePrice: number,
     volatility: number,
+    minPrice: number,
+    maxPrice: number,
   ): Promise<void> {
     const candles: Record<string, any> = {};
     let price = basePrice;
@@ -88,17 +172,42 @@ export class InitializeAssetCandlesHelper {
       const open = price;
       const priceChange = this.generatePriceMovement(price, volatility);
       
-      const high = open + Math.abs(priceChange) * Math.random() * 1.5;
-      const low = open - Math.abs(priceChange) * Math.random() * 1.5;
-      const close = open + priceChange;
-
+      // Calculate potential close price
+      let close = open + priceChange;
+      
+      // ✅ ENFORCE BOUNDARIES: Pastikan close tidak keluar dari range
+      close = Math.max(minPrice, Math.min(maxPrice, close));
+      
+      // Generate high and low dengan variasi
+      const variationFactor = Math.abs(priceChange) * Math.random() * 1.5;
+      let high = Math.max(open, close) + variationFactor;
+      let low = Math.min(open, close) - variationFactor;
+      
+      // ✅ ENFORCE BOUNDARIES: Pastikan high dan low juga dalam range
+      high = Math.max(minPrice, Math.min(maxPrice, high));
+      low = Math.max(minPrice, Math.min(maxPrice, low));
+      
+      // Update price untuk candle berikutnya
       price = close;
+      
+      // ✅ PULL BACK: Jika price mendekati boundaries, tarik kembali ke center
+      const priceRange = maxPrice - minPrice;
+      const distanceToMin = price - minPrice;
+      const distanceToMax = maxPrice - price;
+      
+      if (distanceToMin < priceRange * 0.1) {
+        // Terlalu dekat dengan minPrice, tarik ke atas
+        price = price + priceRange * 0.05;
+      } else if (distanceToMax < priceRange * 0.1) {
+        // Terlalu dekat dengan maxPrice, tarik ke bawah
+        price = price - priceRange * 0.05;
+      }
 
       // Format candle data
       const candleData = {
         o: this.roundPrice(open),
-        h: this.roundPrice(Math.max(open, close, high)),
-        l: this.roundPrice(Math.min(open, close, low)),
+        h: this.roundPrice(high),
+        l: this.roundPrice(low),
         c: this.roundPrice(close),
         t: candleTimestamp,
         v: this.generateVolume(),
@@ -107,57 +216,82 @@ export class InitializeAssetCandlesHelper {
       candles[candleTimestamp.toString()] = candleData;
     }
 
-    // ✅ FIX: Gunakan flat path ohlc_{timeframe}, bukan nested ohlc/{timeframe}
+    // Write to Realtime Database
     const path = `${realtimeDbPath}/ohlc_${timeframe}`;
     
     try {
       await this.getRealtimeDb().ref(path).set(candles);
-      this.logger.debug(`Written ${this.CANDLES_TO_CREATE} candles to ${path}`);
+      this.logger.debug(`✅ Written ${this.CANDLES_TO_CREATE} candles to ${path}`);
     } catch (error) {
-      this.logger.error(`Failed to write candles to ${path}: ${error.message}`);
+      this.logger.error(`❌ Failed to write candles to ${path}: ${error.message}`);
       throw error;
     }
   }
 
+  /**
+   * Generate price movement menggunakan Box-Muller transform untuk distribusi normal
+   * Ini menghasilkan pergerakan harga yang lebih realistis
+   */
   private generatePriceMovement(currentPrice: number, volatility: number): number {
     const u1 = Math.random();
     const u2 = Math.random();
+    
+    // Box-Muller transform untuk distribusi normal
     const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+    
     return currentPrice * volatility * z;
   }
 
+  /**
+   * Generate volume dengan variasi random
+   */
   private generateVolume(): number {
     return Math.floor(1000 + Math.random() * 9000);
   }
 
+  /**
+   * Round price ke 6 desimal
+   */
   private roundPrice(price: number): number {
     return Math.round(price * 1000000) / 1000000;
   }
 
+  /**
+   * Set current price di Realtime Database
+   */
   private async setLastPrice(realtimeDbPath: string, price: number): Promise<void> {
     try {
-      // ✅ FIX: Gunakan current_price, bukan price
       await this.getRealtimeDb().ref(`${realtimeDbPath}/current_price`).set({
         current: this.roundPrice(price),
         timestamp: Math.floor(Date.now() / 1000),
       });
-      this.logger.debug(`Set current_price for ${realtimeDbPath}: ${price}`);
+      this.logger.debug(`✅ Set current_price for ${realtimeDbPath}: ${price}`);
     } catch (error) {
-      this.logger.error(`Failed to set current_price: ${error.message}`);
+      this.logger.error(`❌ Failed to set current_price: ${error.message}`);
       throw error;
     }
   }
 
+  /**
+   * ✅ BATCH PROCESSING: Initialize multiple assets sekaligus
+   */
   async initializeMultipleAssets(
     assets: Array<{
       assetId: string;
       symbol: string;
       realtimeDbPath: string;
       initialPrice: number;
-      volatility?: number;
+      simulatorSettings?: {
+        dailyVolatilityMin?: number;
+        dailyVolatilityMax?: number;
+        secondVolatilityMin?: number;
+        secondVolatilityMax?: number;
+        minPrice?: number;
+        maxPrice?: number;
+      };
     }>,
   ): Promise<void> {
-    this.logger.log(`Initializing candles for ${assets.length} assets`);
+    this.logger.log(`🚀 Initializing candles for ${assets.length} assets`);
 
     const promises = assets.map((asset) =>
       this.initializeAssetCandles(
@@ -165,15 +299,15 @@ export class InitializeAssetCandlesHelper {
         asset.symbol,
         asset.realtimeDbPath,
         asset.initialPrice,
-        asset.volatility,
+        asset.simulatorSettings,
       ),
     );
 
     try {
       await Promise.all(promises);
-      this.logger.log(`Successfully initialized all ${assets.length} assets`);
+      this.logger.log(`✅ Successfully initialized all ${assets.length} assets`);
     } catch (error) {
-      this.logger.error(`Failed to initialize some assets: ${error.message}`);
+      this.logger.error(`❌ Failed to initialize some assets: ${error.message}`);
       throw error;
     }
   }

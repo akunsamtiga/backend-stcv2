@@ -355,6 +355,7 @@ export class AssetsService {
 
       // ============================================
       // ✅ INITIALIZE 240 CANDLES FOR NORMAL ASSETS
+      // ✅ UPDATED: Pass full simulatorSettings instead of just volatility
       // ============================================
       if (createAssetDto.category === ASSET_CATEGORY.NORMAL && 
           (createAssetDto.dataSource === ASSET_DATA_SOURCE.REALTIME_DB || 
@@ -366,19 +367,25 @@ export class AssetsService {
           const initialPrice = plainAssetData.simulatorSettings?.initialPrice || 
                               createAssetDto.initialPrice || 
                               1.0;
-          const volatility = plainAssetData.simulatorSettings?.secondVolatilityMax || 
-                            createAssetDto.volatility || 
-                            0.001;
 
+          // ✅ UPDATED: Pass FULL simulatorSettings object instead of just volatility
           await this.initializeCandlesHelper.initializeAssetCandles(
             assetId,
             createAssetDto.symbol,
             plainAssetData.realtimeDbPath,
             initialPrice,
-            volatility,
+            plainAssetData.simulatorSettings, // ✅ CHANGED: Pass entire settings object
           );
 
           this.logger.log(`✅ 240 candles initialized successfully for ${createAssetDto.symbol}`);
+          
+          // ✅ NEW: Log the settings used for transparency
+          if (plainAssetData.simulatorSettings) {
+            this.logger.log(`📊 Candles generated with settings:`);
+            this.logger.log(`   Daily Volatility: ${plainAssetData.simulatorSettings.dailyVolatilityMin} - ${plainAssetData.simulatorSettings.dailyVolatilityMax}`);
+            this.logger.log(`   Second Volatility: ${plainAssetData.simulatorSettings.secondVolatilityMin} - ${plainAssetData.simulatorSettings.secondVolatilityMax}`);
+            this.logger.log(`   Price Range: ${plainAssetData.simulatorSettings.minPrice} - ${plainAssetData.simulatorSettings.maxPrice}`);
+          }
         } catch (candleError) {
           this.logger.error(`❌ Failed to initialize candles: ${candleError.message}`);
         }
@@ -526,70 +533,17 @@ export class AssetsService {
     }
 
     return {
-      success: true,
-      message: `Processed ${assets.length} assets (${successCount} success, ${failCount} failed)`,
+      message: 'Bulk creation complete',
       summary: {
         total: assets.length,
         success: successCount,
-        failed: failCount
+        failed: failCount,
       },
       results,
     };
   }
 
-  async reinitializeAssetCandles(assetId: string) {
-    this.logger.log(`Re-initializing candles for asset: ${assetId}`);
-
-    try {
-      const db = this.firebaseService.getFirestore();
-      const assetDoc = await db.collection(COLLECTIONS.ASSETS).doc(assetId).get();
-      
-      if (!assetDoc.exists) {
-        throw new NotFoundException(`Asset not found: ${assetId}`);
-      }
-
-      const assetData = assetDoc.data() as Asset;
-
-      if (assetData.category !== ASSET_CATEGORY.NORMAL) {
-        throw new BadRequestException('Can only reinitialize candles for normal assets');
-      }
-
-      if (assetData.dataSource !== ASSET_DATA_SOURCE.REALTIME_DB && 
-          assetData.dataSource !== ASSET_DATA_SOURCE.MOCK) {
-        throw new BadRequestException('Asset must use realtime_db or mock as data source');
-      }
-
-      const currentPrice = assetData.simulatorSettings?.initialPrice || 1.0;
-      const volatility = assetData.simulatorSettings?.secondVolatilityMax || 0.001;
-      const realtimeDbPath = assetData.realtimeDbPath || `assets/${assetData.symbol.replace(/[^a-zA-Z0-9]/g, '_')}`;
-
-      await this.initializeCandlesHelper.initializeAssetCandles(
-        assetId,
-        assetData.symbol,
-        realtimeDbPath,
-        currentPrice,
-        volatility,
-      );
-
-      return {
-        success: true,
-        message: `Candles reinitialized for ${assetData.symbol}`,
-        data: {
-          assetId,
-          symbol: assetData.symbol,
-          realtimeDbPath,
-        },
-      };
-
-    } catch (error) {
-      this.logger.error(`Failed to reinitialize candles: ${error.message}`);
-      throw error;
-    }
-  }
-
-  private getDefaultCryptoIcon(baseCurrency: string): string {
-    const currency = baseCurrency.toUpperCase();
-    
+  private getDefaultCryptoIcon(currency: string): string {
     const iconMap: Record<string, string> = {
       'BTC': 'https://cryptologos.cc/logos/bitcoin-btc-logo.png',
       'ETH': 'https://cryptologos.cc/logos/ethereum-eth-logo.png',
@@ -1099,7 +1053,7 @@ export class AssetsService {
     });
 
     const duration = Date.now() - startTime;
-    this.logger.debug(`⚡ Fetched asset ${assetId} in ${duration}ms`);
+    this.logger.debug(`⚡ Fetched asset ${assetId} in ${duration}ms)`);
 
     return asset;
   }
