@@ -8,8 +8,8 @@ import * as admin from 'firebase-admin';
  * 
  * Perubahan utama:
  * 1. Volatilitas untuk generate 240 candle = 50x dari settingan aset
- * 2. Contoh: Jika setting 0.00001-0.00008 → digunakan 0.0005-0.004 untuk candle
- * 3. Setelah initialization, simulator berjalan normal dengan volatilitas asli
+ * 2. Price terakhir dari candle disimpan ke current_price (tidak loncat ke initial)
+ * 3. Setelah initialization, simulator melanjutkan dari price terakhir candle
  */
 
 @Injectable()
@@ -46,7 +46,7 @@ export class InitializeAssetCandlesHelper {
   }
 
   /**
-   * ✅ UPDATED: Initialize candles dengan volatilitas 50x untuk generating
+   * ✅ UPDATED: Initialize candles dengan volatilitas 50x dan price continuity
    */
   async initializeAssetCandles(
     assetId: string,
@@ -92,6 +92,7 @@ export class InitializeAssetCandlesHelper {
 
     try {
       const now = Math.floor(Date.now() / 1000);
+      let finalPrice = initialPrice; // ✅ Track price terakhir
 
       // Generate candles untuk setiap timeframe
       for (const [timeframe, durationInSeconds] of Object.entries(this.TIMEFRAMES)) {
@@ -100,20 +101,27 @@ export class InitializeAssetCandlesHelper {
         // Pilih volatility yang sesuai dengan timeframe
         const volatility = this.getVolatilityForTimeframe(timeframe, settings);
         
-        await this.generateCandlesForTimeframe(
+        // ✅ Simpan price terakhir dari generate
+        const timeframeFinalPrice = await this.generateCandlesForTimeframe(
           realtimeDbPath,
           timeframe,
           durationInSeconds,
           now,
-          initialPrice,
+          initialPrice, // Gunakan initialPrice untuk tiap timeframe agar konsisten
           volatility,
           settings.minPrice,
           settings.maxPrice,
         );
+        
+        // Untuk 1s timeframe, simpan sebagai final price untuk current_price
+        if (timeframe === '1s') {
+          finalPrice = timeframeFinalPrice;
+        }
       }
 
-      // Set last price di Realtime Database
-      await this.setLastPrice(realtimeDbPath, initialPrice);
+      // ✅ SET CURRENT_PRICE ke price terakhir dari candle 1s, bukan initialPrice!
+      await this.setLastPrice(realtimeDbPath, finalPrice);
+      this.logger.log(`✅ Set current_price to final candle price: ${finalPrice} (was ${initialPrice})`);
 
       this.logger.log(`✅ Successfully initialized all candles for ${symbol} (${this.VOLATILITY_MULTIPLIER}x volatility mode)`);
     } catch (error) {
@@ -158,7 +166,7 @@ export class InitializeAssetCandlesHelper {
   }
 
   /**
-   * Generate candles dengan boundaries minPrice dan maxPrice
+   * ✅ UPDATED: Generate candles dengan boundaries dan return final price
    */
   private async generateCandlesForTimeframe(
     realtimeDbPath: string,
@@ -169,7 +177,8 @@ export class InitializeAssetCandlesHelper {
     volatility: number,
     minPrice: number,
     maxPrice: number,
-  ): Promise<void> {
+  ): Promise<number> { // ✅ Return type number (final price)
+    
     const candles: Record<string, any> = {};
     let price = basePrice;
 
@@ -230,11 +239,14 @@ export class InitializeAssetCandlesHelper {
     
     try {
       await this.getRealtimeDb().ref(path).set(candles);
-      this.logger.debug(`✅ Written ${this.CANDLES_TO_CREATE} candles to ${path} (volatility: ${volatility.toFixed(6)})`);
+      this.logger.debug(`✅ Written ${this.CANDLES_TO_CREATE} candles to ${path}`);
+      this.logger.debug(`   Final price: ${price.toFixed(6)}, Initial was: ${basePrice.toFixed(6)}`);
     } catch (error) {
       this.logger.error(`❌ Failed to write candles to ${path}: ${error.message}`);
       throw error;
     }
+
+    return price; // ✅ Return final price (close price of last candle)
   }
 
   /**
@@ -261,23 +273,47 @@ export class InitializeAssetCandlesHelper {
    * Round price ke 6 desimal
    */
   private roundPrice(price: number): number {
-    return Math.round(price * 1000000) / 1000000;
+    return Math.round(price * 1000000) / 1000006;
   }
 
   /**
-   * Set current price di Realtime Database
+   * Set current price di Realtime Database dengan struktur lengkap
    */
   private async setLastPrice(realtimeDbPath: string, price: number): Promise<void> {
     try {
-      await this.getRealtimeDb().ref(`${realtimeDbPath}/current_price`).set({
-        current: this.roundPrice(price),
-        timestamp: Math.floor(Date.now() / 1000),
-      });
+      const timestamp = Math.floor(Date.now() / 1000);
+      
+      // ✅ Struktur lengkap seperti simulator
+      const priceData = {
+        price: this.roundPrice(price),
+        current: this.roundPrice(price), // Untuk kompatibilitas
+        timestamp: timestamp,
+        datetime: this.formatDateTime(new Date(timestamp * 1000)),
+        datetime_iso: new Date(timestamp * 1000).toISOString(),
+        timezone: 'Asia/Jakarta',
+        change: 0,
+      };
+      
+      await this.getRealtimeDb().ref(`${realtimeDbPath}/current_price`).set(priceData);
       this.logger.debug(`✅ Set current_price for ${realtimeDbPath}: ${price}`);
     } catch (error) {
       this.logger.error(`❌ Failed to set current_price: ${error.message}`);
       throw error;
     }
+  }
+
+  /**
+   * Format datetime untuk Asia/Jakarta
+   */
+  private formatDateTime(date: Date): string {
+    const jakartaDate = new Date(date.toLocaleString('en-US', { timeZone: 'Asia/Jakarta' }));
+    const year = jakartaDate.getFullYear();
+    const month = String(jakartaDate.getMonth() + 1).padStart(2, '0');
+    const day = String(jakartaDate.getDate()).padStart(2, '0');
+    const hours = String(jakartaDate.getHours()).padStart(2, '0');
+    const minutes = String(jakartaDate.getMinutes()).padStart(2, '0');
+    const seconds = String(jakartaDate.getSeconds()).padStart(2, '0');
+    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
   }
 
   /**
