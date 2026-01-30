@@ -412,9 +412,8 @@ export class AssetScheduleService implements OnModuleInit {
       });
     }
   }
-
 /**
- * ✅ FIXED: Push scheduled trend with proper error handling
+ * ✅ FIXED: Push scheduled trend dengan lowercase path
  */
 private async pushScheduledTrendToRTDB(
   assetSymbol: string,
@@ -424,11 +423,6 @@ private async pushScheduledTrendToRTDB(
   startPrice: number
 ) {
   try {
-    // Check connection first
-    if (!this.firebaseService['isConnected']) {
-      throw new Error('Firebase Realtime DB not connected');
-    }
-
     const duration = this.getTimeframeDurationInMs(timeframe);
     const startTime = Date.now();
     const endTime = startTime + duration;
@@ -445,30 +439,42 @@ private async pushScheduledTrendToRTDB(
       createdAt: Date.now(),
     };
 
-    const path = `_scheduled_trends/${assetSymbol}`; // atau toLowerCase() jika perlu samakan dengan path asset
+    // ✅ FIX: Gunakan lowercase untuk path RTDB (match dengan struktur asset)
+    const normalizedSymbol = assetSymbol.toLowerCase().replace(/[^a-z0-9]/g, '_');
+    const path = `_scheduled_trends/${normalizedSymbol}`;
     
-    this.logger.log(`📝 Writing trend to ${path}...`);
+    this.logger.log(`📝 Writing trend to ${path} (original: ${assetSymbol})`);
 
-    // ✅ Gunakan setRealtimeDbValue dengan critical=true
+    // Write dengan critical=true (immediate)
     await this.firebaseService.setRealtimeDbValue(path, trendData, true);
 
-    // ✅ Verify write (tunggu sebentar lalu baca)
-    await new Promise(resolve => setTimeout(resolve, 200));
+    // Verification dengan delay lebih lama (REST mode kadang lebih lambat)
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
     const verified = await this.firebaseService.getRealtimeDbValue(path);
     
     if (!verified) {
-      throw new Error('Trend data verification failed - not found after write');
+      // Coba sekali lagi untuk memastikan
+      this.logger.warn(`⚠️ First verification failed for ${normalizedSymbol}, retrying...`);
+      await new Promise(resolve => setTimeout(resolve, 500));
+      const retry = await this.firebaseService.getRealtimeDbValue(path);
+      
+      if (!retry) {
+        throw new Error(`Trend data not found in RTDB after write. Check if:
+1. RTDB Rules allow write to _scheduled_trends
+2. Asset symbol case matches: ${assetSymbol} -> ${normalizedSymbol}
+3. Firebase Realtime DB is accessible`);
+      }
     }
 
-    this.logger.log(`🔥 Successfully pushed trend to RTDB: ${assetSymbol} -> ${trend}`);
-    this.logger.log(`📅 Duration: ${duration}ms - Until: ${new Date(endTime).toISOString()}`);
+    this.logger.log(`🔥 Successfully pushed trend: ${assetSymbol} (${normalizedSymbol}) -> ${trend}`);
+    this.logger.log(`📅 Active for ${duration/1000}s (until ${new Date(endTime).toLocaleTimeString()})`);
     
   } catch (error) {
-    this.logger.error(`❌ Failed to push trend to RTDB: ${error.message}`);
-    throw error; // Re-throw agar schedule di-mark sebagai FAILED
+    this.logger.error(`❌ Failed to push trend for ${assetSymbol}: ${error.message}`);
+    throw error;
   }
 }
-
   /**
    * Get timeframe duration in milliseconds
    */
