@@ -18,6 +18,7 @@ import { WebSocketModule } from './websocket/websocket.module';
 import { HealthController } from './health.controller';
 import { PaymentModule } from './payment/payment.module';
 import { VoucherModule } from './voucher/voucher.module'; 
+import { AssetScheduleModule } from './asset-schedule/asset-schedule.module';
 
 @Module({
   imports: [
@@ -49,6 +50,7 @@ import { VoucherModule } from './voucher/voucher.module';
     UserModule,
     BalanceModule,
     AssetsModule,
+    AssetScheduleModule,
     BinaryOrdersModule,
     AdminModule,
     WebSocketModule,
