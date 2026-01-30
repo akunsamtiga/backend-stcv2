@@ -1,21 +1,20 @@
 // src/asset-schedule/asset-schedule.service.ts
 
-import { Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
-import { InjectFirestore } from '@nestjs-community/firebase-admin';
+import { Injectable, NotFoundException, BadRequestException, Inject } from '@nestjs/common';
 import { Firestore, Timestamp, FieldValue } from 'firebase-admin/firestore';
 import { CreateAssetScheduleDto } from './dto/create-asset-schedule.dto';
 import { UpdateAssetScheduleDto } from './dto/update-asset-schedule.dto';
 import { GetAssetSchedulesQueryDto } from './dto/get-asset-schedules-query.dto';
-import { AssetSchedule } from './interfaces/asset-schedule.interface';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { USER_ROLES } from '../common/constants';
+import * as admin from 'firebase-admin';
 
 @Injectable()
 export class AssetScheduleService {
   private readonly COLLECTION_NAME = 'asset_schedules';
 
   constructor(
-    @InjectFirestore() private readonly firestore: Firestore,
+    @Inject('FIRESTORE') private readonly firestore: Firestore,
+    @Inject('FIREBASE_SERVICE') private readonly firebaseService: any,
   ) {}
 
   /**
@@ -106,26 +105,24 @@ export class AssetScheduleService {
     }
 
     if (fromDate) {
-      const fromTimestamp = Timestamp.fromDate(new Date(fromDate));
-      query = query.where('scheduledTime', '>=', fromTimestamp);
+      query = query.where('scheduledTime', '>=', Timestamp.fromDate(new Date(fromDate)));
     }
 
     if (toDate) {
-      const toTimestamp = Timestamp.fromDate(new Date(toDate));
-      query = query.where('scheduledTime', '<=', toTimestamp);
+      query = query.where('scheduledTime', '<=', Timestamp.fromDate(new Date(toDate)));
     }
 
-    // Order by scheduled time descending
+    // Order by scheduledTime
     query = query.orderBy('scheduledTime', 'desc');
 
     // Get total count
-    const countSnapshot = await query.get();
-    const total = countSnapshot.size;
+    const totalSnapshot = await query.get();
+    const total = totalSnapshot.size;
 
     // Apply pagination
-    const snapshot = await query.limit(limit).offset(offset).get();
+    const snapshot = await query.offset(offset).limit(limit).get();
 
-    const schedules = snapshot.docs.map(doc => ({
+    const schedules = snapshot.docs.map((doc: any) => ({
       id: doc.id,
       ...doc.data(),
       scheduledTime: doc.data().scheduledTime?.toDate(),
@@ -149,18 +146,23 @@ export class AssetScheduleService {
   /**
    * Get schedule by ID
    */
-  async getScheduleById(scheduleId: string) {
-    const docRef = await this.firestore.collection(this.COLLECTION_NAME).doc(scheduleId).get();
+  async getScheduleById(id: string) {
+    const docRef = this.firestore.collection(this.COLLECTION_NAME).doc(id);
+    const doc = await docRef.get();
 
-    if (!docRef.exists) {
+    if (!doc.exists) {
       throw new NotFoundException('Schedule not found');
     }
 
-    const data = docRef.data();
+    const data = doc.data();
+    if (!data) {
+      throw new NotFoundException('Schedule data not found');
+    }
+
     return {
       success: true,
       data: {
-        id: docRef.id,
+        id: doc.id,
         ...data,
         scheduledTime: data.scheduledTime?.toDate(),
         createdAt: data.createdAt?.toDate(),
@@ -173,12 +175,8 @@ export class AssetScheduleService {
   /**
    * Update schedule
    */
-  async updateSchedule(
-    scheduleId: string,
-    updateDto: UpdateAssetScheduleDto,
-    userId: string,
-  ) {
-    const docRef = this.firestore.collection(this.COLLECTION_NAME).doc(scheduleId);
+  async updateSchedule(id: string, updateDto: UpdateAssetScheduleDto, userId: string) {
+    const docRef = this.firestore.collection(this.COLLECTION_NAME).doc(id);
     const doc = await docRef.get();
 
     if (!doc.exists) {
@@ -186,18 +184,26 @@ export class AssetScheduleService {
     }
 
     const currentData = doc.data();
+    if (!currentData) {
+      throw new NotFoundException('Schedule data not found');
+    }
 
-    // Prevent updating executed or failed schedules
-    if (['executed', 'failed'].includes(currentData.status)) {
+    // Cannot update executed or failed schedules
+    if (currentData.status !== 'pending') {
       throw new BadRequestException(`Cannot update ${currentData.status} schedule`);
     }
 
-    const updateData: any = {
-      updatedAt: FieldValue.serverTimestamp(),
-    };
+    // If scheduledTime is being updated, validate it's in the future
+    if (updateDto.scheduledTime) {
+      const newScheduledTime = new Date(updateDto.scheduledTime);
+      const now = new Date();
+      if (newScheduledTime <= now) {
+        throw new BadRequestException('Scheduled time must be in the future');
+      }
+    }
 
+    // Verify asset exists if assetSymbol is being updated
     if (updateDto.assetSymbol) {
-      // Verify new asset exists
       const assetDoc = await this.firestore
         .collection('assets')
         .where('symbol', '==', updateDto.assetSymbol)
@@ -208,66 +214,30 @@ export class AssetScheduleService {
       if (assetDoc.empty) {
         throw new NotFoundException(`Asset ${updateDto.assetSymbol} not found or inactive`);
       }
-      updateData.assetSymbol = updateDto.assetSymbol;
     }
+
+    const updateData: any = {
+      ...updateDto,
+      updatedAt: FieldValue.serverTimestamp(),
+    };
 
     if (updateDto.scheduledTime) {
-      const scheduledTime = new Date(updateDto.scheduledTime);
-      const now = new Date();
-      
-      if (scheduledTime <= now) {
-        throw new BadRequestException('Scheduled time must be in the future');
-      }
-      updateData.scheduledTime = Timestamp.fromDate(scheduledTime);
+      updateData.scheduledTime = Timestamp.fromDate(new Date(updateDto.scheduledTime));
     }
-
-    if (updateDto.trend) updateData.trend = updateDto.trend;
-    if (updateDto.timeframe) updateData.timeframe = updateDto.timeframe;
-    if (updateDto.notes !== undefined) updateData.notes = updateDto.notes;
-    if (updateDto.isActive !== undefined) updateData.isActive = updateDto.isActive;
 
     await docRef.update(updateData);
 
-    const updatedDoc = await docRef.get();
-    const data = updatedDoc.data();
-
     return {
       success: true,
-      data: {
-        id: scheduleId,
-        ...data,
-        scheduledTime: data.scheduledTime?.toDate(),
-        createdAt: data.createdAt?.toDate(),
-        updatedAt: data.updatedAt?.toDate(),
-      },
       message: 'Schedule updated successfully',
     };
   }
 
   /**
-   * Delete schedule
+   * Cancel schedule
    */
-  async deleteSchedule(scheduleId: string) {
-    const docRef = this.firestore.collection(this.COLLECTION_NAME).doc(scheduleId);
-    const doc = await docRef.get();
-
-    if (!doc.exists) {
-      throw new NotFoundException('Schedule not found');
-    }
-
-    await docRef.delete();
-
-    return {
-      success: true,
-      message: 'Schedule deleted successfully',
-    };
-  }
-
-  /**
-   * Cancel schedule (soft delete - change status)
-   */
-  async cancelSchedule(scheduleId: string) {
-    const docRef = this.firestore.collection(this.COLLECTION_NAME).doc(scheduleId);
+  async cancelSchedule(id: string) {
+    const docRef = this.firestore.collection(this.COLLECTION_NAME).doc(id);
     const doc = await docRef.get();
 
     if (!doc.exists) {
@@ -275,6 +245,9 @@ export class AssetScheduleService {
     }
 
     const currentData = doc.data();
+    if (!currentData) {
+      throw new NotFoundException('Schedule data not found');
+    }
 
     if (currentData.status !== 'pending') {
       throw new BadRequestException(`Cannot cancel ${currentData.status} schedule`);
@@ -289,6 +262,25 @@ export class AssetScheduleService {
     return {
       success: true,
       message: 'Schedule cancelled successfully',
+    };
+  }
+
+  /**
+   * Delete schedule
+   */
+  async deleteSchedule(id: string) {
+    const docRef = this.firestore.collection(this.COLLECTION_NAME).doc(id);
+    const doc = await docRef.get();
+
+    if (!doc.exists) {
+      throw new NotFoundException('Schedule not found');
+    }
+
+    await docRef.delete();
+
+    return {
+      success: true,
+      message: 'Schedule deleted successfully',
     };
   }
 
@@ -347,19 +339,17 @@ export class AssetScheduleService {
       const assetData = assetDoc.data();
       const currentPrice = assetData.currentPrice || 0;
 
-      // Calculate price change based on trend
-      // For 'buy' trend, price should go up
-      // For 'sell' trend, price should go down
-      const priceChangePercent = this.calculatePriceChange(scheduleData.timeframe);
-      const priceChange = scheduleData.trend === 'buy' 
-        ? currentPrice * priceChangePercent 
-        : currentPrice * -priceChangePercent;
-      
-      const newPrice = currentPrice + priceChange;
+      // ✅ PUSH SCHEDULED TREND TO REALTIME DATABASE
+      await this.pushScheduledTrendToRTDB(
+        scheduleData.assetSymbol,
+        scheduleData.trend,
+        scheduleData.timeframe,
+        scheduleId,
+        currentPrice
+      );
 
-      // Update asset price (this will trigger the market movement)
+      // Update Firestore asset with last schedule executed
       await this.firestore.collection('assets').doc(assetDoc.id).update({
-        currentPrice: newPrice,
         lastScheduleExecuted: scheduleId,
         updatedAt: FieldValue.serverTimestamp(),
       });
@@ -370,15 +360,14 @@ export class AssetScheduleService {
         executedAt: FieldValue.serverTimestamp(),
         executionDetails: {
           startPrice: currentPrice,
-          endPrice: newPrice,
-          priceChange: priceChange,
+          startTime: Date.now(),
           success: true,
         },
         updatedAt: FieldValue.serverTimestamp(),
       });
 
-      console.log(`[AssetSchedule] Successfully executed schedule ${scheduleId}`);
-    } catch (error) {
+      console.log(`[AssetSchedule] ✅ Successfully executed schedule ${scheduleId} - Trend pushed to RTDB`);
+    } catch (error: any) {
       console.error(`[AssetSchedule] Error executing schedule ${scheduleId}:`, error);
 
       // Mark schedule as failed
@@ -395,21 +384,63 @@ export class AssetScheduleService {
   }
 
   /**
-   * Calculate price change percentage based on timeframe
+   * ✅ NEW: Push scheduled trend to Realtime Database
    */
-  private calculatePriceChange(timeframe: string): number {
-    // Define price change percentages for different timeframes
-    const changes = {
-      '1m': 0.001,   // 0.1%
-      '5m': 0.003,   // 0.3%
-      '15m': 0.005,  // 0.5%
-      '30m': 0.008,  // 0.8%
-      '1h': 0.01,    // 1%
-      '4h': 0.02,    // 2%
-      '1d': 0.05,    // 5%
+  private async pushScheduledTrendToRTDB(
+    assetSymbol: string,
+    trend: string,
+    timeframe: string,
+    scheduleId: string,
+    startPrice: number
+  ) {
+    try {
+      const rtdb = this.firebaseService.getRealtimeDatabase();
+      
+      if (!rtdb) {
+        throw new Error('Realtime Database not available');
+      }
+
+      const duration = this.getTimeframeDurationInMs(timeframe);
+      const startTime = Date.now();
+      const endTime = startTime + duration;
+
+      // Push trend info to RTDB
+      await rtdb.ref(`_scheduled_trends/${assetSymbol}`).set({
+        trend: trend,
+        timeframe: timeframe,
+        startTime: startTime,
+        endTime: endTime,
+        duration: duration,
+        scheduleId: scheduleId,
+        startPrice: startPrice,
+        isActive: true,
+        createdAt: admin.database.ServerValue.TIMESTAMP,
+      });
+
+      console.log(`[AssetSchedule] 🔥 Pushed trend to RTDB: ${assetSymbol} -> ${trend} (${timeframe})`);
+      console.log(`[AssetSchedule] 📅 Duration: ${duration}ms (${duration / 1000}s) - Until: ${new Date(endTime).toISOString()}`);
+      
+    } catch (error) {
+      console.error('[AssetSchedule] Error pushing to RTDB:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get timeframe duration in milliseconds
+   */
+  private getTimeframeDurationInMs(timeframe: string): number {
+    const durations: { [key: string]: number } = {
+      '1m': 60 * 1000,           // 1 minute
+      '5m': 5 * 60 * 1000,       // 5 minutes
+      '15m': 15 * 60 * 1000,     // 15 minutes
+      '30m': 30 * 60 * 1000,     // 30 minutes
+      '1h': 60 * 60 * 1000,      // 1 hour
+      '4h': 4 * 60 * 60 * 1000,  // 4 hours
+      '1d': 24 * 60 * 60 * 1000, // 1 day
     };
 
-    return changes[timeframe] || 0.001;
+    return durations[timeframe] || 60 * 1000; // Default 1 minute
   }
 
   /**
@@ -428,7 +459,7 @@ export class AssetScheduleService {
       .orderBy('scheduledTime', 'asc')
       .get();
 
-    const schedules = snapshot.docs.map(doc => ({
+    const schedules = snapshot.docs.map((doc: any) => ({
       id: doc.id,
       ...doc.data(),
       scheduledTime: doc.data().scheduledTime?.toDate(),
@@ -440,6 +471,70 @@ export class AssetScheduleService {
       success: true,
       data: schedules,
       total: schedules.length,
+    };
+  }
+
+  /**
+   * Get schedule execution history
+   */
+  async getExecutionHistory(queryDto: GetAssetSchedulesQueryDto) {
+    const { page = 1, limit = 50, assetSymbol, trend, timeframe, fromDate, toDate } = queryDto;
+    const offset = (page - 1) * limit;
+
+    let query = this.firestore.collection(this.COLLECTION_NAME) as any;
+
+    // Only get executed or failed schedules
+    query = query.where('status', 'in', ['executed', 'failed']);
+
+    // Apply additional filters
+    if (assetSymbol) {
+      query = query.where('assetSymbol', '==', assetSymbol);
+    }
+
+    if (trend) {
+      query = query.where('trend', '==', trend);
+    }
+
+    if (timeframe) {
+      query = query.where('timeframe', '==', timeframe);
+    }
+
+    if (fromDate) {
+      query = query.where('executedAt', '>=', Timestamp.fromDate(new Date(fromDate)));
+    }
+
+    if (toDate) {
+      query = query.where('executedAt', '<=', Timestamp.fromDate(new Date(toDate)));
+    }
+
+    // Order by executedAt
+    query = query.orderBy('executedAt', 'desc');
+
+    // Get total count
+    const totalSnapshot = await query.get();
+    const total = totalSnapshot.size;
+
+    // Apply pagination
+    const snapshot = await query.offset(offset).limit(limit).get();
+
+    const history = snapshot.docs.map((doc: any) => ({
+      id: doc.id,
+      ...doc.data(),
+      scheduledTime: doc.data().scheduledTime?.toDate(),
+      executedAt: doc.data().executedAt?.toDate(),
+      createdAt: doc.data().createdAt?.toDate(),
+      updatedAt: doc.data().updatedAt?.toDate(),
+    }));
+
+    return {
+      success: true,
+      data: history,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
     };
   }
 
