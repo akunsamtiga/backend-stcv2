@@ -417,45 +417,45 @@ export class AssetScheduleService implements OnModuleInit {
    * ✅ Push scheduled trend to Realtime Database
    */
   private async pushScheduledTrendToRTDB(
-    assetSymbol: string,
-    trend: string,
-    timeframe: string,
-    scheduleId: string,
-    startPrice: number
-  ) {
-    try {
-      // ✅ Gunakan method dari FirebaseService
-      const rtdb = this.firebaseService.getRealtimeDatabase();
-      
-      if (!rtdb) {
-        throw new Error('Realtime Database not available');
-      }
-
-      const duration = this.getTimeframeDurationInMs(timeframe);
-      const startTime = Date.now();
-      const endTime = startTime + duration;
-
-      // Push trend info to RTDB
-      await rtdb.ref(`_scheduled_trends/${assetSymbol}`).set({
-        trend: trend,
-        timeframe: timeframe,
-        startTime: startTime,
-        endTime: endTime,
-        duration: duration,
-        scheduleId: scheduleId,
-        startPrice: startPrice,
-        isActive: true,
-        createdAt: admin.database.ServerValue.TIMESTAMP,
-      });
-
-      this.logger.log(`🔥 Pushed trend to RTDB: ${assetSymbol} -> ${trend} (${timeframe})`);
-      this.logger.log(`📅 Duration: ${duration}ms (${duration / 1000}s) - Until: ${new Date(endTime).toISOString()}`);
-      
-    } catch (error) {
-      this.logger.error('Error pushing to RTDB:', error);
-      throw error;
+  assetSymbol: string,
+  trend: string,
+  timeframe: string,
+  scheduleId: string,
+  startPrice: number
+) {
+  try {
+    // ✅ Method ini sekarang akan work karena getRealtimeDatabase() sudah diperbaiki
+    const rtdb = this.firebaseService.getRealtimeDatabase();
+    
+    if (!rtdb) {
+      throw new Error('Realtime Database not available');
     }
+
+    const duration = this.getTimeframeDurationInMs(timeframe);
+    const startTime = Date.now();
+    const endTime = startTime + duration;
+
+    // Push trend info to RTDB
+    await rtdb.ref(`_scheduled_trends/${assetSymbol}`).set({
+      trend: trend,
+      timeframe: timeframe,
+      startTime: startTime,
+      endTime: endTime,
+      duration: duration,
+      scheduleId: scheduleId,
+      startPrice: startPrice,
+      isActive: true,
+      createdAt: admin.database.ServerValue.TIMESTAMP,
+    });
+
+    this.logger.log(`🔥 Pushed trend to RTDB: ${assetSymbol} -> ${trend} (${timeframe})`);
+    this.logger.log(`📅 Duration: ${duration}ms (${duration / 1000}s) - Until: ${new Date(endTime).toISOString()}`);
+    
+  } catch (error) {
+    this.logger.error('Error pushing to RTDB:', error);
+    throw error;
   }
+}
 
   /**
    * Get timeframe duration in milliseconds
