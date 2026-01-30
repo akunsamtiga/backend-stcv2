@@ -376,50 +376,72 @@ export class FirebaseService implements OnModuleInit {
   }
 
   async setRealtimeDbValue(path: string, data: any, critical = false): Promise<void> {
-    if (!this.isConnected) {
-      this.logger.error('❌ Cannot write: Firebase not connected');
-      this.writeStats.failed++;
-      return;
-    }
+  if (!this.isConnected) {
+    this.logger.error('❌ Cannot write: Firebase not connected');
+    this.writeStats.failed++;
+    throw new Error('Firebase not connected'); // ✅ Throw error instead of silent return
+  }
 
-    const writeOperation = async () => {
-      for (let attempt = 0; attempt < this.MAX_RETRIES; attempt++) {
-        try {
-          if (this.useRestForRealtimeDb && this.restConnectionPool.length > 0) {
-            const conn = this.getNextConnection();
-            await conn.put(`${path}.json`, data);
-          } else if (this.realtimeDbAdmin) {
-            await this.realtimeDbAdmin.ref(path).set(data);
-          } else {
-            throw new Error('Realtime Database not available');
-          }
+  const writeOperation = async () => {
+    let lastError: Error | null = null;
+    
+    for (let attempt = 0; attempt < this.MAX_RETRIES; attempt++) {
+      try {
+        if (this.useRestForRealtimeDb && this.restConnectionPool.length > 0) {
+          const conn = this.getNextConnection();
+          
+          // ✅ Add timeout untuk write operation
+          const writePromise = conn.put(`${path}.json`, data);
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Write timeout after 5s')), 5000)
+          );
+          
+          await Promise.race([writePromise, timeoutPromise]);
+          
+          this.logger.debug(`✅ REST write success: ${path}`);
+          
+        } else if (this.realtimeDbAdmin) {
+          await this.realtimeDbAdmin.ref(path).set(data);
+          this.logger.debug(`✅ SDK write success: ${path}`);
+          
+        } else {
+          throw new Error('Realtime Database not available');
+        }
 
-          this.writeStats.success++;
-          this.realtimeWriteCount++;
-          this.writeStats.lastSuccessTime = Date.now();
-          this.consecutiveErrors = 0;
-          this.queryCache.delete(path);
-          return;
+        this.writeStats.success++;
+        this.realtimeWriteCount++;
+        this.writeStats.lastSuccessTime = Date.now();
+        this.consecutiveErrors = 0;
+        this.queryCache.delete(path); // Clear cache untuk path ini
+        return;
 
-        } catch (error) {
-          if (attempt < this.MAX_RETRIES - 1) {
-            await new Promise(resolve => setTimeout(resolve, this.RETRY_DELAY_MS));
-          }
+      } catch (error) {
+        lastError = error;
+        this.logger.warn(`⚠️ Write attempt ${attempt + 1}/${this.MAX_RETRIES} failed: ${error.message}`);
+        
+        if (attempt < this.MAX_RETRIES - 1) {
+          const delay = this.RETRY_DELAY_MS * (attempt + 1);
+          await new Promise(resolve => setTimeout(resolve, delay));
         }
       }
-      
-      this.writeStats.failed++;
-      this.consecutiveErrors++;
-    };
-
-    if (critical) {
-      await writeOperation();
-    } else {
-      this.writeStats.queued++;
-      this.writeQueue.push(writeOperation);
-      this.processWriteQueue();
     }
+    
+    // ✅ All retries failed
+    this.writeStats.failed++;
+    this.consecutiveErrors++;
+    this.logger.error(`❌ Write failed after ${this.MAX_RETRIES} retries: ${path}`);
+    throw lastError || new Error('Write operation failed');
+  };
+
+  if (critical) {
+    await writeOperation(); // ✅ Wait for critical writes
+  } else {
+    this.writeStats.queued++;
+    this.writeQueue.push(writeOperation);
+    this.processWriteQueue();
   }
+}
+
 
   async setRealtimeDbValueAsync(path: string, data: any): Promise<void> {
     this.writeStats.queued++;

@@ -412,25 +412,23 @@ export class AssetScheduleService implements OnModuleInit {
       });
     }
   }
-/**
- * ✅ FIXED: Push scheduled trend dengan lowercase path
- */
-private async pushScheduledTrendToRTDB(
+
+  private async pushScheduledTrendToRTDB(
   assetSymbol: string,
   trend: string,
   timeframe: string,
   scheduleId: string,
-  startPrice: number
-) {
+  startPrice?: number,
+): Promise<void> {
   try {
+    const now = Date.now();
     const duration = this.getTimeframeDurationInMs(timeframe);
-    const startTime = Date.now();
-    const endTime = startTime + duration;
+    const endTime = now + duration;
 
     const trendData = {
       trend: trend,
       timeframe: timeframe,
-      startTime: startTime,
+      startTime: now,
       endTime: endTime,
       duration: duration,
       scheduleId: scheduleId,
@@ -439,35 +437,64 @@ private async pushScheduledTrendToRTDB(
       createdAt: Date.now(),
     };
 
-    // ✅ FIX: Gunakan lowercase untuk path RTDB (match dengan struktur asset)
+    // ✅ Normalize symbol untuk consistency
     const normalizedSymbol = assetSymbol.toLowerCase().replace(/[^a-z0-9]/g, '_');
     const path = `_scheduled_trends/${normalizedSymbol}`;
     
     this.logger.log(`📝 Writing trend to ${path} (original: ${assetSymbol})`);
 
-    // Write dengan critical=true (immediate)
-    await this.firebaseService.setRealtimeDbValue(path, trendData, true);
-
-    // Verification dengan delay lebih lama (REST mode kadang lebih lambat)
-    await new Promise(resolve => setTimeout(resolve, 500));
+    // ✅ IMPROVED: Multiple write attempts dengan exponential backoff
+    let writeSuccess = false;
+    const maxWriteAttempts = 3;
     
-    const verified = await this.firebaseService.getRealtimeDbValue(path);
-    
-    if (!verified) {
-      // Coba sekali lagi untuk memastikan
-      this.logger.warn(`⚠️ First verification failed for ${normalizedSymbol}, retrying...`);
-      await new Promise(resolve => setTimeout(resolve, 500));
-      const retry = await this.firebaseService.getRealtimeDbValue(path);
-      
-      if (!retry) {
-        throw new Error(`Trend data not found in RTDB after write. Check if:
-1. RTDB Rules allow write to _scheduled_trends
-2. Asset symbol case matches: ${assetSymbol} -> ${normalizedSymbol}
-3. Firebase Realtime DB is accessible`);
+    for (let attempt = 1; attempt <= maxWriteAttempts; attempt++) {
+      try {
+        // Write dengan critical=true untuk immediate execution
+        await this.firebaseService.setRealtimeDbValue(path, trendData, true);
+        
+        // ✅ IMPROVED: Increased delay untuk REST API mode
+        const verifyDelay = attempt === 1 ? 1000 : 1500;
+        await new Promise(resolve => setTimeout(resolve, verifyDelay));
+        
+        // Verify write
+        const verified = await this.firebaseService.getRealtimeDbValue(path, false); // useCache=false
+        
+        if (verified && verified.scheduleId === scheduleId) {
+          writeSuccess = true;
+          this.logger.log(`✅ Trend verified on attempt ${attempt}: ${normalizedSymbol}`);
+          break;
+        } else {
+          this.logger.warn(`⚠️ Verification failed on attempt ${attempt}/${maxWriteAttempts}`);
+          
+          if (attempt < maxWriteAttempts) {
+            // Exponential backoff sebelum retry
+            await new Promise(resolve => setTimeout(resolve, 500 * attempt));
+          }
+        }
+        
+      } catch (writeError) {
+        this.logger.error(`❌ Write attempt ${attempt}/${maxWriteAttempts} failed: ${writeError.message}`);
+        
+        if (attempt < maxWriteAttempts) {
+          await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+        }
       }
     }
 
-    this.logger.log(`🔥 Successfully pushed trend: ${assetSymbol} (${normalizedSymbol}) -> ${trend}`);
+    if (!writeSuccess) {
+      throw new Error(`Failed to write trend after ${maxWriteAttempts} attempts. Possible causes:
+1. RTDB Rules deny write to _scheduled_trends
+2. Network connectivity issues
+3. Firebase REST API rate limiting
+4. Path: ${path}
+
+Please check:
+- Firebase Console → Realtime Database → Rules
+- Network connectivity to Firebase
+- Firebase service status`);
+    }
+
+    this.logger.log(`🔥 Successfully pushed trend: ${assetSymbol} → ${trend}`);
     this.logger.log(`📅 Active for ${duration/1000}s (until ${new Date(endTime).toLocaleTimeString()})`);
     
   } catch (error) {
@@ -475,6 +502,7 @@ private async pushScheduledTrendToRTDB(
     throw error;
   }
 }
+
   /**
    * Get timeframe duration in milliseconds
    */
