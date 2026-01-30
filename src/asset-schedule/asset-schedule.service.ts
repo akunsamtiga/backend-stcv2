@@ -1,7 +1,7 @@
 // src/asset-schedule/asset-schedule.service.ts
-// ✅ SOLUSI 2: Inject FirebaseService langsung tanpa token
+// ✅ FIX: Inisialisasi Firestore di onModuleInit, bukan di constructor
 
-import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Logger, OnModuleInit } from '@nestjs/common';
 import { Firestore, Timestamp, FieldValue } from 'firebase-admin/firestore';
 import { CreateAssetScheduleDto } from './dto/create-asset-schedule.dto';
 import { UpdateAssetScheduleDto } from './dto/update-asset-schedule.dto';
@@ -11,18 +11,32 @@ import * as admin from 'firebase-admin';
 import { FirebaseService } from '../firebase/firebase.service';
 
 @Injectable()
-export class AssetScheduleService {
+export class AssetScheduleService implements OnModuleInit {
   private readonly logger = new Logger(AssetScheduleService.name);
   private readonly COLLECTION_NAME = 'asset_schedules';
-  private readonly firestore: Firestore;
+  private firestore: Firestore;
 
-  // ✅ PERUBAHAN: Inject FirebaseService langsung
+  // ✅ FIX: Jangan akses Firestore di constructor
   constructor(
     private readonly firebaseService: FirebaseService,
   ) {
-    // ✅ Akses Firestore melalui getter method dari FirebaseService
-    this.firestore = this.firebaseService.getFirestore();
-    this.logger.log('✅ AssetScheduleService initialized with FirebaseService');
+    this.logger.log('AssetScheduleService created, waiting for Firestore...');
+  }
+
+  // ✅ FIX: Inisialisasi Firestore di onModuleInit setelah Firebase siap
+  async onModuleInit() {
+    try {
+      // Tunggu sampai Firestore ready
+      await this.firebaseService.waitForFirestore(10000);
+      
+      // Sekarang ambil Firestore instance
+      this.firestore = this.firebaseService.getFirestore();
+      
+      this.logger.log('✅ AssetScheduleService initialized with Firestore');
+    } catch (error) {
+      this.logger.error('❌ Failed to initialize Firestore:', error.message);
+      throw error;
+    }
   }
 
   /**
