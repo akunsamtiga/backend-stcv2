@@ -699,27 +699,12 @@ export class FirebaseService implements OnModuleInit {
     return this.db;
   }
 
-    getRealtimeDatabase(): admin.database.Database {
-    if (this.realtimeDbAdmin) {
-      return this.realtimeDbAdmin;
+  getRealtimeDatabase(): admin.database.Database {
+    if (!this.realtimeDbAdmin) {
+      throw new Error('Realtime Database not available');
     }
-    if (this.useRestForRealtimeDb) {
-      try {
-        this.logger.log('⚡ Lazy initializing Admin SDK for Realtime Database...');
-        this.realtimeDbAdmin = admin.database();
-        this.realtimeDbAdmin.goOffline();
-        this.realtimeDbAdmin.goOnline();
-        this.logger.log('✅ Admin SDK initialized successfully (lazy mode)');
-        return this.realtimeDbAdmin;
-      } catch (error) {
-        this.logger.error(`❌ Failed to lazy initialize Admin SDK: ${error.message}`);
-        throw new Error('Realtime Database not available');
-      }
-    }
-    this.logger.error('❌ No Realtime Database connection available');
-    throw new Error('Realtime Database not available');
+    return this.realtimeDbAdmin;
   }
-
 
   async generateId(collection: string): Promise<string> {
     return this.getFirestore().collection(collection).doc().id;

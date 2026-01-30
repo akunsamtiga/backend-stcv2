@@ -414,9 +414,9 @@ export class AssetScheduleService implements OnModuleInit {
   }
 
   /**
-   * ✅ Push scheduled trend to Realtime Database
-   */
-  private async pushScheduledTrendToRTDB(
+ * ✅ FIXED: Support both REST and Admin SDK modes
+ */
+private async pushScheduledTrendToRTDB(
   assetSymbol: string,
   trend: string,
   timeframe: string,
@@ -424,19 +424,11 @@ export class AssetScheduleService implements OnModuleInit {
   startPrice: number
 ) {
   try {
-    // ✅ Method ini sekarang akan work karena getRealtimeDatabase() sudah diperbaiki
-    const rtdb = this.firebaseService.getRealtimeDatabase();
-    
-    if (!rtdb) {
-      throw new Error('Realtime Database not available');
-    }
-
     const duration = this.getTimeframeDurationInMs(timeframe);
-    const startTime = Date.now();
+    const startTime = Date.now(); // Use Date.now() instead of ServerValue.TIMESTAMP for REST compatibility
     const endTime = startTime + duration;
 
-    // Push trend info to RTDB
-    await rtdb.ref(`_scheduled_trends/${assetSymbol}`).set({
+    const trendData = {
       trend: trend,
       timeframe: timeframe,
       startTime: startTime,
@@ -445,8 +437,15 @@ export class AssetScheduleService implements OnModuleInit {
       scheduleId: scheduleId,
       startPrice: startPrice,
       isActive: true,
-      createdAt: admin.database.ServerValue.TIMESTAMP,
-    });
+      createdAt: Date.now(), // ✅ REST-compatible timestamp
+    };
+
+    // ✅ FIXED: Use setRealtimeDbValue which works with both REST and Admin SDK
+    await this.firebaseService.setRealtimeDbValue(
+      `_scheduled_trends/${assetSymbol}`,
+      trendData,
+      true // critical = true (immediate write)
+    );
 
     this.logger.log(`🔥 Pushed trend to RTDB: ${assetSymbol} -> ${trend} (${timeframe})`);
     this.logger.log(`📅 Duration: ${duration}ms (${duration / 1000}s) - Until: ${new Date(endTime).toISOString()}`);
