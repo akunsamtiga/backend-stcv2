@@ -1,21 +1,29 @@
 // src/asset-schedule/asset-schedule.service.ts
+// ✅ SOLUSI 2: Inject FirebaseService langsung tanpa token
 
-import { Injectable, NotFoundException, BadRequestException, Inject } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { Firestore, Timestamp, FieldValue } from 'firebase-admin/firestore';
 import { CreateAssetScheduleDto } from './dto/create-asset-schedule.dto';
 import { UpdateAssetScheduleDto } from './dto/update-asset-schedule.dto';
 import { GetAssetSchedulesQueryDto } from './dto/get-asset-schedules-query.dto';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import * as admin from 'firebase-admin';
+import { FirebaseService } from '../firebase/firebase.service';
 
 @Injectable()
 export class AssetScheduleService {
+  private readonly logger = new Logger(AssetScheduleService.name);
   private readonly COLLECTION_NAME = 'asset_schedules';
+  private readonly firestore: Firestore;
 
+  // ✅ PERUBAHAN: Inject FirebaseService langsung
   constructor(
-    @Inject('FIRESTORE') private readonly firestore: Firestore,
-    @Inject('FIREBASE_SERVICE') private readonly firebaseService: any,
-  ) {}
+    private readonly firebaseService: FirebaseService,
+  ) {
+    // ✅ Akses Firestore melalui getter method dari FirebaseService
+    this.firestore = this.firebaseService.getFirestore();
+    this.logger.log('✅ AssetScheduleService initialized with FirebaseService');
+  }
 
   /**
    * Create new asset schedule
@@ -60,6 +68,8 @@ export class AssetScheduleService {
     };
 
     const docRef = await this.firestore.collection(this.COLLECTION_NAME).add(scheduleData);
+
+    this.logger.log(`Schedule created: ${docRef.id} for ${createDto.assetSymbol}`);
 
     return {
       success: true,
@@ -227,6 +237,8 @@ export class AssetScheduleService {
 
     await docRef.update(updateData);
 
+    this.logger.log(`Schedule updated: ${id}`);
+
     return {
       success: true,
       message: 'Schedule updated successfully',
@@ -259,6 +271,8 @@ export class AssetScheduleService {
       updatedAt: FieldValue.serverTimestamp(),
     });
 
+    this.logger.log(`Schedule cancelled: ${id}`);
+
     return {
       success: true,
       message: 'Schedule cancelled successfully',
@@ -277,6 +291,8 @@ export class AssetScheduleService {
     }
 
     await docRef.delete();
+
+    this.logger.log(`Schedule deleted: ${id}`);
 
     return {
       success: true,
@@ -305,14 +321,14 @@ export class AssetScheduleService {
         return;
       }
 
-      console.log(`[AssetSchedule] Found ${schedulesSnapshot.size} schedules to execute`);
+      this.logger.log(`Found ${schedulesSnapshot.size} schedules to execute`);
 
       for (const scheduleDoc of schedulesSnapshot.docs) {
         const scheduleData = scheduleDoc.data();
         await this.executeSchedule(scheduleDoc.id, scheduleData);
       }
     } catch (error) {
-      console.error('[AssetSchedule] Error executing pending schedules:', error);
+      this.logger.error('Error executing pending schedules:', error);
     }
   }
 
@@ -321,7 +337,7 @@ export class AssetScheduleService {
    */
   private async executeSchedule(scheduleId: string, scheduleData: any) {
     try {
-      console.log(`[AssetSchedule] Executing schedule ${scheduleId} for ${scheduleData.assetSymbol}`);
+      this.logger.log(`Executing schedule ${scheduleId} for ${scheduleData.assetSymbol}`);
 
       // Get current asset data
       const assetSnapshot = await this.firestore
@@ -366,9 +382,9 @@ export class AssetScheduleService {
         updatedAt: FieldValue.serverTimestamp(),
       });
 
-      console.log(`[AssetSchedule] ✅ Successfully executed schedule ${scheduleId} - Trend pushed to RTDB`);
+      this.logger.log(`✅ Successfully executed schedule ${scheduleId} - Trend pushed to RTDB`);
     } catch (error: any) {
-      console.error(`[AssetSchedule] Error executing schedule ${scheduleId}:`, error);
+      this.logger.error(`Error executing schedule ${scheduleId}:`, error.message);
 
       // Mark schedule as failed
       await this.firestore.collection(this.COLLECTION_NAME).doc(scheduleId).update({
@@ -384,7 +400,7 @@ export class AssetScheduleService {
   }
 
   /**
-   * ✅ NEW: Push scheduled trend to Realtime Database
+   * ✅ Push scheduled trend to Realtime Database
    */
   private async pushScheduledTrendToRTDB(
     assetSymbol: string,
@@ -394,6 +410,7 @@ export class AssetScheduleService {
     startPrice: number
   ) {
     try {
+      // ✅ Gunakan method dari FirebaseService
       const rtdb = this.firebaseService.getRealtimeDatabase();
       
       if (!rtdb) {
@@ -417,11 +434,11 @@ export class AssetScheduleService {
         createdAt: admin.database.ServerValue.TIMESTAMP,
       });
 
-      console.log(`[AssetSchedule] 🔥 Pushed trend to RTDB: ${assetSymbol} -> ${trend} (${timeframe})`);
-      console.log(`[AssetSchedule] 📅 Duration: ${duration}ms (${duration / 1000}s) - Until: ${new Date(endTime).toISOString()}`);
+      this.logger.log(`🔥 Pushed trend to RTDB: ${assetSymbol} -> ${trend} (${timeframe})`);
+      this.logger.log(`📅 Duration: ${duration}ms (${duration / 1000}s) - Until: ${new Date(endTime).toISOString()}`);
       
     } catch (error) {
-      console.error('[AssetSchedule] Error pushing to RTDB:', error);
+      this.logger.error('Error pushing to RTDB:', error);
       throw error;
     }
   }
