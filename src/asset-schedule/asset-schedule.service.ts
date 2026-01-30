@@ -413,8 +413,8 @@ export class AssetScheduleService implements OnModuleInit {
     }
   }
 
-  /**
- * ✅ FIXED: Support both REST and Admin SDK modes
+/**
+ * ✅ FIXED: Push scheduled trend with proper error handling
  */
 private async pushScheduledTrendToRTDB(
   assetSymbol: string,
@@ -424,8 +424,13 @@ private async pushScheduledTrendToRTDB(
   startPrice: number
 ) {
   try {
+    // Check connection first
+    if (!this.firebaseService['isConnected']) {
+      throw new Error('Firebase Realtime DB not connected');
+    }
+
     const duration = this.getTimeframeDurationInMs(timeframe);
-    const startTime = Date.now(); // Use Date.now() instead of ServerValue.TIMESTAMP for REST compatibility
+    const startTime = Date.now();
     const endTime = startTime + duration;
 
     const trendData = {
@@ -437,22 +442,30 @@ private async pushScheduledTrendToRTDB(
       scheduleId: scheduleId,
       startPrice: startPrice,
       isActive: true,
-      createdAt: Date.now(), // ✅ REST-compatible timestamp
+      createdAt: Date.now(),
     };
 
-    // ✅ FIXED: Use setRealtimeDbValue which works with both REST and Admin SDK
-    await this.firebaseService.setRealtimeDbValue(
-      `_scheduled_trends/${assetSymbol}`,
-      trendData,
-      true // critical = true (immediate write)
-    );
+    const path = `_scheduled_trends/${assetSymbol}`; // atau toLowerCase() jika perlu samakan dengan path asset
+    
+    this.logger.log(`📝 Writing trend to ${path}...`);
 
-    this.logger.log(`🔥 Pushed trend to RTDB: ${assetSymbol} -> ${trend} (${timeframe})`);
-    this.logger.log(`📅 Duration: ${duration}ms (${duration / 1000}s) - Until: ${new Date(endTime).toISOString()}`);
+    // ✅ Gunakan setRealtimeDbValue dengan critical=true
+    await this.firebaseService.setRealtimeDbValue(path, trendData, true);
+
+    // ✅ Verify write (tunggu sebentar lalu baca)
+    await new Promise(resolve => setTimeout(resolve, 200));
+    const verified = await this.firebaseService.getRealtimeDbValue(path);
+    
+    if (!verified) {
+      throw new Error('Trend data verification failed - not found after write');
+    }
+
+    this.logger.log(`🔥 Successfully pushed trend to RTDB: ${assetSymbol} -> ${trend}`);
+    this.logger.log(`📅 Duration: ${duration}ms - Until: ${new Date(endTime).toISOString()}`);
     
   } catch (error) {
-    this.logger.error('Error pushing to RTDB:', error);
-    throw error;
+    this.logger.error(`❌ Failed to push trend to RTDB: ${error.message}`);
+    throw error; // Re-throw agar schedule di-mark sebagai FAILED
   }
 }
 
