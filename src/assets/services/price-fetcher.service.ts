@@ -1,5 +1,5 @@
 // src/assets/services/price-fetcher.service.ts
-// ✅ VERSI DIPERBAIKI - UPDATE PRICE PER DETIK
+// ✅ VERSI DIPERBAIKI - FORCE REALTIME PRICE UNTUK ORDER
 
 import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
@@ -68,178 +68,143 @@ export class PriceFetcherService implements OnModuleInit, OnModuleDestroy {
   }
 
   // ============================================================================
-  // ✅ PERUBAHAN 4: SIMULASI PRICE UNTUK MOCK ASSETS
-  // ============================================================================
-  
-  private async initializeSimulatedPrices() {
-    // This will be called when assets are loaded
-    // We'll populate this when getCurrentPrice is called for MOCK assets
-    this.logger.log('📊 Simulated prices ready for initialization');
-  }
-
-  // ✅ PERUBAHAN 5: UPDATE INTERVAL 1 DETIK (dari 5 detik)
-  private startSimulationInterval() {
-    if (this.simulationInterval) {
-      clearInterval(this.simulationInterval);
-    }
-    
-    // Update setiap 1 detik (bukan 5 detik)
-    this.simulationInterval = setInterval(() => {
-      this.updateSimulatedPrices();
-    }, 1000); // ✅ 1000ms = 1 detik
-  }
-
-  // ✅ PERUBAHAN 6: VOLATILITAS BARU + MICRO NOISE + BOUNDARY CHECK
-  private updateSimulatedPrices() {
-    if (this.simulatedPrices.size === 0) return;
-
-    const updateStart = Date.now();
-    let updatedCount = 0;
-
-    this.simulatedPrices.forEach((priceData, assetId) => {
-      // ✅ Base volatility: 0.05% per detik (lebih sesuai untuk 1 detik update)
-      const volatility = 0.0005; 
-      
-      // ✅ Micro noise: Variasi kecil untuk hindari pola sama
-      const microNoise = (Math.random() - 0.5) * 0.00001; // 0.001%
-      
-      // Calculate price change
-      const change = (Math.random() - 0.5) * 2 * volatility + microNoise;
-      let newPrice = priceData.price * (1 + change);
-      
-      // ✅ Boundary checking: Pastikan price tidak terlalu jauh dari harga awal
-      const initialPrice = priceData.initialPrice || priceData.price;
-      const maxDeviation = 0.02; // Max 2% dari harga awal
-      const minPrice = initialPrice * (1 - maxDeviation);
-      const maxPrice = initialPrice * (1 + maxDeviation);
-      
-      // Clamp price dalam range
-      newPrice = Math.max(minPrice, Math.min(maxPrice, newPrice));
-      
-      // Round price sesuai magnitude
-      newPrice = this.roundPriceByMagnitude(newPrice);
-      
-      // Update price
-      this.simulatedPrices.set(assetId, {
-        price: newPrice,
-        initialPrice: initialPrice,
-        timestamp: Date.now(),
-      });
-      
-      updatedCount++;
-    });
-
-    const duration = Date.now() - updateStart;
-    this.updateCount++;
-    
-    // Log performance setiap 10 detik
-    const now = Date.now();
-    if (now - this.lastLogTime >= 10000) {
-      const avgDuration = updatedCount > 0 ? duration / updatedCount : 0;
-      this.logger.debug(
-        `📈 Mock Price Update: ${updatedCount} assets in ${duration}ms ` +
-        `(avg: ${avgDuration.toFixed(2)}ms/asset), ` +
-        `total updates: ${this.updateCount}`
-      );
-      this.lastLogTime = now;
-    }
-  }
-
-  private roundPriceByMagnitude(price: number): number {
-    if (price < 1) {
-      return Math.round(price * 100000) / 100000; // 5 decimals
-    } else if (price < 100) {
-      return Math.round(price * 1000) / 1000; // 3 decimals
-    } else if (price < 1000) {
-      return Math.round(price * 100) / 100; // 2 decimals
-    } else {
-      return Math.round(price * 10) / 10; // 1 decimal
-    }
-  }
-
-  private initializeMockPrice(asset: Asset): void {
-    if (this.simulatedPrices.has(asset.id)) return;
-
-    const settings = asset.simulatorSettings;
-    const initialPrice = settings?.initialPrice ?? this.getDefaultInitialPrice(asset);
-    
-    this.simulatedPrices.set(asset.id, {
-      price: initialPrice,
-      initialPrice: initialPrice,
-      timestamp: Date.now(),
-    });
-
-    this.logger.debug(`📊 Initialized mock price for ${asset.symbol}: ${initialPrice}`);
-  }
-
-  private getDefaultInitialPrice(asset: Asset): number {
-    // Set harga awal berdasarkan kategori asset
-    const priceRanges: Record<string, { min: number; max: number }> = {
-      forex: { min: 1.0, max: 2.0 },
-      commodities: { min: 50, max: 200 },
-      stocks: { min: 100, max: 500 },
-      indices: { min: 10000, max: 40000 },
-      crypto: { min: 30000, max: 70000 },
-    };
-
-    const range = priceRanges[asset.category] || { min: 100, max: 1000 };
-    return range.min + Math.random() * (range.max - range.min);
-  }
-
-  // ============================================================================
-  // ✅ PERUBAHAN 7: TAMBAH METHOD REALTIME PRICE DENGAN BYPASS CACHE
+  // ✅ PERUBAHAN UTAMA: REALTIME PRICE DENGAN BYPASS CACHE
   // ============================================================================
   
   async getCurrentPriceRealtime(
     asset: Asset,
     bypassCache = false
   ): Promise<RealtimePrice | null> {
-    // For MOCK assets with bypass cache, force fresh price generation
-    if (asset.dataSource === ASSET_DATA_SOURCE.MOCK && bypassCache) {
-      // Initialize if not exists
-      if (!this.simulatedPrices.has(asset.id)) {
-        this.initializeMockPrice(asset);
-      }
-
-      const currentData = this.simulatedPrices.get(asset.id);
-      if (currentData) {
-        // ✅ Force fresh price update
-        const volatility = 0.0005;
-        const microNoise = (Math.random() - 0.5) * 0.00001;
-        const change = (Math.random() - 0.5) * 2 * volatility + microNoise;
-        let newPrice = currentData.price * (1 + change);
-        
-        // Boundary check
-        const initialPrice = currentData.initialPrice || currentData.price;
-        const maxDeviation = 0.02;
-        const minPrice = initialPrice * (1 - maxDeviation);
-        const maxPrice = initialPrice * (1 + maxDeviation);
-        newPrice = Math.max(minPrice, Math.min(maxPrice, newPrice));
-        newPrice = this.roundPriceByMagnitude(newPrice);
-        
-        // Update dengan timestamp baru
-        this.simulatedPrices.set(asset.id, {
-          price: newPrice,
-          initialPrice: initialPrice,
-          timestamp: Date.now(),
-        });
-
-        const realtimePrice: RealtimePrice = {
-          price: newPrice,
-          timestamp: Math.floor(Date.now() / 1000),
-          datetime: new Date().toISOString(),
-        };
-        
-        return realtimePrice;
-      }
+    // ✅ FIX: Untuk REALTIME_DB dengan bypassCache, force fetch langsung ke Firebase
+    if (asset.dataSource === ASSET_DATA_SOURCE.REALTIME_DB && bypassCache) {
+      return await this.fetchRealtimeDbFresh(asset);
     }
 
-    // Fallback ke method biasa
+    // ✅ Untuk MOCK dengan bypass cache, generate fresh price
+    if (asset.dataSource === ASSET_DATA_SOURCE.MOCK && bypassCache) {
+      return this.generateFreshMockPrice(asset);
+    }
+
+    // Untuk CRYPTO, gunakan binance dengan bypass
+    if (asset.category === ASSET_CATEGORY.CRYPTO) {
+      return await this.fetchCryptoPrice(asset, bypassCache);
+    }
+
+    // Fallback ke method biasa untuk kasus lain
     return this.getCurrentPrice(asset, bypassCache);
   }
 
   // ============================================================================
-  // ORIGINAL METHODS (TETAP SAMA)
+  // ✅ METHOD BARU: FETCH FRESH DARI REALTIME DB (TANPA CACHE)
+  // ============================================================================
+  
+  private async fetchRealtimeDbFresh(asset: Asset): Promise<RealtimePrice | null> {
+    if (!asset.realtimeDbPath) {
+      this.logger.error(`❌ [FRESH] Realtime DB path not configured for ${asset.symbol}`);
+      return null;
+    }
+
+    const startTime = Date.now();
+    
+    try {
+      const fullPath = `${asset.realtimeDbPath}/current_price`;
+      
+      this.logger.debug(`📡 [FRESH-FETCH] ${asset.symbol} from ${fullPath}`);
+      
+      // 🔥 KRITIS: useCache = false untuk memaksa fetch langsung ke Firebase
+      const data = await this.firebaseService.getRealtimeDbValue(
+        fullPath,
+        false // ❌ Jangan gunakan cache internal Firebase!
+      );
+
+      if (!data || !data.price) {
+        this.logger.warn(`⚠️ [FRESH] No price data at ${fullPath}`);
+        return null;
+      }
+
+      const now = Math.floor(Date.now() / 1000);
+      const dataTimestamp = data.timestamp || 0;
+      const dataAge = now - dataTimestamp;
+      
+      // Warning jika data simulator terlalu tua (> 3 detik)
+      if (dataAge > 3) {
+        this.logger.warn(
+          `⚠️ [FRESH] ${asset.symbol} data is ${dataAge}s old - simulator delay detected`
+        );
+      }
+
+      const price = parseFloat(data.price);
+      if (isNaN(price) || price <= 0) {
+        this.logger.error(`❌ [FRESH] Invalid price for ${asset.symbol}: ${data.price}`);
+        return null;
+      }
+
+      const result: RealtimePrice = {
+        price: price,
+        timestamp: dataTimestamp,
+        datetime: data.datetime || new Date(dataTimestamp * 1000).toISOString(),
+      };
+
+      const duration = Date.now() - startTime;
+      this.logger.debug(
+        `✅ [FRESH] ${asset.symbol}: ${price} (${dataAge}s old, ${duration}ms)`
+      );
+
+      return result;
+
+    } catch (error) {
+      this.logger.error(`❌ [FRESH] Failed to fetch ${asset.symbol}: ${error.message}`);
+      // Fallback ke method biasa jika fresh fetch gagal
+      return this.getCurrentPrice(asset, true);
+    }
+  }
+
+  // ============================================================================
+  // ✅ METHOD BARU: GENERATE FRESH MOCK PRICE
+  // ============================================================================
+  
+  private generateFreshMockPrice(asset: Asset): RealtimePrice {
+    // Initialize if not exists
+    if (!this.simulatedPrices.has(asset.id)) {
+      this.initializeMockPrice(asset);
+    }
+
+    const currentData = this.simulatedPrices.get(asset.id);
+    const initialPrice = currentData?.initialPrice || currentData?.price || 1000;
+    
+    // Generate fresh price dengan volatilitas
+    const volatility = 0.0005; // 0.05%
+    const microNoise = (Math.random() - 0.5) * 0.00001;
+    const change = (Math.random() - 0.5) * 2 * volatility + microNoise;
+    let newPrice = (currentData?.price || initialPrice) * (1 + change);
+    
+    // Boundary check
+    const maxDeviation = 0.02;
+    const minPrice = initialPrice * (1 - maxDeviation);
+    const maxPrice = initialPrice * (1 + maxDeviation);
+    newPrice = Math.max(minPrice, Math.min(maxPrice, newPrice));
+    newPrice = this.roundPriceByMagnitude(newPrice);
+    
+    // Update stored price
+    this.simulatedPrices.set(asset.id, {
+      price: newPrice,
+      initialPrice: initialPrice,
+      timestamp: Date.now(),
+    });
+
+    const now = Math.floor(Date.now() / 1000);
+    
+    this.logger.debug(`🎲 [MOCK-FRESH] ${asset.symbol}: ${newPrice}`);
+
+    return {
+      price: newPrice,
+      timestamp: now,
+      datetime: new Date().toISOString(),
+    };
+  }
+
+  // ============================================================================
+  // METHOD EXISTING (TETAP SAMA)
   // ============================================================================
 
   async getCurrentPrice(
@@ -276,8 +241,6 @@ export class PriceFetcherService implements OnModuleInit, OnModuleDestroy {
 
       if (duration > 1000) {
         this.logger.warn(`⚠️ Slow fetch for ${asset.symbol}: ${duration}ms`);
-      } else {
-        this.logger.debug(`⚡ Fetched ${asset.symbol} in ${duration}ms`);
       }
       
       return price;
@@ -355,7 +318,6 @@ export class PriceFetcherService implements OnModuleInit, OnModuleDestroy {
         return await this.fetchFromApi(asset);
       
       case ASSET_DATA_SOURCE.MOCK:
-        // ✅ Generate atau ambil dari simulatedPrices
         return this.generateMockPrice(asset);
       
       default:
@@ -364,21 +326,19 @@ export class PriceFetcherService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async fetchCryptoPrice(asset: Asset): Promise<RealtimePrice | null> {
+  private async fetchCryptoPrice(asset: Asset, forceFresh = false): Promise<RealtimePrice | null> {
     try {
-      const cryptoPrice = await this.binanceService.getCurrentPrice(asset);
+      const cryptoPrice = await this.binanceService.getCurrentPrice(asset, forceFresh);
       
       if (!cryptoPrice) {
         return null;
       }
 
-      const realtimePrice: RealtimePrice = {
+      return {
         price: cryptoPrice.price,
         timestamp: cryptoPrice.timestamp,
         datetime: cryptoPrice.datetime,
       };
-
-      return realtimePrice;
 
     } catch (error) {
       this.logger.error(`❌ Crypto price fetch error for ${asset.symbol}: ${error.message}`);
@@ -397,6 +357,7 @@ export class PriceFetcherService implements OnModuleInit, OnModuleDestroy {
       
       this.logger.debug(`📡 Fetching price from: ${fullPath}`);
       
+      // Untuk fetch biasa, gunakan cache (true) untuk performa
       const data = await this.firebaseService.getRealtimeDbValue(
         fullPath,
         true
@@ -423,17 +384,11 @@ export class PriceFetcherService implements OnModuleInit, OnModuleDestroy {
         return null;
       }
 
-      const result: RealtimePrice = {
+      return {
         price: price,
         timestamp: dataTimestamp,
         datetime: data.datetime || new Date(dataTimestamp * 1000).toISOString(),
       };
-
-      this.logger.debug(
-        `✅ Got price for ${asset.symbol}: ${price} (${dataAge}s old) from ${fullPath}`
-      );
-
-      return result;
 
     } catch (error) {
       this.logger.error(`❌ Realtime DB error for ${asset.symbol}: ${error.message}`);
@@ -451,14 +406,39 @@ export class PriceFetcherService implements OnModuleInit, OnModuleDestroy {
     return null;
   }
 
-  // ✅ PERUBAHAN 8: UPDATE generateMockPrice untuk gunakan simulatedPrices
+  private initializeMockPrice(asset: Asset): void {
+    if (this.simulatedPrices.has(asset.id)) return;
+
+    const settings = asset.simulatorSettings;
+    const initialPrice = settings?.initialPrice ?? this.getDefaultInitialPrice(asset);
+    
+    this.simulatedPrices.set(asset.id, {
+      price: initialPrice,
+      initialPrice: initialPrice,
+      timestamp: Date.now(),
+    });
+
+    this.logger.debug(`📊 Initialized mock price for ${asset.symbol}: ${initialPrice}`);
+  }
+
+  private getDefaultInitialPrice(asset: Asset): number {
+    const priceRanges: Record<string, { min: number; max: number }> = {
+      forex: { min: 1.0, max: 2.0 },
+      commodities: { min: 50, max: 200 },
+      stocks: { min: 100, max: 500 },
+      indices: { min: 10000, max: 40000 },
+      crypto: { min: 30000, max: 70000 },
+    };
+
+    const range = priceRanges[asset.category] || { min: 100, max: 1000 };
+    return range.min + Math.random() * (range.max - range.min);
+  }
+
   private generateMockPrice(asset: Asset): RealtimePrice {
-    // Initialize if not exists
     if (!this.simulatedPrices.has(asset.id)) {
       this.initializeMockPrice(asset);
     }
 
-    // Get current simulated price
     const priceData = this.simulatedPrices.get(asset.id);
     if (priceData) {
       const realtimePrice = {
@@ -467,7 +447,6 @@ export class PriceFetcherService implements OnModuleInit, OnModuleDestroy {
         datetime: new Date().toISOString(),
       };
 
-      // Emit to WebSocket
       if (asset.category !== ASSET_CATEGORY.CRYPTO) {
         this.tradingGateway.emitPriceUpdate(asset.id, realtimePrice);
       }
@@ -475,25 +454,92 @@ export class PriceFetcherService implements OnModuleInit, OnModuleDestroy {
       return realtimePrice;
     }
 
-    // Fallback: generate new price (shouldn't reach here)
-    const settings = asset.simulatorSettings;
-    const basePrice = settings?.initialPrice ?? 1000;
-    const volatility = settings?.secondVolatilityMax ?? 0.0001;
-    
+    // Fallback
+    const basePrice = asset.simulatorSettings?.initialPrice ?? 1000;
+    const volatility = asset.simulatorSettings?.secondVolatilityMax ?? 0.0001;
     const variation = (Math.random() - 0.5) * 2 * basePrice * volatility;
     const price = basePrice + variation;
 
-    const priceDataFallback = {
+    return {
       price: Math.round(price * 1000000) / 1000000,
       timestamp: Math.floor(Date.now() / 1000),
       datetime: new Date().toISOString(),
     };
+  }
 
-    if (asset.category !== ASSET_CATEGORY.CRYPTO) {
-      this.tradingGateway.emitPriceUpdate(asset.id, priceDataFallback);
+  private roundPriceByMagnitude(price: number): number {
+    if (price < 1) {
+      return Math.round(price * 100000) / 100000; // 5 decimals
+    } else if (price < 100) {
+      return Math.round(price * 1000) / 1000; // 3 decimals
+    } else if (price < 1000) {
+      return Math.round(price * 100) / 100; // 2 decimals
+    } else {
+      return Math.round(price * 10) / 10; // 1 decimal
     }
+  }
 
-    return priceDataFallback;
+  // ============================================================================
+  // ✅ PERUBAHAN 8: UPDATE INTERVAL SIMULASI 1 DETIK
+  // ============================================================================
+  
+  private async initializeSimulatedPrices() {
+    this.logger.log('📊 Simulated prices ready for initialization');
+  }
+
+  private startSimulationInterval() {
+    if (this.simulationInterval) {
+      clearInterval(this.simulationInterval);
+    }
+    
+    // Update setiap 1 detik
+    this.simulationInterval = setInterval(() => {
+      this.updateSimulatedPrices();
+    }, 1000);
+  }
+
+  private updateSimulatedPrices() {
+    if (this.simulatedPrices.size === 0) return;
+
+    const updateStart = Date.now();
+    let updatedCount = 0;
+
+    this.simulatedPrices.forEach((priceData, assetId) => {
+      const volatility = 0.0005; 
+      const microNoise = (Math.random() - 0.5) * 0.00001;
+      const change = (Math.random() - 0.5) * 2 * volatility + microNoise;
+      let newPrice = priceData.price * (1 + change);
+      
+      const initialPrice = priceData.initialPrice || priceData.price;
+      const maxDeviation = 0.02;
+      const minPrice = initialPrice * (1 - maxDeviation);
+      const maxPrice = initialPrice * (1 + maxDeviation);
+      
+      newPrice = Math.max(minPrice, Math.min(maxPrice, newPrice));
+      newPrice = this.roundPriceByMagnitude(newPrice);
+      
+      this.simulatedPrices.set(assetId, {
+        price: newPrice,
+        initialPrice: initialPrice,
+        timestamp: Date.now(),
+      });
+      
+      updatedCount++;
+    });
+
+    const duration = Date.now() - updateStart;
+    this.updateCount++;
+    
+    const now = Date.now();
+    if (now - this.lastLogTime >= 10000) {
+      const avgDuration = updatedCount > 0 ? duration / updatedCount : 0;
+      this.logger.debug(
+        `📈 Mock Price Update: ${updatedCount} assets in ${duration}ms ` +
+        `(avg: ${avgDuration.toFixed(2)}ms/asset), ` +
+        `total updates: ${this.updateCount}`
+      );
+      this.lastLogTime = now;
+    }
   }
 
   private getCachedPrice(assetId: string, maxAge: number): RealtimePrice | null {
@@ -573,12 +619,11 @@ export class PriceFetcherService implements OnModuleInit, OnModuleDestroy {
       for (const asset of cryptoAssets) {
         const cryptoPrice = cryptoPrices.get(asset.id);
         if (cryptoPrice) {
-          const realtimePrice: RealtimePrice = {
+          results.set(asset.id, {
             price: cryptoPrice.price,
             timestamp: cryptoPrice.timestamp,
             datetime: cryptoPrice.datetime,
-          };
-          results.set(asset.id, realtimePrice);
+          });
         } else {
           results.set(asset.id, null);
         }
@@ -611,8 +656,8 @@ export class PriceFetcherService implements OnModuleInit, OnModuleDestroy {
       cacheSize: this.priceCache.size,
       consecutiveFailures: this.consecutiveFailures,
       isHealthy: this.consecutiveFailures < this.MAX_CONSECUTIVE_FAILURES,
-      mockPricesCount: this.simulatedPrices.size, // ✅ Tambah stat
-      mockUpdatesCount: this.updateCount, // ✅ Tambah stat
+      mockPricesCount: this.simulatedPrices.size,
+      mockUpdatesCount: this.updateCount,
       cryptoStats: this.binanceService.getStats(),
     };
   }
