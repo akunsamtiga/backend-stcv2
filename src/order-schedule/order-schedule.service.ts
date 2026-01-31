@@ -3,7 +3,7 @@
 import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { Firestore } from '@google-cloud/firestore';
 import { v4 as uuidv4 } from 'uuid';
-import { FirebaseService } from '../firebase/firebase.service'; // ✅ Import FirebaseService
+import { FirebaseService } from '../firebase/firebase.service';
 import { 
   CreateOrderScheduleDto,
   ScheduleStatus 
@@ -14,14 +14,21 @@ import { OrderSchedule, ScheduleExecution, ScheduleStatistics } from './entities
 
 @Injectable()
 export class OrderScheduleService {
-  private readonly db: Firestore;
+  // ✅ PERBAIKAN: Hapus inisialisasi db di constructor
+  // private readonly db: Firestore; // ❌ HAPUS INI
+  
   private readonly schedulesCollection = 'order_schedules';
   private readonly executionsCollection = 'schedule_executions';
   private readonly statisticsCollection = 'schedule_statistics';
 
-  // ✅ PERBAIKAN: Inject FirebaseService instead of Firestore
   constructor(private firebaseService: FirebaseService) {
-    this.db = this.firebaseService.getFirestore();
+    // ✅ PERBAIKAN: Jangan panggil getFirestore() di sini
+    // this.db = this.firebaseService.getFirestore(); // ❌ HAPUS INI
+  }
+
+  // ✅ TAMBAHKAN: Getter untuk lazy initialization
+  private get db(): Firestore {
+    return this.firebaseService.getFirestore();
   }
 
   /**
@@ -77,16 +84,14 @@ export class OrderScheduleService {
     }
   }
 
-  /**
-   * Mendapatkan semua schedule milik user
-   */
+  // ... rest of the methods remain the same, they will use this.db getter automatically
+  
   async findAll(userId: string, query?: QueryOrderScheduleDto): Promise<OrderSchedule[]> {
     try {
       let firestoreQuery = this.db
         .collection(this.schedulesCollection)
         .where('userId', '==', userId);
 
-      // Apply filters
       if (query?.accountType) {
         firestoreQuery = firestoreQuery.where('accountType', '==', query.accountType);
       }
@@ -115,9 +120,6 @@ export class OrderScheduleService {
     }
   }
 
-  /**
-   * Mendapatkan detail schedule by ID
-   */
   async findOne(userId: string, scheduleId: string): Promise<OrderSchedule> {
     try {
       const doc = await this.db.collection(this.schedulesCollection).doc(scheduleId).get();
@@ -128,7 +130,6 @@ export class OrderScheduleService {
 
       const schedule = doc.data() as OrderSchedule;
 
-      // Verify ownership
       if (schedule.userId !== userId) {
         throw new ForbiddenException('You do not have access to this schedule');
       }
@@ -142,9 +143,6 @@ export class OrderScheduleService {
     }
   }
 
-  /**
-   * Update schedule
-   */
   async update(
     userId: string, 
     scheduleId: string, 
@@ -153,12 +151,10 @@ export class OrderScheduleService {
     try {
       const schedule = await this.findOne(userId, scheduleId);
 
-      // Tidak bisa update schedule yang sedang active/running
       if (schedule.status === ScheduleStatus.ACTIVE && updateDto.schedules) {
         throw new BadRequestException('Cannot modify schedules of an active schedule. Please pause it first.');
       }
 
-      // Validasi waktu jika ada update schedules
       if (updateDto.schedules) {
         this.validateScheduleTimes(updateDto.schedules);
       }
@@ -168,7 +164,6 @@ export class OrderScheduleService {
         updatedAt: new Date(),
       };
 
-      // Handle status changes
       if (updateDto.status === ScheduleStatus.ACTIVE && schedule.status !== ScheduleStatus.ACTIVE) {
         updatedData.startedAt = new Date();
       } else if (updateDto.status === ScheduleStatus.PAUSED) {
@@ -190,14 +185,10 @@ export class OrderScheduleService {
     }
   }
 
-  /**
-   * Delete/Cancel schedule
-   */
   async remove(userId: string, scheduleId: string): Promise<{ message: string }> {
     try {
       const schedule = await this.findOne(userId, scheduleId);
 
-      // Tidak bisa delete schedule yang sedang active
       if (schedule.status === ScheduleStatus.ACTIVE) {
         throw new BadRequestException('Cannot delete an active schedule. Please pause or cancel it first.');
       }
@@ -213,9 +204,6 @@ export class OrderScheduleService {
     }
   }
 
-  /**
-   * Activate/Start schedule
-   */
   async activateSchedule(userId: string, scheduleId: string): Promise<OrderSchedule> {
     return this.update(userId, scheduleId, { 
       status: ScheduleStatus.ACTIVE,
@@ -223,9 +211,6 @@ export class OrderScheduleService {
     });
   }
 
-  /**
-   * Pause schedule
-   */
   async pauseSchedule(userId: string, scheduleId: string): Promise<OrderSchedule> {
     return this.update(userId, scheduleId, { 
       status: ScheduleStatus.PAUSED,
@@ -233,16 +218,12 @@ export class OrderScheduleService {
     });
   }
 
-  /**
-   * Get execution history
-   */
   async getExecutionHistory(
     userId: string, 
     scheduleId: string,
     limit: number = 50
   ): Promise<ScheduleExecution[]> {
     try {
-      // Verify ownership
       await this.findOne(userId, scheduleId);
 
       const snapshot = await this.db
@@ -259,12 +240,8 @@ export class OrderScheduleService {
     }
   }
 
-  /**
-   * Get statistics
-   */
   async getStatistics(userId: string, scheduleId: string): Promise<ScheduleStatistics[]> {
     try {
-      // Verify ownership
       await this.findOne(userId, scheduleId);
 
       const snapshot = await this.db
@@ -281,13 +258,6 @@ export class OrderScheduleService {
     }
   }
 
-  // ===================================
-  // PRIVATE HELPER METHODS
-  // ===================================
-
-  /**
-   * Validasi format waktu schedule
-   */
   private validateScheduleTimes(schedules: any[]): void {
     const timeRegex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;
     
@@ -299,7 +269,6 @@ export class OrderScheduleService {
       }
     }
 
-    // Check for duplicate times
     const times = schedules.map(s => s.time);
     const uniqueTimes = new Set(times);
     if (times.length !== uniqueTimes.size) {
@@ -307,9 +276,6 @@ export class OrderScheduleService {
     }
   }
 
-  /**
-   * Validasi balance user untuk real account
-   */
   private async validateUserBalance(userId: string, requiredAmount: number): Promise<void> {
     try {
       const balanceDoc = await this.db
@@ -334,9 +300,6 @@ export class OrderScheduleService {
     }
   }
 
-  /**
-   * Check apakah sudah mencapai stop loss atau stop profit
-   */
   async checkStopLossProfit(scheduleId: string): Promise<boolean> {
     try {
       const scheduleDoc = await this.db.collection(this.schedulesCollection).doc(scheduleId).get();
@@ -348,7 +311,6 @@ export class OrderScheduleService {
       const schedule = scheduleDoc.data() as OrderSchedule;
       const { stopLossProfit, currentProfit } = schedule;
 
-      // Check stop profit
       if (stopLossProfit.stopProfit && currentProfit >= stopLossProfit.stopProfit) {
         await this.update(schedule.userId, scheduleId, {
           status: ScheduleStatus.COMPLETED,
@@ -357,7 +319,6 @@ export class OrderScheduleService {
         return true;
       }
 
-      // Check stop loss
       if (stopLossProfit.stopLoss && Math.abs(currentProfit) >= stopLossProfit.stopLoss) {
         await this.update(schedule.userId, scheduleId, {
           status: ScheduleStatus.COMPLETED,
@@ -373,9 +334,6 @@ export class OrderScheduleService {
     }
   }
 
-  /**
-   * Calculate next martingale amount
-   */
   calculateMartingaleAmount(
     baseAmount: number, 
     currentStep: number, 
@@ -387,9 +345,6 @@ export class OrderScheduleService {
     return baseAmount * Math.pow(multiplier, currentStep);
   }
 
-  /**
-   * Update schedule setelah execution
-   */
   async updateAfterExecution(
     scheduleId: string,
     executionResult: 'win' | 'loss' | 'draw',
@@ -411,20 +366,18 @@ export class OrderScheduleService {
         updatedAt: new Date(),
       };
 
-      // Update profit/loss
       updates.currentProfit = schedule.currentProfit + profit;
 
       if (profit > 0) {
         updates.totalProfit = schedule.totalProfit + profit;
         updates.totalSuccess = schedule.totalSuccess + 1;
         updates.consecutiveLosses = 0;
-        updates.currentMartingaleStep = 0; // Reset martingale
+        updates.currentMartingaleStep = 0;
       } else if (profit < 0) {
         updates.totalLoss = schedule.totalLoss + Math.abs(profit);
         updates.totalFailed = schedule.totalFailed + 1;
         updates.consecutiveLosses = schedule.consecutiveLosses + 1;
 
-        // Increment martingale step if not at max
         if (schedule.currentMartingaleStep < schedule.martingaleSetting.maxStep) {
           updates.currentMartingaleStep = schedule.currentMartingaleStep + 1;
         }
@@ -432,7 +385,6 @@ export class OrderScheduleService {
 
       await this.db.collection(this.schedulesCollection).doc(scheduleId).update(updates);
 
-      // Check stop loss/profit setelah update
       await this.checkStopLossProfit(scheduleId);
     } catch (error) {
       console.error('Error updating schedule after execution:', error);

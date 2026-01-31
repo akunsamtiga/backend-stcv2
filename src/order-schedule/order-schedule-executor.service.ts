@@ -4,7 +4,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { Firestore } from '@google-cloud/firestore';
 import { v4 as uuidv4 } from 'uuid';
-import { FirebaseService } from '../firebase/firebase.service'; // ✅ TAMBAHKAN
+import { FirebaseService } from '../firebase/firebase.service';
 import { OrderScheduleService } from './order-schedule.service';
 import { ScheduleStatus, TrendType } from './dto/create-order-schedule.dto';
 import { OrderSchedule, ScheduleExecution } from './entities/order-schedule.entity';
@@ -12,29 +12,32 @@ import { OrderSchedule, ScheduleExecution } from './entities/order-schedule.enti
 @Injectable()
 export class OrderScheduleExecutorService {
   private readonly logger = new Logger(OrderScheduleExecutorService.name);
-  private readonly db: Firestore;
+  // ✅ PERBAIKAN: Hapus inisialisasi db di constructor
+  // private readonly db: Firestore; // ❌ HAPUS INI
+  
   private readonly schedulesCollection = 'order_schedules';
   private readonly executionsCollection = 'schedule_executions';
   private readonly ordersCollection = 'binary_orders';
 
-  // ✅ PERBAIKAN: Inject FirebaseService instead of Firestore
   constructor(
     private firebaseService: FirebaseService,
     private orderScheduleService: OrderScheduleService,
   ) {
-    this.db = this.firebaseService.getFirestore(); // ✅ Get Firestore instance
+    // ✅ PERBAIKAN: Jangan panggil getFirestore() di sini
+    // this.db = this.firebaseService.getFirestore(); // ❌ HAPUS INI
   }
 
-  /**
-   * Cron job yang berjalan setiap menit untuk check dan execute schedules
-   * Runs every minute: "* * * * *"
-   */
+  // ✅ TAMBAHKAN: Getter untuk lazy initialization
+  private get db(): Firestore {
+    return this.firebaseService.getFirestore();
+  }
+
   @Cron(CronExpression.EVERY_MINUTE)
   async handleScheduledOrders() {
     this.logger.log('Checking for scheduled orders...');
 
     try {
-      const currentTime = this.getCurrentTime(); // Format: HH:mm
+      const currentTime = this.getCurrentTime();
       const activeSchedules = await this.getActiveSchedules();
 
       this.logger.log(`Found ${activeSchedules.length} active schedules`);
@@ -47,9 +50,6 @@ export class OrderScheduleExecutorService {
     }
   }
 
-  /**
-   * Dapatkan semua schedule yang aktif
-   */
   private async getActiveSchedules(): Promise<OrderSchedule[]> {
     try {
       const snapshot = await this.db
@@ -65,30 +65,24 @@ export class OrderScheduleExecutorService {
     }
   }
 
-  /**
-   * Process schedule dan execute order jika waktunya sudah tiba
-   */
   private async processSchedule(schedule: OrderSchedule, currentTime: string) {
     try {
       this.logger.log(`Processing schedule ${schedule.id} for user ${schedule.userEmail}`);
 
-      // Check apakah sudah mencapai stop loss/profit
       const shouldStop = await this.orderScheduleService.checkStopLossProfit(schedule.id);
       if (shouldStop) {
         this.logger.log(`Schedule ${schedule.id} stopped due to stop loss/profit limit`);
         return;
       }
 
-      // Check apakah ada jadwal yang harus dieksekusi sekarang
       const scheduledOrders = schedule.schedules.filter(s => s.time === currentTime);
 
       if (scheduledOrders.length === 0) {
-        return; // Tidak ada yang perlu dieksekusi
+        return;
       }
 
       this.logger.log(`Found ${scheduledOrders.length} orders to execute for schedule ${schedule.id}`);
 
-      // Execute setiap order yang dijadwalkan
       for (const scheduledOrder of scheduledOrders) {
         await this.executeOrder(schedule, scheduledOrder.trend, currentTime);
       }
@@ -100,9 +94,6 @@ export class OrderScheduleExecutorService {
     }
   }
 
-  /**
-   * Execute order dan catat execution
-   */
   private async executeOrder(
     schedule: OrderSchedule,
     trend: TrendType,
@@ -116,7 +107,6 @@ export class OrderScheduleExecutorService {
         `Executing order for schedule ${schedule.id}: ${trend} at ${scheduledTime}`
       );
 
-      // Calculate amount dengan martingale
       const amount = this.orderScheduleService.calculateMartingaleAmount(
         schedule.amount,
         schedule.currentMartingaleStep,
@@ -127,7 +117,6 @@ export class OrderScheduleExecutorService {
         `Amount: ${amount} (base: ${schedule.amount}, step: ${schedule.currentMartingaleStep}, multiplier: ${schedule.martingaleSetting.multiplier})`
       );
 
-      // Validasi balance jika real account
       if (schedule.accountType === 'real') {
         const hasBalance = await this.checkUserBalance(schedule.userId, amount);
         if (!hasBalance) {
@@ -145,10 +134,8 @@ export class OrderScheduleExecutorService {
         }
       }
 
-      // Create binary order
       const orderId = await this.createBinaryOrder(schedule, trend, amount);
 
-      // Record execution
       await this.recordExecution(
         executionId,
         schedule,
@@ -162,8 +149,6 @@ export class OrderScheduleExecutorService {
 
       this.logger.log(`Order executed successfully: ${orderId}`);
 
-      // Setelah duration selesai, check hasil dan update schedule
-      // Ini bisa dilakukan dengan cron job terpisah atau dengan setTimeout
       setTimeout(async () => {
         await this.checkOrderResult(schedule.id, orderId, executionId);
       }, schedule.duration * 1000);
@@ -186,9 +171,6 @@ export class OrderScheduleExecutorService {
     }
   }
 
-  /**
-   * Buat binary order
-   */
   private async createBinaryOrder(
     schedule: OrderSchedule,
     trend: TrendType,
@@ -207,11 +189,11 @@ export class OrderScheduleExecutorService {
       trend: trend,
       duration: schedule.duration,
       status: 'pending',
-      entry_price: 0, // Will be set by trading engine
+      entry_price: 0,
       exit_price: 0,
       profit: 0,
       result: null,
-      is_scheduled: true, // Flag untuk order dari schedule
+      is_scheduled: true,
       schedule_id: schedule.id,
       created_at: now,
       updated_at: now,
@@ -223,9 +205,6 @@ export class OrderScheduleExecutorService {
     return orderId;
   }
 
-  /**
-   * Record execution ke database
-   */
   private async recordExecution(
     executionId: string,
     schedule: OrderSchedule,
@@ -259,9 +238,6 @@ export class OrderScheduleExecutorService {
     await this.db.collection(this.executionsCollection).doc(executionId).set(execution);
   }
 
-  /**
-   * Check hasil order setelah duration selesai
-   */
   private async checkOrderResult(
     scheduleId: string,
     orderId: string,
@@ -270,7 +246,6 @@ export class OrderScheduleExecutorService {
     try {
       this.logger.log(`Checking result for order ${orderId}`);
 
-      // Get order result
       const orderDoc = await this.db.collection(this.ordersCollection).doc(orderId).get();
 
       if (!orderDoc.exists) {
@@ -285,14 +260,12 @@ export class OrderScheduleExecutorService {
         return;
       }
 
-      // Update execution dengan hasil
       await this.db.collection(this.executionsCollection).doc(executionId).update({
         result: order.result,
         profit: order.profit,
         updatedAt: new Date(),
       });
 
-      // Update schedule tracking
       await this.orderScheduleService.updateAfterExecution(
         scheduleId,
         order.result,
@@ -310,9 +283,6 @@ export class OrderScheduleExecutorService {
     }
   }
 
-  /**
-   * Check user balance
-   */
   private async checkUserBalance(userId: string, requiredAmount: number): Promise<boolean> {
     try {
       const balanceSnapshot = await this.db
@@ -333,9 +303,6 @@ export class OrderScheduleExecutorService {
     }
   }
 
-  /**
-   * Get current time in HH:mm format
-   */
   private getCurrentTime(): string {
     const now = new Date();
     const hours = now.getHours().toString().padStart(2, '0');
@@ -343,9 +310,6 @@ export class OrderScheduleExecutorService {
     return `${hours}:${minutes}`;
   }
 
-  /**
-   * Manual trigger untuk testing (optional)
-   */
   async manualTrigger(scheduleId: string, time: string) {
     this.logger.log(`Manual trigger for schedule ${scheduleId} at ${time}`);
 
