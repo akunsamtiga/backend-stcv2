@@ -1,339 +1,362 @@
 {
   "indexes": [
     {
-      "collectionGroup": "users",
+      "collectionGroup": "order_schedules",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "email", "order": "ASCENDING" },
-        { "fieldPath": "isActive", "order": "ASCENDING" }
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
-      "collectionGroup": "users",
+      "collectionGroup": "order_schedules",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "role", "order": "ASCENDING" },
-        { "fieldPath": "isActive", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
-      "collectionGroup": "users",
+      "collectionGroup": "order_schedules",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "accountType",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
-      "collectionGroup": "users",
+      "collectionGroup": "order_schedules",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "isActive", "order": "ASCENDING" }
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "assetSymbol",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "order_schedules",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "accountType",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "order_schedules",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "isActive",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "schedule_executions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "scheduleId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "executedAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "schedule_executions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "executedAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "schedule_executions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "executedAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "schedule_executions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "scheduleId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "executedAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "schedule_statistics",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "scheduleId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "schedule_statistics",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "binary_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "user_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "created_at",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "binary_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "user_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "created_at",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "binary_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "user_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "account_type",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "created_at",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "binary_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schedule_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "created_at",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "binary_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "is_scheduled",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "created_at",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "balance",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "user_id", "order": "ASCENDING" },
-        { "fieldPath": "accountType", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "balance",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "user_id", "order": "ASCENDING" },
-        { "fieldPath": "accountType", "order": "ASCENDING" },
-        { "fieldPath": "type", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "balance",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "user_id", "order": "ASCENDING" },
-        { "fieldPath": "type", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "binary_orders",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "user_id", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "binary_orders",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "user_id", "order": "ASCENDING" },
-        { "fieldPath": "accountType", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "binary_orders",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "user_id", "order": "ASCENDING" },
-        { "fieldPath": "accountType", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "binary_orders",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "user_id", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "binary_orders",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "exit_time", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "binary_orders",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "accountType", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "exit_time", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "binary_orders",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "accountType", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "assets",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "isActive", "order": "ASCENDING" },
-        { "fieldPath": "dataSource", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "assets",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "isActive", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "affiliates",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "referrer_id", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "affiliates",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "referee_id", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "withdrawal_requests",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "user_id", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "withdrawal_requests",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "user_id", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "withdrawal_requests",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "withdrawal_requests",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "reviewedBy", "order": "ASCENDING" },
-        { "fieldPath": "reviewedAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "deposit_transactions",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "user_id", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "deposit_transactions",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "user_id", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "deposit_transactions",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "order_id", "order": "ASCENDING" },
-        { "fieldPath": "user_id", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "deposit_transactions",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "vouchers",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "code", "order": "ASCENDING" },
-        { "fieldPath": "isActive", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "vouchers",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "isActive", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "voucher_usages",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "userId", "order": "ASCENDING" },
-        { "fieldPath": "usedAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "voucher_usages",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "voucherId", "order": "ASCENDING" },
-        { "fieldPath": "usedAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "voucher_usages",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "userId", "order": "ASCENDING" },
-        { "fieldPath": "voucherId", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "asset_schedules",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "isActive", "order": "ASCENDING" },
-        { "fieldPath": "scheduledTime", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "asset_schedules",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "scheduledTime", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "asset_schedules",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "assetSymbol", "order": "ASCENDING" },
-        { "fieldPath": "scheduledTime", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "asset_schedules",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "assetSymbol", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "scheduledTime", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "asset_schedules",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "trend", "order": "ASCENDING" },
-        { "fieldPath": "scheduledTime", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "asset_schedules",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "timeframe", "order": "ASCENDING" },
-        { "fieldPath": "scheduledTime", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "asset_schedules",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "isActive", "order": "ASCENDING" },
-        { "fieldPath": "scheduledTime", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "asset_schedules",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "createdBy", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "asset_schedules",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "createdAt", "order": "ASCENDING" },
-        { "fieldPath": "scheduledTime", "order": "DESCENDING" }
+        {
+          "fieldPath": "user_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "updated_at",
+          "order": "DESCENDING"
+        }
       ]
     }
   ],
-  "fieldOverrides": []
+  "fieldOverrides": [
+    {
+      "collectionGroup": "order_schedules",
+      "fieldPath": "createdAt",
+      "indexes": [
+        {
+          "order": "ASCENDING",
+          "queryScope": "COLLECTION"
+        },
+        {
+          "order": "DESCENDING",
+          "queryScope": "COLLECTION"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "order_schedules",
+      "fieldPath": "updatedAt",
+      "indexes": [
+        {
+          "order": "ASCENDING",
+          "queryScope": "COLLECTION"
+        },
+        {
+          "order": "DESCENDING",
+          "queryScope": "COLLECTION"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "schedule_executions",
+      "fieldPath": "executedAt",
+      "indexes": [
+        {
+          "order": "ASCENDING",
+          "queryScope": "COLLECTION"
+        },
+        {
+          "order": "DESCENDING",
+          "queryScope": "COLLECTION"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "binary_orders",
+      "fieldPath": "created_at",
+      "indexes": [
+        {
+          "order": "ASCENDING",
+          "queryScope": "COLLECTION"
+        },
+        {
+          "order": "DESCENDING",
+          "queryScope": "COLLECTION"
+        }
+      ]
+    }
+  ]
 }
