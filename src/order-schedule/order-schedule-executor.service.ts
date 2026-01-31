@@ -4,6 +4,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { Firestore } from '@google-cloud/firestore';
 import { v4 as uuidv4 } from 'uuid';
+import { FirebaseService } from '../firebase/firebase.service'; // ✅ TAMBAHKAN
 import { OrderScheduleService } from './order-schedule.service';
 import { ScheduleStatus, TrendType } from './dto/create-order-schedule.dto';
 import { OrderSchedule, ScheduleExecution } from './entities/order-schedule.entity';
@@ -16,11 +17,12 @@ export class OrderScheduleExecutorService {
   private readonly executionsCollection = 'schedule_executions';
   private readonly ordersCollection = 'binary_orders';
 
+  // ✅ PERBAIKAN: Inject FirebaseService instead of Firestore
   constructor(
-    private firestore: Firestore,
+    private firebaseService: FirebaseService,
     private orderScheduleService: OrderScheduleService,
   ) {
-    this.db = firestore;
+    this.db = this.firebaseService.getFirestore(); // ✅ Get Firestore instance
   }
 
   /**
