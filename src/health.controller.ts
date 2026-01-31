@@ -1,5 +1,4 @@
 // src/health.controller.ts
-
 import { Controller, Get } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { FirebaseService } from './firebase/firebase.service';
@@ -57,12 +56,7 @@ export class HealthController {
   @ApiResponse({ status: 200, description: 'Performance statistics' })
   async getPerformance() {
     try {
-      const [
-        firebaseStats,
-        orderStats,
-        assetStats,
-        relayStatus,
-      ] = await Promise.all([
+      const [firebaseStats, orderStats, assetStats, relayStatus] = await Promise.all([
         Promise.resolve(this.firebaseService.getPerformanceStats()),
         Promise.resolve(this.binaryOrdersService.getPerformanceStats()),
         Promise.resolve(this.assetsService.getPerformanceStats()),
@@ -76,7 +70,6 @@ export class HealthController {
         status: 'healthy',
         timestamp: TimezoneUtil.toISOString(),
         timestampWIB: TimezoneUtil.formatDateTime(),
-        
         timezone: {
           name: 'Asia/Jakarta',
           offset: 'UTC+7',
@@ -84,7 +77,6 @@ export class HealthController {
           unix: TimezoneUtil.getCurrentTimestamp(),
           syncedWithSimulator: true,
         },
-        
         system: {
           uptime: this.formatUptime(uptime),
           memory: {
@@ -96,18 +88,15 @@ export class HealthController {
             loadAverage: process.cpuUsage(),
           },
         },
-
         firebase: firebaseStats,
         binaryOrders: orderStats,
         assets: assetStats,
         simulatorRelay: relayStatus,
-
         websocket: {
           cryptoAssets: 'Direct from Backend (Binance)',
           normalAssets: relayStatus.isRunning ? 'Relayed from Simulator' : 'Not Running',
           relayHealth: relayStatus.isHealthy ? 'Healthy' : 'Degraded',
         },
-
         health: {
           overall: 'healthy',
           checks: {
@@ -118,7 +107,6 @@ export class HealthController {
             timezone: orderStats.timezone ? 'synced' : 'unknown',
           },
         },
-
         recommendations: this.getRecommendations(memory, orderStats, firebaseStats, relayStatus),
       };
     } catch (error) {
@@ -192,7 +180,7 @@ export class HealthController {
     const now = new Date();
     const jakartaTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Jakarta' }));
     const utcTime = new Date(now.toLocaleString('en-US', { timeZone: 'UTC' }));
-    
+
     return {
       configured: {
         timezone: 'Asia/Jakarta',
@@ -262,7 +250,7 @@ export class HealthController {
       recommendations.push('💡 Firebase response time high. Consider caching optimization.');
     }
 
-    if (orderStats.cacheSize.orders > 1000) {
+    if (orderStats.cacheSize?.orders > 1000) {
       recommendations.push('💡 Large order cache. Consider periodic cleanup.');
     }
 

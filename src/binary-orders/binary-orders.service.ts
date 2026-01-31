@@ -1,3 +1,6 @@
+// src/binary-orders/binary-orders.service.ts
+// ✅ VERSI LENGKAP DIPERBAIKI - DENGAN RATE LIMITER & REALTIME PRICE
+
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { FirebaseService } from '../firebase/firebase.service';
@@ -30,7 +33,7 @@ export class BinaryOrdersService {
   
   private assetCache: Map<string, { asset: Asset; timestamp: number }> = new Map();
   private readonly ORDER_CACHE_TTL = 1000;
-  private readonly ASSET_CACHE_TTL = 20000;
+  private readonly ASSET_CACHE_TTL = 2000; // ✅ PERUBAHAN: 20000 → 2000 (2 detik)
   
   private processingLock = false;
   
@@ -39,6 +42,11 @@ export class BinaryOrdersService {
   private avgCreateTime = 0;
   private avgSettleTime = 0;
   private settlementRunCount = 0;
+
+  // ✅ PERUBAHAN: Tambah Rate Limiter
+  private orderRateLimiter: Map<string, number[]> = new Map();
+  private readonly MAX_ORDERS_PER_MINUTE = 30; // Max 30 order per menit per user
+  private readonly RATE_LIMIT_WINDOW = 60000; // 1 menit dalam milliseconds
 
   constructor(
     private firebaseService: FirebaseService,
@@ -54,7 +62,65 @@ export class BinaryOrdersService {
     this.logger.log(`⏰ Current time: ${TimezoneUtil.formatDateTime()}`);
     this.logger.log(`💡 Status-Based Profit Bonus: Standard +0%, Gold +5%, VIP +10%`);
     this.logger.log(`⚡ 1 Second Trading Support Enabled`);
+    this.logger.log(`🔒 Rate Limiter: Max ${this.MAX_ORDERS_PER_MINUTE} orders/minute per user`); // ✅ Log baru
   }
+
+  // ============================================================================
+  // ✅ PERUBAHAN: TAMBAH METHOD RATE LIMITER
+  // ============================================================================
+
+  private checkRateLimit(userId: string): boolean {
+    const now = Date.now();
+    const userOrders = this.orderRateLimiter.get(userId) || [];
+    
+    // Filter orders dalam 1 menit terakhir
+    const recentOrders = userOrders.filter(
+      timestamp => now - timestamp < this.RATE_LIMIT_WINDOW
+    );
+    
+    // Check if exceeded limit
+    if (recentOrders.length >= this.MAX_ORDERS_PER_MINUTE) {
+      this.logger.warn(
+        `⚠️ Rate limit exceeded for user ${userId}: ` +
+        `${recentOrders.length} orders in last minute`
+      );
+      return false;
+    }
+    
+    // Add current timestamp
+    recentOrders.push(now);
+    this.orderRateLimiter.set(userId, recentOrders);
+    
+    return true;
+  }
+
+  // ✅ PERUBAHAN: Cleanup rate limiter setiap 5 menit
+  @Cron('0 */5 * * * *')
+  private cleanupRateLimiter() {
+    const now = Date.now();
+    let cleanedUsers = 0;
+    
+    this.orderRateLimiter.forEach((timestamps, userId) => {
+      const recentOrders = timestamps.filter(
+        timestamp => now - timestamp < this.RATE_LIMIT_WINDOW
+      );
+      
+      if (recentOrders.length === 0) {
+        this.orderRateLimiter.delete(userId);
+        cleanedUsers++;
+      } else {
+        this.orderRateLimiter.set(userId, recentOrders);
+      }
+    });
+    
+    if (cleanedUsers > 0) {
+      this.logger.debug(`🧹 Cleaned up rate limiter for ${cleanedUsers} users`);
+    }
+  }
+
+  // ============================================================================
+  // HELPER METHODS
+  // ============================================================================
 
   private isValidDuration(duration: number): duration is ValidDuration {
     const tolerance = 0.0001;
@@ -93,6 +159,7 @@ export class BinaryOrdersService {
     this.lastActiveOrdersFetch.clear();
   }
 
+  // ✅ PERUBAHAN: UPDATE getFastPriceWithRetry untuk gunakan getCurrentPriceRealtime
   private async getFastPriceWithRetry(assetId: string, maxRetries = 3): Promise<any> {
     let lastError: Error | null = null;
     
@@ -100,8 +167,9 @@ export class BinaryOrdersService {
       try {
         const asset = await this.getCachedAssetFast(assetId);
         
+        // ✅ GUNAKAN getCurrentPriceRealtime dengan bypassCache = true
         const priceData = await Promise.race([
-          this.priceFetcherService.getCurrentPrice(asset, true),
+          this.priceFetcherService.getCurrentPriceRealtime(asset, true), // ✅ bypass cache
           new Promise<never>((_, reject) => 
             setTimeout(() => reject(new Error('Timeout')), 2000)
           ),
@@ -127,11 +195,24 @@ export class BinaryOrdersService {
     return null;
   }
 
+  // ============================================================================
+  // ✅ PERUBAHAN: UPDATE createOrder METHOD DENGAN RATE LIMIT
+  // ============================================================================
+
   async createOrder(userId: string, createOrderDto: CreateBinaryOrderDto) {
     const startTime = Date.now();
     const { accountType, amount, duration } = createOrderDto;
     
     try {
+      // ✅ CHECK RATE LIMIT TERLEBIH DAHULU
+      if (!this.checkRateLimit(userId)) {
+        throw new BadRequestException({
+          message: 'Too many orders. Please wait a moment before placing another order.',
+          code: 'RATE_LIMIT_EXCEEDED',
+          retryAfter: 60, // seconds
+        });
+      }
+
       if (accountType !== BALANCE_ACCOUNT_TYPE.REAL && accountType !== BALANCE_ACCOUNT_TYPE.DEMO) {
         throw new BadRequestException('Invalid account type. Must be "real" or "demo"');
       }
@@ -164,7 +245,8 @@ export class BinaryOrdersService {
         }
       }
 
-      this.logger.log(`📡 Fetching price for ${asset.symbol}...`);
+      // ✅ FETCH REALTIME PRICE (bypass cache)
+      this.logger.log(`📡 Fetching realtime price for ${asset.symbol}...`);
       const priceData = await this.getFastPriceWithRetry(createOrderDto.asset_id, 3);
 
       if (!priceData || !priceData.price) {
@@ -180,7 +262,11 @@ export class BinaryOrdersService {
         this.logger.warn(`⚠️ Price data is ${dataAge}s old for ${asset.symbol}`);
       }
 
-      this.logger.log(`✅ Got price for ${asset.symbol}: ${priceData.price} (${dataAge}s old)`);
+      // ✅ LOG PRICE INFO untuk debugging
+      this.logger.log(
+        `✅ Got realtime price for ${asset.symbol}: ${priceData.price} ` +
+        `(${dataAge}s old) at ${new Date().toISOString()}`
+      );
 
       const userStatus = await this.userStatusService.getUserStatus(userId);
       const statusBonus = this.userStatusService.getProfitBonus(userStatus);
@@ -240,7 +326,7 @@ export class BinaryOrdersService {
         direction: createOrderDto.direction as 'CALL' | 'PUT',
         amount: createOrderDto.amount,
         duration: createOrderDto.duration,
-        entry_price: priceData.price,
+        entry_price: priceData.price, // ✅ Realtime price
         entry_time: entryDateTimeInfo.datetime_iso,
         exit_price: null,
         exit_time: expiryDateTimeInfo.datetime_iso,
@@ -326,6 +412,14 @@ export class BinaryOrdersService {
         },
       });
 
+      // ✅ LOG PERFORMANCE setiap 10 orders
+      if (this.orderCreateCount % 10 === 0) {
+        this.logger.log(
+          `📊 Order Performance: Created ${this.orderCreateCount} orders, ` +
+          `avg time: ${Math.round(this.avgCreateTime)}ms`
+        );
+      }
+
       this.logger.log(
         `⚡ [${accountType.toUpperCase()}] Order created in ${executionTime}ms - ` +
         `${asset.symbol} ${createOrderDto.direction} ${durationDisplay} (Profit: ${finalProfitRate}%)`
@@ -363,6 +457,10 @@ export class BinaryOrdersService {
       throw error;
     }
   }
+
+  // ============================================================================
+  // SETTLEMENT METHODS
+  // ============================================================================
 
   @Cron('*/1 * * * * *')
   async processExpiredOrders() {
@@ -525,6 +623,10 @@ export class BinaryOrdersService {
       this.logger.error(`Settlement failed for ${order.id}: ${error.message}`);
     }
   }
+
+  // ============================================================================
+  // QUERY METHODS
+  // ============================================================================
 
   private async getActiveOrdersFromDB(accountType?: 'real' | 'demo'): Promise<BinaryOrder[]> {
     const db = this.firebaseService.getFirestore();
@@ -694,6 +796,10 @@ export class BinaryOrdersService {
     };
   }
 
+  // ============================================================================
+  // CACHE METHODS
+  // ============================================================================
+
   private async getCachedAssetFast(assetId: string): Promise<Asset> {
     const cached = this.assetCache.get(assetId);
     const now = Date.now();
@@ -737,7 +843,40 @@ export class BinaryOrdersService {
     this.logger.debug('⚡ All caches cleared');
   }
 
+  // ============================================================================
+  // ✅ PERUBAHAN: TAMBAH METHOD HELPER UNTUK MONITORING
+  // ============================================================================
+
+  getRateLimitStats(): {
+    totalUsers: number;
+    activeUsers: number;
+    averageOrdersPerUser: number;
+  } {
+    const now = Date.now();
+    let totalOrders = 0;
+    let activeUsers = 0;
+
+    this.orderRateLimiter.forEach((timestamps) => {
+      const recentOrders = timestamps.filter(
+        timestamp => now - timestamp < this.RATE_LIMIT_WINDOW
+      );
+      
+      if (recentOrders.length > 0) {
+        activeUsers++;
+        totalOrders += recentOrders.length;
+      }
+    });
+
+    return {
+      totalUsers: this.orderRateLimiter.size,
+      activeUsers,
+      averageOrdersPerUser: activeUsers > 0 ? totalOrders / activeUsers : 0,
+    };
+  }
+
   getPerformanceStats() {
+    const rateLimitStats = this.getRateLimitStats(); // ✅ Tambahan
+
     return {
       ordersCreated: this.orderCreateCount,
       ordersSettled: this.orderSettleCount,
@@ -750,6 +889,7 @@ export class BinaryOrdersService {
         demoActiveOrders: this.activeOrdersCache.get('demo')?.length || 0,
         assets: this.assetCache.size,
       },
+      rateLimiter: rateLimitStats, // ✅ Tambahan
       performance: {
         createTimeTarget: 300,
         settleTimeTarget: 200,
@@ -760,8 +900,11 @@ export class BinaryOrdersService {
         settlementInterval: '1 second',
         estimatedDailyChecks: 86400,
         cacheTTL: `${this.ACTIVE_ORDERS_CACHE_TTL}ms`,
+        assetCacheTTL: `${this.ASSET_CACHE_TTL}ms`, // ✅ Tambahan
         savingsVsOld: '60% fewer Firestore reads',
         oneSecondSupport: true,
+        rateLimitEnabled: true, // ✅ Tambahan
+        maxOrdersPerMinute: this.MAX_ORDERS_PER_MINUTE, // ✅ Tambahan
       },
       timezone: {
         name: 'Asia/Jakarta',
