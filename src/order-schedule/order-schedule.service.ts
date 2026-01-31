@@ -1,6 +1,6 @@
 // src/order-schedule/order-schedule.service.ts
 
-import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, ForbiddenException, Logger } from '@nestjs/common';
 import { Firestore } from '@google-cloud/firestore';
 import { v4 as uuidv4 } from 'uuid';
 import { FirebaseService } from '../firebase/firebase.service';
@@ -14,19 +14,14 @@ import { OrderSchedule, ScheduleExecution, ScheduleStatistics } from './entities
 
 @Injectable()
 export class OrderScheduleService {
-  // ✅ PERBAIKAN: Hapus inisialisasi db di constructor
-  // private readonly db: Firestore; // ❌ HAPUS INI
+  private readonly logger = new Logger(OrderScheduleService.name);
   
   private readonly schedulesCollection = 'order_schedules';
   private readonly executionsCollection = 'schedule_executions';
   private readonly statisticsCollection = 'schedule_statistics';
 
-  constructor(private firebaseService: FirebaseService) {
-    // ✅ PERBAIKAN: Jangan panggil getFirestore() di sini
-    // this.db = this.firebaseService.getFirestore(); // ❌ HAPUS INI
-  }
+  constructor(private firebaseService: FirebaseService) {}
 
-  // ✅ TAMBAHKAN: Getter untuk lazy initialization
   private get db(): Firestore {
     return this.firebaseService.getFirestore();
   }
@@ -38,9 +33,6 @@ export class OrderScheduleService {
     try {
       // Validasi waktu schedule
       this.validateScheduleTimes(createDto.schedules);
-      
-      // Validasi asset exists (optional - bisa ditambahkan)
-      // await this.validateAssetExists(createDto.assetSymbol);
       
       // Validasi balance jika real account
       if (createDto.accountType === 'real') {
@@ -55,6 +47,7 @@ export class OrderScheduleService {
         userId,
         userEmail,
         assetSymbol: createDto.assetSymbol,
+        assetName: createDto.assetName, // ✅ FIX #3: Include assetName from DTO
         accountType: createDto.accountType,
         duration: createDto.duration,
         amount: createDto.amount,
@@ -78,14 +71,18 @@ export class OrderScheduleService {
 
       await this.db.collection(this.schedulesCollection).doc(scheduleId).set(newSchedule);
 
+      this.logger.log(`✅ Created schedule ${scheduleId} for user ${userEmail}`);
+
       return newSchedule;
     } catch (error) {
+      this.logger.error(`❌ Failed to create schedule: ${error.message}`);
       throw new BadRequestException(`Failed to create order schedule: ${error.message}`);
     }
   }
 
-  // ... rest of the methods remain the same, they will use this.db getter automatically
-  
+  /**
+   * Mendapatkan semua schedule milik user
+   */
   async findAll(userId: string, query?: QueryOrderScheduleDto): Promise<OrderSchedule[]> {
     try {
       let firestoreQuery = this.db
@@ -116,10 +113,14 @@ export class OrderScheduleService {
 
       return snapshot.docs.map(doc => doc.data() as OrderSchedule);
     } catch (error) {
+      this.logger.error(`❌ Failed to fetch schedules: ${error.message}`);
       throw new BadRequestException(`Failed to fetch schedules: ${error.message}`);
     }
   }
 
+  /**
+   * Mendapatkan detail schedule by ID
+   */
   async findOne(userId: string, scheduleId: string): Promise<OrderSchedule> {
     try {
       const doc = await this.db.collection(this.schedulesCollection).doc(scheduleId).get();
@@ -143,6 +144,9 @@ export class OrderScheduleService {
     }
   }
 
+  /**
+   * Update schedule
+   */
   async update(
     userId: string, 
     scheduleId: string, 
@@ -166,10 +170,13 @@ export class OrderScheduleService {
 
       if (updateDto.status === ScheduleStatus.ACTIVE && schedule.status !== ScheduleStatus.ACTIVE) {
         updatedData.startedAt = new Date();
+        this.logger.log(`🚀 Schedule ${scheduleId} activated`);
       } else if (updateDto.status === ScheduleStatus.PAUSED) {
         updatedData.pausedAt = new Date();
+        this.logger.log(`⏸️ Schedule ${scheduleId} paused`);
       } else if (updateDto.status === ScheduleStatus.COMPLETED || updateDto.status === ScheduleStatus.CANCELLED) {
         updatedData.completedAt = new Date();
+        this.logger.log(`✅ Schedule ${scheduleId} ${updateDto.status}`);
       }
 
       await this.db.collection(this.schedulesCollection)
@@ -181,10 +188,14 @@ export class OrderScheduleService {
       if (error instanceof BadRequestException || error instanceof NotFoundException || error instanceof ForbiddenException) {
         throw error;
       }
+      this.logger.error(`❌ Failed to update schedule: ${error.message}`);
       throw new BadRequestException(`Failed to update schedule: ${error.message}`);
     }
   }
 
+  /**
+   * Delete/Cancel schedule
+   */
   async remove(userId: string, scheduleId: string): Promise<{ message: string }> {
     try {
       const schedule = await this.findOne(userId, scheduleId);
@@ -195,15 +206,21 @@ export class OrderScheduleService {
 
       await this.db.collection(this.schedulesCollection).doc(scheduleId).delete();
 
+      this.logger.log(`🗑️ Deleted schedule ${scheduleId}`);
+
       return { message: 'Order schedule deleted successfully' };
     } catch (error) {
       if (error instanceof BadRequestException || error instanceof NotFoundException || error instanceof ForbiddenException) {
         throw error;
       }
+      this.logger.error(`❌ Failed to delete schedule: ${error.message}`);
       throw new BadRequestException(`Failed to delete schedule: ${error.message}`);
     }
   }
 
+  /**
+   * Activate/Start schedule
+   */
   async activateSchedule(userId: string, scheduleId: string): Promise<OrderSchedule> {
     return this.update(userId, scheduleId, { 
       status: ScheduleStatus.ACTIVE,
@@ -211,6 +228,9 @@ export class OrderScheduleService {
     });
   }
 
+  /**
+   * Pause schedule
+   */
   async pauseSchedule(userId: string, scheduleId: string): Promise<OrderSchedule> {
     return this.update(userId, scheduleId, { 
       status: ScheduleStatus.PAUSED,
@@ -218,6 +238,9 @@ export class OrderScheduleService {
     });
   }
 
+  /**
+   * Get execution history
+   */
   async getExecutionHistory(
     userId: string, 
     scheduleId: string,
@@ -236,10 +259,14 @@ export class OrderScheduleService {
 
       return snapshot.docs.map(doc => doc.data() as ScheduleExecution);
     } catch (error) {
+      this.logger.error(`❌ Failed to fetch execution history: ${error.message}`);
       throw new BadRequestException(`Failed to fetch execution history: ${error.message}`);
     }
   }
 
+  /**
+   * Get statistics
+   */
   async getStatistics(userId: string, scheduleId: string): Promise<ScheduleStatistics[]> {
     try {
       await this.findOne(userId, scheduleId);
@@ -254,10 +281,18 @@ export class OrderScheduleService {
 
       return snapshot.docs.map(doc => doc.data() as ScheduleStatistics);
     } catch (error) {
+      this.logger.error(`❌ Failed to fetch statistics: ${error.message}`);
       throw new BadRequestException(`Failed to fetch statistics: ${error.message}`);
     }
   }
 
+  // ===================================
+  // PRIVATE HELPER METHODS
+  // ===================================
+
+  /**
+   * Validasi format waktu schedule
+   */
   private validateScheduleTimes(schedules: any[]): void {
     const timeRegex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;
     
@@ -276,6 +311,9 @@ export class OrderScheduleService {
     }
   }
 
+  /**
+   * Validasi balance user untuk real account
+   */
   private async validateUserBalance(userId: string, requiredAmount: number): Promise<void> {
     try {
       const balanceDoc = await this.db
@@ -296,10 +334,16 @@ export class OrderScheduleService {
         );
       }
     } catch (error) {
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
       throw new BadRequestException(`Balance validation failed: ${error.message}`);
     }
   }
 
+  /**
+   * Check apakah sudah mencapai stop loss atau stop profit
+   */
   async checkStopLossProfit(scheduleId: string): Promise<boolean> {
     try {
       const scheduleDoc = await this.db.collection(this.schedulesCollection).doc(scheduleId).get();
@@ -311,29 +355,44 @@ export class OrderScheduleService {
       const schedule = scheduleDoc.data() as OrderSchedule;
       const { stopLossProfit, currentProfit } = schedule;
 
+      // Check stop profit
       if (stopLossProfit.stopProfit && currentProfit >= stopLossProfit.stopProfit) {
-        await this.update(schedule.userId, scheduleId, {
+        this.logger.log(`🎯 Stop profit reached for schedule ${scheduleId}: ${currentProfit}`);
+        
+        await this.db.collection(this.schedulesCollection).doc(scheduleId).update({
           status: ScheduleStatus.COMPLETED,
-          isActive: false
+          isActive: false,
+          completedAt: new Date(),
+          updatedAt: new Date(),
         });
+        
         return true;
       }
 
+      // Check stop loss
       if (stopLossProfit.stopLoss && Math.abs(currentProfit) >= stopLossProfit.stopLoss) {
-        await this.update(schedule.userId, scheduleId, {
+        this.logger.log(`🛑 Stop loss reached for schedule ${scheduleId}: ${currentProfit}`);
+        
+        await this.db.collection(this.schedulesCollection).doc(scheduleId).update({
           status: ScheduleStatus.COMPLETED,
-          isActive: false
+          isActive: false,
+          completedAt: new Date(),
+          updatedAt: new Date(),
         });
+        
         return true;
       }
 
       return false;
     } catch (error) {
-      console.error('Error checking stop loss/profit:', error);
+      this.logger.error(`❌ Error checking stop loss/profit: ${error.message}`);
       return false;
     }
   }
 
+  /**
+   * Calculate next martingale amount
+   */
   calculateMartingaleAmount(
     baseAmount: number, 
     currentStep: number, 
@@ -345,49 +404,66 @@ export class OrderScheduleService {
     return baseAmount * Math.pow(multiplier, currentStep);
   }
 
+  /**
+   * ✅ FIX #6: Update schedule setelah execution dengan TRANSACTION
+   */
   async updateAfterExecution(
     scheduleId: string,
     executionResult: 'win' | 'loss' | 'draw',
     profit: number
   ): Promise<void> {
     try {
-      const scheduleDoc = await this.db.collection(this.schedulesCollection).doc(scheduleId).get();
-      
-      if (!scheduleDoc.exists) {
-        return;
-      }
-
-      const schedule = scheduleDoc.data() as OrderSchedule;
-
-      const updates: Partial<OrderSchedule> = {
-        totalExecuted: schedule.totalExecuted + 1,
-        lastExecutedAt: new Date(),
-        lastExecutionResult: executionResult,
-        updatedAt: new Date(),
-      };
-
-      updates.currentProfit = schedule.currentProfit + profit;
-
-      if (profit > 0) {
-        updates.totalProfit = schedule.totalProfit + profit;
-        updates.totalSuccess = schedule.totalSuccess + 1;
-        updates.consecutiveLosses = 0;
-        updates.currentMartingaleStep = 0;
-      } else if (profit < 0) {
-        updates.totalLoss = schedule.totalLoss + Math.abs(profit);
-        updates.totalFailed = schedule.totalFailed + 1;
-        updates.consecutiveLosses = schedule.consecutiveLosses + 1;
-
-        if (schedule.currentMartingaleStep < schedule.martingaleSetting.maxStep) {
-          updates.currentMartingaleStep = schedule.currentMartingaleStep + 1;
+      // ✅ Gunakan transaction untuk data consistency
+      await this.firebaseService.runTransaction(async (transaction) => {
+        const scheduleRef = this.db.collection(this.schedulesCollection).doc(scheduleId);
+        const scheduleDoc = await transaction.get(scheduleRef);
+        
+        if (!scheduleDoc.exists) {
+          throw new Error('Schedule not found');
         }
-      }
 
-      await this.db.collection(this.schedulesCollection).doc(scheduleId).update(updates);
+        const schedule = scheduleDoc.data() as OrderSchedule;
 
+        const updates: Partial<OrderSchedule> = {
+          totalExecuted: schedule.totalExecuted + 1,
+          lastExecutedAt: new Date(),
+          lastExecutionResult: executionResult,
+          updatedAt: new Date(),
+          currentProfit: schedule.currentProfit + profit,
+        };
+
+        if (profit > 0) {
+          updates.totalProfit = schedule.totalProfit + profit;
+          updates.totalSuccess = schedule.totalSuccess + 1;
+          updates.consecutiveLosses = 0;
+          updates.currentMartingaleStep = 0;
+          
+          this.logger.log(`✅ WIN - Schedule ${scheduleId}: +${profit} (Total: ${updates.currentProfit})`);
+        } else if (profit < 0) {
+          updates.totalLoss = schedule.totalLoss + Math.abs(profit);
+          updates.totalFailed = schedule.totalFailed + 1;
+          updates.consecutiveLosses = schedule.consecutiveLosses + 1;
+
+          if (schedule.currentMartingaleStep < schedule.martingaleSetting.maxStep) {
+            updates.currentMartingaleStep = schedule.currentMartingaleStep + 1;
+          }
+          
+          this.logger.log(
+            `❌ LOSS - Schedule ${scheduleId}: ${profit} (Consecutive: ${updates.consecutiveLosses}, Step: ${updates.currentMartingaleStep})`
+          );
+        } else {
+          this.logger.log(`➖ DRAW - Schedule ${scheduleId}`);
+        }
+
+        transaction.update(scheduleRef, updates);
+      });
+
+      // Check stop loss/profit setelah update
       await this.checkStopLossProfit(scheduleId);
+      
     } catch (error) {
-      console.error('Error updating schedule after execution:', error);
+      this.logger.error(`❌ Error updating schedule after execution: ${error.message}`, error.stack);
+      throw error;
     }
   }
 }

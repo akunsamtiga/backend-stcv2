@@ -109,6 +109,15 @@ export class CreateOrderScheduleDto {
   @IsNotEmpty()
   assetSymbol: string;
 
+  // ✅ FIX #3: Tambahkan assetName field (optional)
+  @ApiPropertyOptional({ 
+    example: 'Euro vs US Dollar',
+    description: 'Nama lengkap aset (opsional, akan di-fetch dari database jika tidak disediakan)'
+  })
+  @IsOptional()
+  @IsString()
+  assetName?: string;
+
   @ApiProperty({ 
     enum: AccountType,
     example: AccountType.DEMO,
@@ -187,4 +196,3 @@ export class CreateOrderScheduleDto {
   @IsString()
   notes?: string;
 }
-
