@@ -3,6 +3,7 @@
 import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { Firestore } from '@google-cloud/firestore';
 import { v4 as uuidv4 } from 'uuid';
+import { FirebaseService } from '../firebase/firebase.service'; // ✅ Import FirebaseService
 import { 
   CreateOrderScheduleDto,
   ScheduleStatus 
@@ -18,8 +19,9 @@ export class OrderScheduleService {
   private readonly executionsCollection = 'schedule_executions';
   private readonly statisticsCollection = 'schedule_statistics';
 
-  constructor(private firestore: Firestore) {
-    this.db = firestore;
+  // ✅ PERBAIKAN: Inject FirebaseService instead of Firestore
+  constructor(private firebaseService: FirebaseService) {
+    this.db = this.firebaseService.getFirestore();
   }
 
   /**
