@@ -22,7 +22,9 @@ export class OrderScheduleExecutorService {
   constructor(
     private firebaseService: FirebaseService,
     private orderScheduleService: OrderScheduleService,
-  ) {}
+  ) {
+    this.logger.log('✅ OrderScheduleExecutorService initialized');
+  }
 
   private get db(): Firestore {
     return this.firebaseService.getFirestore();
@@ -58,22 +60,18 @@ export class OrderScheduleExecutorService {
   @Cron('*/30 * * * * *')
   async checkPendingOrderResults() {
     if (this.isCheckingResults) {
-      this.logger.debug('⏭️ Skipping result check - previous check still running');
       return;
     }
 
     this.isCheckingResults = true;
 
     try {
-      this.logger.debug('🔍 Checking pending order results...');
-      
       const snapshot = await this.db
         .collection(this.executionsCollection)
         .where('status', '==', 'executed')
         .get();
 
       if (snapshot.empty) {
-        this.logger.debug('📭 No pending executions to check');
         return;
       }
 
@@ -219,8 +217,12 @@ export class OrderScheduleExecutorService {
         `💰 Amount: ${amount} (base: ${schedule.amount}, step: ${schedule.currentMartingaleStep}, multiplier: ${schedule.martingaleSetting.multiplier})`
       );
 
+      this.logger.debug(`🔍 STEP 1: Checking balance for account type: ${schedule.accountType}`);
+
       if (schedule.accountType === 'real') {
+        this.logger.debug(`🔍 STEP 2: Validating balance for user ${schedule.userId}`);
         const hasBalance = await this.checkUserBalance(schedule.userId, amount);
+        
         if (!hasBalance) {
           this.logger.warn(`⚠️ Insufficient balance for user ${schedule.userId}`);
           await this.recordExecution(
@@ -234,43 +236,74 @@ export class OrderScheduleExecutorService {
           );
           return;
         }
+        this.logger.debug(`✅ STEP 2: Balance check passed`);
+      } else {
+        this.logger.debug(`✅ STEP 2: Skipped balance check (demo account)`);
       }
 
-      const orderId = await this.createBinaryOrderWithVerification(schedule, trend, amount);
+      this.logger.debug(`🔍 STEP 3: Creating binary order...`);
+      
+      let orderId: string;
+      try {
+        orderId = await this.createBinaryOrderWithVerification(schedule, trend, amount);
+        this.logger.log(`✅ STEP 3: Binary order created: ${orderId}`);
+      } catch (createError) {
+        this.logger.error(`❌ STEP 3 FAILED: ${createError.message}`);
+        this.logger.error(`Error stack: ${createError.stack}`);
+        throw createError;
+      }
 
-      await this.recordExecution(
-        executionId,
-        schedule,
-        trend,
-        scheduledTime,
-        amount,
-        'executed',
-        undefined,
-        orderId
-      );
+      this.logger.debug(`🔍 STEP 4: Recording execution...`);
+      
+      try {
+        await this.recordExecution(
+          executionId,
+          schedule,
+          trend,
+          scheduledTime,
+          amount,
+          'executed',
+          undefined,
+          orderId
+        );
+        this.logger.log(`✅ STEP 4: Execution recorded`);
+      } catch (recordError) {
+        this.logger.error(`❌ STEP 4 FAILED: ${recordError.message}`);
+        throw recordError;
+      }
 
       this.logger.log(`✅ Order executed successfully: ${orderId}`);
       
     } catch (error) {
       this.logger.error(
-        `❌ Error executing order for schedule ${schedule.id}: ${error.message}`,
-        error.stack
+        `❌ CRITICAL ERROR executing order for schedule ${schedule.id}:`,
       );
+      this.logger.error(`   Message: ${error.message}`);
+      this.logger.error(`   Stack: ${error.stack}`);
+      this.logger.error(`   Name: ${error.name}`);
+      this.logger.error(`   Code: ${error.code || 'N/A'}`);
 
-      await this.recordExecution(
-        executionId,
-        schedule,
-        trend,
-        scheduledTime,
-        schedule.amount,
-        'failed',
-        error.message
-      );
+      try {
+        await this.recordExecution(
+          executionId,
+          schedule,
+          trend,
+          scheduledTime,
+          schedule.amount,
+          'failed',
+          error.message
+        );
+        this.logger.log(`✅ Failed execution recorded`);
+      } catch (recordError) {
+        this.logger.error(`❌ Failed to record failed execution: ${recordError.message}`);
+      }
     }
   }
 
   private async getAssetName(assetSymbol: string): Promise<string> {
     try {
+      this.logger.debug(`🔍 Fetching asset name for: ${assetSymbol}`);
+      
       const assetDoc = await this.db
         .collection(this.assetsCollection)
         .where('symbol', '==', assetSymbol)
@@ -279,8 +312,12 @@ export class OrderScheduleExecutorService {
       
       if (!assetDoc.empty) {
         const assetData = assetDoc.docs[0].data();
-        return assetData.name || assetSymbol;
+        const name = assetData.name || assetSymbol;
+        this.logger.debug(`✅ Asset name found: ${name}`);
+        return name;
       }
+      
+      this.logger.debug(`⚠️ Asset not found, using symbol: ${assetSymbol}`);
     } catch (error) {
       this.logger.warn(`⚠️ Error fetching asset name for ${assetSymbol}: ${error.message}`);
     }
@@ -296,6 +333,7 @@ export class OrderScheduleExecutorService {
     const orderId = uuidv4();
     const now = new Date();
 
+    this.logger.debug(`🔍 Getting asset name for: ${schedule.assetSymbol}`);
     const assetName = schedule.assetName || await this.getAssetName(schedule.assetSymbol);
 
     const order = {
@@ -320,26 +358,40 @@ export class OrderScheduleExecutorService {
     };
 
     try {
-      this.logger.debug(`📝 Writing order ${orderId} to Firestore...`);
+      this.logger.log(`📝 Writing order ${orderId} to Firestore...`);
+      this.logger.debug(`   Collection: ${this.ordersCollection}`);
+      this.logger.debug(`   Order data keys: ${Object.keys(order).join(', ')}`);
       
       await this.db.collection(this.ordersCollection).doc(orderId).set(order);
       
-      this.logger.debug(`🔍 Verifying order ${orderId} was written...`);
+      this.logger.log(`🔍 Verifying order ${orderId} was written...`);
+      
       const verifyDoc = await this.db.collection(this.ordersCollection).doc(orderId).get();
       
       if (!verifyDoc.exists) {
         this.logger.error(`❌ CRITICAL: Order ${orderId} was NOT written to Firestore!`);
-        this.logger.error(`📊 Order data: ${JSON.stringify(order, null, 2)}`);
+        this.logger.error(`📊 Attempted order data:`);
+        this.logger.error(JSON.stringify(order, null, 2));
+        
         throw new Error('Failed to write order to Firestore - verification failed');
       }
       
+      const verifiedData = verifyDoc.data();
       this.logger.log(`✅ Verified order ${orderId} exists in Firestore`);
+      this.logger.debug(`   Verified data keys: ${Object.keys(verifiedData || {}).join(', ')}`);
+      
       return orderId;
       
     } catch (error) {
-      this.logger.error(`❌ Firestore write/verification failed for order ${orderId}:`, error);
-      this.logger.error(`Error details: ${error.message}`);
-      this.logger.error(`Error stack: ${error.stack}`);
+      this.logger.error(`❌ Firestore operation failed for order ${orderId}`);
+      this.logger.error(`   Error type: ${error.constructor.name}`);
+      this.logger.error(`   Error message: ${error.message}`);
+      this.logger.error(`   Error code: ${error.code || 'N/A'}`);
+      
+      if (error.stack) {
+        this.logger.error(`   Stack trace: ${error.stack}`);
+      }
+      
       throw error;
     }
   }
@@ -374,7 +426,13 @@ export class OrderScheduleExecutorService {
       updatedAt: new Date(),
     };
 
-    await this.db.collection(this.executionsCollection).doc(executionId).set(execution);
+    try {
+      await this.db.collection(this.executionsCollection).doc(executionId).set(execution);
+      this.logger.debug(`✅ Execution ${executionId} recorded with status: ${status}`);
+    } catch (error) {
+      this.logger.error(`❌ Failed to record execution: ${error.message}`);
+      throw error;
+    }
   }
 
   private async checkOrderResultWithRetry(
@@ -475,6 +533,8 @@ export class OrderScheduleExecutorService {
 
   private async checkUserBalance(userId: string, requiredAmount: number): Promise<boolean> {
     try {
+      this.logger.debug(`🔍 Checking balance for user: ${userId}, required: ${requiredAmount}`);
+      
       const balanceSnapshot = await this.db
         .collection('balance')
         .where('user_id', '==', userId)
@@ -482,11 +542,18 @@ export class OrderScheduleExecutorService {
         .get();
 
       if (balanceSnapshot.empty) {
+        this.logger.warn(`⚠️ No balance record found for user: ${userId}`);
         return false;
       }
 
       const balance = balanceSnapshot.docs[0].data();
-      return balance.real_balance >= requiredAmount;
+      const hasEnough = balance.real_balance >= requiredAmount;
+      
+      this.logger.debug(
+        `💰 User balance: ${balance.real_balance}, required: ${requiredAmount}, sufficient: ${hasEnough}`
+      );
+      
+      return hasEnough;
     } catch (error) {
       this.logger.error(`❌ Error checking user balance: ${error.message}`);
       return false;
