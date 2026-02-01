@@ -30,7 +30,7 @@ export interface OrderSchedule {
   martingaleSetting: MartingaleSettingDto;
   
   // Stop Loss/Profit Settings
-  stopLossProfit: StopLossProfitDto;
+  stopLossProfit?: StopLossProfitDto;
   
   // Status & Tracking
   status: ScheduleStatus;

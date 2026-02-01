@@ -170,14 +170,15 @@ export class CreateOrderScheduleDto {
   @Type(() => MartingaleSettingDto)
   martingaleSetting: MartingaleSettingDto;
 
-  @ApiProperty({ 
+  @ApiPropertyOptional({ 
     type: StopLossProfitDto,
     example: { stopProfit: 1000000, stopLoss: 500000 },
-    description: 'Pengaturan stop loss dan stop profit'
+    description: 'Pengaturan stop loss dan stop profit (opsional)'
   })
+  @IsOptional()
   @ValidateNested()
   @Type(() => StopLossProfitDto)
-  stopLossProfit: StopLossProfitDto;
+  stopLossProfit?: StopLossProfitDto;
 
   @ApiPropertyOptional({ 
     example: true,

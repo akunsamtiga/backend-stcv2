@@ -53,7 +53,7 @@ export class OrderScheduleService {
         amount: createDto.amount,
         schedules: createDto.schedules,
         martingaleSetting: createDto.martingaleSetting,
-        stopLossProfit: createDto.stopLossProfit,
+        stopLossProfit: createDto.stopLossProfit || {},
         status: ScheduleStatus.PENDING,
         isActive: createDto.isActive ?? true,
         totalExecuted: 0,
@@ -354,6 +354,11 @@ export class OrderScheduleService {
 
       const schedule = scheduleDoc.data() as OrderSchedule;
       const { stopLossProfit, currentProfit } = schedule;
+
+      // ✅ Check if stopLossProfit is defined
+      if (!stopLossProfit) {
+        return false;
+      }
 
       // Check stop profit
       if (stopLossProfit.stopProfit && currentProfit >= stopLossProfit.stopProfit) {
