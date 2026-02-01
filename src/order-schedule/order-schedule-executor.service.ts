@@ -1,5 +1,3 @@
-// src/order-schedule/order-schedule-executor.service.ts
-
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { Firestore } from '@google-cloud/firestore';
@@ -16,9 +14,8 @@ export class OrderScheduleExecutorService {
   private readonly schedulesCollection = 'order_schedules';
   private readonly executionsCollection = 'schedule_executions';
   private readonly ordersCollection = 'binary_orders';
-  private readonly assetsCollection = 'assets'; // ✅ TAMBAHAN
+  private readonly assetsCollection = 'assets';
 
-  // ✅ FIX #2: Add lock mechanism untuk prevent race condition
   private isProcessingSchedules = false;
   private isCheckingResults = false;
 
@@ -31,10 +28,6 @@ export class OrderScheduleExecutorService {
     return this.firebaseService.getFirestore();
   }
 
-  /**
-   * ✅ FIX #2: Cron job dengan race condition protection
-   * Runs every minute: "* * * * *"
-   */
   @Cron(CronExpression.EVERY_MINUTE)
   async handleScheduledOrders() {
     if (this.isProcessingSchedules) {
@@ -62,11 +55,7 @@ export class OrderScheduleExecutorService {
     }
   }
 
-  /**
-   * ✅ FIX #1: NEW - Separate cron job untuk check pending order results
-   * Runs every 30 seconds untuk reliability
-   */
-  @Cron('*/30 * * * * *') // Every 30 seconds
+  @Cron('*/30 * * * * *')
   async checkPendingOrderResults() {
     if (this.isCheckingResults) {
       this.logger.debug('⏭️ Skipping result check - previous check still running');
@@ -94,12 +83,10 @@ export class OrderScheduleExecutorService {
       for (const doc of snapshot.docs) {
         const execution = doc.data() as ScheduleExecution;
         
-        // Skip jika sudah ada result
         if (execution.result) {
           continue;
         }
         
-        // Check jika sudah lewat duration + buffer (10 detik)
         const executedTime = execution.executedAt instanceof Date 
           ? execution.executedAt 
           : new Date(execution.executedAt);
@@ -129,9 +116,6 @@ export class OrderScheduleExecutorService {
     }
   }
 
-  /**
-   * Dapatkan semua schedule yang aktif
-   */
   private async getActiveSchedules(): Promise<OrderSchedule[]> {
     try {
       const snapshot = await this.db
@@ -147,21 +131,16 @@ export class OrderScheduleExecutorService {
     }
   }
 
-  /**
-   * Process schedule dan execute order jika waktunya sudah tiba
-   */
   private async processSchedule(schedule: OrderSchedule, currentTime: string) {
     try {
       this.logger.log(`🔄 Processing schedule ${schedule.id} for user ${schedule.userEmail}`);
 
-      // Check apakah sudah mencapai stop loss/profit
       const shouldStop = await this.orderScheduleService.checkStopLossProfit(schedule.id);
       if (shouldStop) {
         this.logger.log(`🛑 Schedule ${schedule.id} stopped due to stop loss/profit limit`);
         return;
       }
 
-      // Check apakah ada jadwal yang harus dieksekusi sekarang
       const scheduledOrders = schedule.schedules.filter(s => s.time === currentTime);
 
       if (scheduledOrders.length === 0) {
@@ -170,9 +149,7 @@ export class OrderScheduleExecutorService {
 
       this.logger.log(`📋 Found ${scheduledOrders.length} orders to execute for schedule ${schedule.id}`);
 
-      // Execute setiap order yang dijadwalkan
       for (const scheduledOrder of scheduledOrders) {
-        // ✅ FIX #4: Check if already executed today
         const alreadyExecuted = await this.checkAlreadyExecutedToday(
           schedule.id,
           scheduledOrder.time
@@ -195,15 +172,6 @@ export class OrderScheduleExecutorService {
     }
   }
 
-  /**
-   * ✅ FIX #4: Check apakah waktu tertentu sudah di-execute hari ini
-   */
-  /**
-   * ✅ FIX: Hapus inequality filter dari query Firestore.
-   * Kombinasi 2 equality + 1 inequality pada field berbeda membutuhkan
-   * composite index. Karena docs per scheduleId + scheduledTime sangat
-   * kecil (max 1 per hari), filter executedAt di application code.
-   */
   private async checkAlreadyExecutedToday(
     scheduleId: string,
     time: string
@@ -218,12 +186,9 @@ export class OrderScheduleExecutorService {
         .where('scheduledTime', '==', time)
         .get();
 
-      // Filter hari ini di application code
       return snapshot.docs.some((doc) => {
         const data = doc.data();
-        // Handle Firestore Timestamp (.toDate()) dan plain Date/string
-        const executedAt =
-          data.executedAt?.toDate?.() ?? new Date(data.executedAt);
+        const executedAt = data.executedAt?.toDate?.() ?? new Date(data.executedAt);
         return executedAt >= today;
       });
     } catch (error) {
@@ -232,9 +197,6 @@ export class OrderScheduleExecutorService {
     }
   }
 
-  /**
-   * Execute order dan catat execution
-   */
   private async executeOrder(
     schedule: OrderSchedule,
     trend: TrendType,
@@ -247,7 +209,6 @@ export class OrderScheduleExecutorService {
         `🚀 Executing order for schedule ${schedule.id}: ${trend} at ${scheduledTime}`
       );
 
-      // Calculate amount dengan martingale
       const amount = this.orderScheduleService.calculateMartingaleAmount(
         schedule.amount,
         schedule.currentMartingaleStep,
@@ -258,7 +219,6 @@ export class OrderScheduleExecutorService {
         `💰 Amount: ${amount} (base: ${schedule.amount}, step: ${schedule.currentMartingaleStep}, multiplier: ${schedule.martingaleSetting.multiplier})`
       );
 
-      // Validasi balance jika real account
       if (schedule.accountType === 'real') {
         const hasBalance = await this.checkUserBalance(schedule.userId, amount);
         if (!hasBalance) {
@@ -276,10 +236,8 @@ export class OrderScheduleExecutorService {
         }
       }
 
-      // Create binary order
-      const orderId = await this.createBinaryOrder(schedule, trend, amount);
+      const orderId = await this.createBinaryOrderWithVerification(schedule, trend, amount);
 
-      // Record execution
       await this.recordExecution(
         executionId,
         schedule,
@@ -292,9 +250,6 @@ export class OrderScheduleExecutorService {
       );
 
       this.logger.log(`✅ Order executed successfully: ${orderId}`);
-
-      // ✅ FIX #1: HAPUS setTimeout, gunakan cron job checkPendingOrderResults sebagai gantinya
-      // setTimeout akan hilang jika server restart!
       
     } catch (error) {
       this.logger.error(
@@ -314,9 +269,6 @@ export class OrderScheduleExecutorService {
     }
   }
 
-  /**
-   * ✅ FIX #3: Get asset name from database atau gunakan symbol
-   */
   private async getAssetName(assetSymbol: string): Promise<string> {
     try {
       const assetDoc = await this.db
@@ -336,10 +288,7 @@ export class OrderScheduleExecutorService {
     return assetSymbol;
   }
 
-  /**
-   * Buat binary order
-   */
-  private async createBinaryOrder(
+  private async createBinaryOrderWithVerification(
     schedule: OrderSchedule,
     trend: TrendType,
     amount: number
@@ -347,7 +296,6 @@ export class OrderScheduleExecutorService {
     const orderId = uuidv4();
     const now = new Date();
 
-    // ✅ FIX #3: Get asset name properly
     const assetName = schedule.assetName || await this.getAssetName(schedule.assetSymbol);
 
     const order = {
@@ -371,14 +319,31 @@ export class OrderScheduleExecutorService {
       expires_at: new Date(now.getTime() + schedule.duration * 1000),
     };
 
-    await this.db.collection(this.ordersCollection).doc(orderId).set(order);
-
-    return orderId;
+    try {
+      this.logger.debug(`📝 Writing order ${orderId} to Firestore...`);
+      
+      await this.db.collection(this.ordersCollection).doc(orderId).set(order);
+      
+      this.logger.debug(`🔍 Verifying order ${orderId} was written...`);
+      const verifyDoc = await this.db.collection(this.ordersCollection).doc(orderId).get();
+      
+      if (!verifyDoc.exists) {
+        this.logger.error(`❌ CRITICAL: Order ${orderId} was NOT written to Firestore!`);
+        this.logger.error(`📊 Order data: ${JSON.stringify(order, null, 2)}`);
+        throw new Error('Failed to write order to Firestore - verification failed');
+      }
+      
+      this.logger.log(`✅ Verified order ${orderId} exists in Firestore`);
+      return orderId;
+      
+    } catch (error) {
+      this.logger.error(`❌ Firestore write/verification failed for order ${orderId}:`, error);
+      this.logger.error(`Error details: ${error.message}`);
+      this.logger.error(`Error stack: ${error.stack}`);
+      throw error;
+    }
   }
 
-  /**
-   * Record execution ke database
-   */
   private async recordExecution(
     executionId: string,
     schedule: OrderSchedule,
@@ -412,9 +377,6 @@ export class OrderScheduleExecutorService {
     await this.db.collection(this.executionsCollection).doc(executionId).set(execution);
   }
 
-  /**
-   * ✅ FIX #5: Check hasil order dengan retry mechanism
-   */
   private async checkOrderResultWithRetry(
     scheduleId: string,
     orderId: string,
@@ -444,7 +406,6 @@ export class OrderScheduleExecutorService {
           
           this.logger.error(`❌ Order ${orderId} not found after ${maxRetries} attempts`);
           
-          // Mark execution as failed
           await this.db.collection(this.executionsCollection).doc(executionId).update({
             status: 'failed',
             errorMessage: 'Order not found',
@@ -468,15 +429,13 @@ export class OrderScheduleExecutorService {
           return;
         }
 
-        // Update execution dengan hasil
         await this.db.collection(this.executionsCollection).doc(executionId).update({
           result: order.result,
           profit: order.profit || 0,
-          status: 'executed', // Ensure status is updated
+          status: 'executed',
           updatedAt: new Date(),
         });
 
-        // Update schedule tracking
         await this.orderScheduleService.updateAfterExecution(
           scheduleId,
           order.result,
@@ -498,7 +457,6 @@ export class OrderScheduleExecutorService {
           await new Promise(resolve => setTimeout(resolve, 2000));
           attempt++;
         } else {
-          // Mark as failed after all retries
           try {
             await this.db.collection(this.executionsCollection).doc(executionId).update({
               status: 'failed',
@@ -515,9 +473,6 @@ export class OrderScheduleExecutorService {
     }
   }
 
-  /**
-   * Check user balance
-   */
   private async checkUserBalance(userId: string, requiredAmount: number): Promise<boolean> {
     try {
       const balanceSnapshot = await this.db
@@ -538,9 +493,6 @@ export class OrderScheduleExecutorService {
     }
   }
 
-  /**
-   * Get current time in HH:mm format
-   */
   private getCurrentTime(): string {
     const now = new Date();
     const hours = now.getHours().toString().padStart(2, '0');
@@ -548,9 +500,6 @@ export class OrderScheduleExecutorService {
     return `${hours}:${minutes}`;
   }
 
-  /**
-   * Manual trigger untuk testing (optional)
-   */
   async manualTrigger(scheduleId: string, time: string) {
     this.logger.log(`🔧 Manual trigger for schedule ${scheduleId} at ${time}`);
 
@@ -571,9 +520,6 @@ export class OrderScheduleExecutorService {
     }
   }
 
-  /**
-   * ✅ NEW: Manual trigger untuk check specific order result
-   */
   async manualCheckOrderResult(orderId: string, executionId: string) {
     this.logger.log(`🔧 Manual check for order ${orderId}`);
 

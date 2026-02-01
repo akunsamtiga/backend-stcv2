@@ -1,5 +1,3 @@
-// src/order-schedule/order-schedule.service.ts
-
 import { Injectable, BadRequestException, NotFoundException, ForbiddenException, Logger } from '@nestjs/common';
 import { Firestore } from '@google-cloud/firestore';
 import { v4 as uuidv4 } from 'uuid';
@@ -26,22 +24,14 @@ export class OrderScheduleService {
     return this.firebaseService.getFirestore();
   }
 
-  /**
-   * ✅ Convert DTO to plain object (remove class prototypes)
-   */
   private toPlainObject<T>(obj: T): T {
     return JSON.parse(JSON.stringify(obj));
   }
 
-  /**
-   * Membuat schedule order baru
-   */
   async create(userId: string, userEmail: string, createDto: CreateOrderScheduleDto): Promise<OrderSchedule> {
     try {
-      // Validasi waktu schedule
       this.validateScheduleTimes(createDto.schedules);
       
-      // Validasi balance jika real account
       if (createDto.accountType === 'real') {
         await this.validateUserBalance(userId, createDto.amount);
       }
@@ -49,7 +39,6 @@ export class OrderScheduleService {
       const scheduleId = uuidv4();
       const now = new Date();
 
-      // ✅ Convert DTO to plain object before saving to Firestore
       const plainDto = this.toPlainObject(createDto);
 
       const newSchedule: OrderSchedule = {
@@ -61,9 +50,9 @@ export class OrderScheduleService {
         accountType: plainDto.accountType,
         duration: plainDto.duration,
         amount: plainDto.amount,
-        schedules: plainDto.schedules, // ✅ Now plain objects
-        martingaleSetting: plainDto.martingaleSetting, // ✅ Now plain object
-        stopLossProfit: plainDto.stopLossProfit || {}, // ✅ Now plain object
+        schedules: plainDto.schedules,
+        martingaleSetting: plainDto.martingaleSetting,
+        stopLossProfit: plainDto.stopLossProfit || {},
         status: ScheduleStatus.PENDING,
         isActive: plainDto.isActive ?? true,
         totalExecuted: 0,
@@ -90,9 +79,6 @@ export class OrderScheduleService {
     }
   }
 
-  /**
-   * Mendapatkan semua schedule milik user
-   */
   async findAll(userId: string, query?: QueryOrderScheduleDto): Promise<OrderSchedule[]> {
     try {
       let firestoreQuery = this.db
@@ -128,9 +114,6 @@ export class OrderScheduleService {
     }
   }
 
-  /**
-   * Mendapatkan detail schedule by ID
-   */
   async findOne(userId: string, scheduleId: string): Promise<OrderSchedule> {
     try {
       const doc = await this.db.collection(this.schedulesCollection).doc(scheduleId).get();
@@ -154,9 +137,6 @@ export class OrderScheduleService {
     }
   }
 
-  /**
-   * Update schedule
-   */
   async update(
     userId: string, 
     scheduleId: string, 
@@ -173,7 +153,6 @@ export class OrderScheduleService {
         this.validateScheduleTimes(updateDto.schedules);
       }
 
-      // ✅ Convert DTO to plain object
       const plainDto = this.toPlainObject(updateDto);
 
       const updatedData: Record<string, any> = {
@@ -206,9 +185,6 @@ export class OrderScheduleService {
     }
   }
 
-  /**
-   * Delete/Cancel schedule
-   */
   async remove(userId: string, scheduleId: string): Promise<{ message: string }> {
     try {
       const schedule = await this.findOne(userId, scheduleId);
@@ -231,9 +207,6 @@ export class OrderScheduleService {
     }
   }
 
-  /**
-   * Activate/Start schedule
-   */
   async activateSchedule(userId: string, scheduleId: string): Promise<OrderSchedule> {
     return this.update(userId, scheduleId, { 
       status: ScheduleStatus.ACTIVE,
@@ -241,9 +214,6 @@ export class OrderScheduleService {
     });
   }
 
-  /**
-   * Pause schedule
-   */
   async pauseSchedule(userId: string, scheduleId: string): Promise<OrderSchedule> {
     return this.update(userId, scheduleId, { 
       status: ScheduleStatus.PAUSED,
@@ -251,9 +221,6 @@ export class OrderScheduleService {
     });
   }
 
-  /**
-   * Get execution history
-   */
   async getExecutionHistory(
     userId: string, 
     scheduleId: string,
@@ -277,9 +244,6 @@ export class OrderScheduleService {
     }
   }
 
-  /**
-   * Get statistics
-   */
   async getStatistics(userId: string, scheduleId: string): Promise<ScheduleStatistics[]> {
     try {
       await this.findOne(userId, scheduleId);
@@ -299,13 +263,6 @@ export class OrderScheduleService {
     }
   }
 
-  // ===================================
-  // PRIVATE HELPER METHODS
-  // ===================================
-
-  /**
-   * Validasi format waktu schedule
-   */
   private validateScheduleTimes(schedules: any[]): void {
     const timeRegex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;
     
@@ -324,9 +281,6 @@ export class OrderScheduleService {
     }
   }
 
-  /**
-   * Validasi balance user untuk real account
-   */
   private async validateUserBalance(userId: string, requiredAmount: number): Promise<void> {
     try {
       const balanceDoc = await this.db
@@ -354,9 +308,6 @@ export class OrderScheduleService {
     }
   }
 
-  /**
-   * Check apakah sudah mencapai stop loss atau stop profit
-   */
   async checkStopLossProfit(scheduleId: string): Promise<boolean> {
     try {
       const scheduleDoc = await this.db.collection(this.schedulesCollection).doc(scheduleId).get();
@@ -368,12 +319,10 @@ export class OrderScheduleService {
       const schedule = scheduleDoc.data() as OrderSchedule;
       const { stopLossProfit, currentProfit } = schedule;
 
-      // ✅ Check if stopLossProfit is defined
       if (!stopLossProfit) {
         return false;
       }
 
-      // Check stop profit
       if (stopLossProfit.stopProfit && currentProfit >= stopLossProfit.stopProfit) {
         this.logger.log(`🎯 Stop profit reached for schedule ${scheduleId}: ${currentProfit}`);
         
@@ -387,7 +336,6 @@ export class OrderScheduleService {
         return true;
       }
 
-      // Check stop loss
       if (stopLossProfit.stopLoss && Math.abs(currentProfit) >= stopLossProfit.stopLoss) {
         this.logger.log(`🛑 Stop loss reached for schedule ${scheduleId}: ${currentProfit}`);
         
@@ -408,9 +356,6 @@ export class OrderScheduleService {
     }
   }
 
-  /**
-   * Calculate next martingale amount
-   */
   calculateMartingaleAmount(
     baseAmount: number, 
     currentStep: number, 
@@ -422,16 +367,12 @@ export class OrderScheduleService {
     return baseAmount * Math.pow(multiplier, currentStep);
   }
 
-  /**
-   * ✅ Update schedule setelah execution dengan TRANSACTION
-   */
   async updateAfterExecution(
     scheduleId: string,
     executionResult: 'win' | 'loss' | 'draw',
     profit: number
   ): Promise<void> {
     try {
-      // ✅ Gunakan transaction untuk data consistency
       await this.firebaseService.runTransaction(async (transaction) => {
         const scheduleRef = this.db.collection(this.schedulesCollection).doc(scheduleId);
         const scheduleDoc = await transaction.get(scheduleRef);
@@ -476,7 +417,6 @@ export class OrderScheduleService {
         transaction.update(scheduleRef, updates);
       });
 
-      // Check stop loss/profit setelah update
       await this.checkStopLossProfit(scheduleId);
       
     } catch (error) {
