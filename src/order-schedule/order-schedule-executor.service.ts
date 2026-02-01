@@ -198,6 +198,12 @@ export class OrderScheduleExecutorService {
   /**
    * ✅ FIX #4: Check apakah waktu tertentu sudah di-execute hari ini
    */
+  /**
+   * ✅ FIX: Hapus inequality filter dari query Firestore.
+   * Kombinasi 2 equality + 1 inequality pada field berbeda membutuhkan
+   * composite index. Karena docs per scheduleId + scheduledTime sangat
+   * kecil (max 1 per hari), filter executedAt di application code.
+   */
   private async checkAlreadyExecutedToday(
     scheduleId: string,
     time: string
@@ -205,16 +211,21 @@ export class OrderScheduleExecutorService {
     try {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
-      
+
       const snapshot = await this.db
         .collection(this.executionsCollection)
         .where('scheduleId', '==', scheduleId)
         .where('scheduledTime', '==', time)
-        .where('executedAt', '>=', today)
-        .limit(1)
         .get();
-      
-      return !snapshot.empty;
+
+      // Filter hari ini di application code
+      return snapshot.docs.some((doc) => {
+        const data = doc.data();
+        // Handle Firestore Timestamp (.toDate()) dan plain Date/string
+        const executedAt =
+          data.executedAt?.toDate?.() ?? new Date(data.executedAt);
+        return executedAt >= today;
+      });
     } catch (error) {
       this.logger.error(`Error checking execution history: ${error.message}`);
       return false;
