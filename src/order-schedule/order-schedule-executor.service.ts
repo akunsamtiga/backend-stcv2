@@ -4,6 +4,8 @@ import { Firestore } from '@google-cloud/firestore';
 import { v4 as uuidv4 } from 'uuid';
 import { FirebaseService } from '../firebase/firebase.service';
 import { OrderScheduleService } from './order-schedule.service';
+import { PriceFetcherService } from '../assets/services/price-fetcher.service';
+import { AssetsService } from '../assets/assets.service';
 import { ScheduleStatus, TrendType } from './dto/create-order-schedule.dto';
 import { OrderSchedule, ScheduleExecution } from './entities/order-schedule.entity';
 
@@ -22,6 +24,8 @@ export class OrderScheduleExecutorService {
   constructor(
     private firebaseService: FirebaseService,
     private orderScheduleService: OrderScheduleService,
+    private priceFetcherService: PriceFetcherService,
+    private assetsService: AssetsService,
   ) {
     this.logger.log('✅ OrderScheduleExecutorService initialized');
   }
@@ -325,6 +329,7 @@ export class OrderScheduleExecutorService {
     return assetSymbol;
   }
 
+  // ✅✅✅ METHOD YANG SUDAH DIPERBAIKI ✅✅✅
   private async createBinaryOrderWithVerification(
     schedule: OrderSchedule,
     trend: TrendType,
@@ -336,25 +341,97 @@ export class OrderScheduleExecutorService {
     this.logger.debug(`🔍 Getting asset name for: ${schedule.assetSymbol}`);
     const assetName = schedule.assetName || await this.getAssetName(schedule.assetSymbol);
 
+    // ✅ DEKLARASI VARIABEL DI SINI (DILUAR TRY BLOCK)
+    let entryPrice = 0;
+    let assetId: string | null = null;
+    let assetData: any = null;
+
+    try {
+      // Coba dapatkan asset by symbol
+      const assetSnapshot = await this.db
+        .collection(this.assetsCollection)
+        .where('symbol', '==', schedule.assetSymbol)
+        .limit(1)
+        .get();
+      
+      if (!assetSnapshot.empty) {
+        assetData = assetSnapshot.docs[0].data();
+        assetId = assetSnapshot.docs[0].id; // ✅ SET ASSET ID DI SINI
+        
+        try {
+          const priceData = await this.priceFetcherService.getCurrentPriceRealtime(assetData, true);
+          if (priceData && priceData.price) {
+            entryPrice = priceData.price;
+            this.logger.log(`💰 Entry price fetched: ${entryPrice} for ${schedule.assetSymbol}`);
+          }
+        } catch (priceError) {
+          this.logger.warn(`⚠️ Could not fetch realtime price: ${priceError.message}`);
+          // Fallback ke initial price dari asset settings
+          entryPrice = assetData.simulatorSettings?.initialPrice || assetData.initialPrice || 0;
+        }
+      } else {
+        this.logger.warn(`⚠️ Asset ${schedule.assetSymbol} not found in database`);
+      }
+    } catch (error) {
+      this.logger.warn(`⚠️ Could not fetch asset info: ${error.message}`);
+    }
+
+    // ✅ KONVERSI DURATION DARI DETIK KE MENIT (BinaryOrdersService pakai menit)
+    // 60 detik = 1 menit, 1 detik = 0.0167 menit
+    const durationInMinutes = schedule.duration / 60;
+
+    // ✅ KONVERSI TREND KE DIRECTION (buy -> CALL, sell -> PUT)
+    const direction = trend === 'buy' ? 'CALL' : 'PUT';
+
+    // ✅ HITUNG EXPIRY TIME
+    const expiryTime = new Date(now.getTime() + schedule.duration * 1000);
+
+    // ✅ STRUKTUR ORDER YANG SESUAI DENGAN BinaryOrdersService
     const order = {
       id: orderId,
       user_id: schedule.userId,
+      asset_id: assetId, // ✅ Gunakan variabel yang sudah dideklarasikan di atas
       asset_symbol: schedule.assetSymbol,
       asset_name: assetName,
-      account_type: schedule.accountType,
+      
+      // ✅ FIX: Format field names sesuai BinaryOrdersService
+      accountType: schedule.accountType, // camelCase, bukan account_type
+      direction: direction, // CALL/PUT, bukan buy/sell
       amount: amount,
-      trend: trend,
-      duration: schedule.duration,
-      status: 'pending',
-      entry_price: 0,
-      exit_price: 0,
-      profit: 0,
+      duration: durationInMinutes, // dalam menit, bukan detik
+      
+      // ✅ FIX: Entry price dari harga realtime
+      entry_price: entryPrice || 0,
+      entry_time: now.toISOString(), // ISO string
+      
+      exit_price: null,
+      exit_time: expiryTime.toISOString(), // ISO string
+      
+      // ✅ FIX: Status harus ACTIVE (uppercase)
+      status: 'ACTIVE',
+      
+      profit: null,
       result: null,
+      
+      // Metadata untuk tracking
       is_scheduled: true,
       schedule_id: schedule.id,
-      created_at: now,
-      updated_at: now,
-      expires_at: new Date(now.getTime() + schedule.duration * 1000),
+      createdAt: now.toISOString(), // camelCase
+      updatedAt: now.toISOString(), // camelCase
+      
+      // Field tambahan untuk profit calculation
+      profitRate: assetData?.profitRate || 85,
+      baseProfitRate: assetData?.profitRate || 85,
+      statusBonus: 0,
+      userStatus: 'standard',
+      
+      // Metadata tambahan
+      metadata: {
+        isScheduled: true,
+        scheduledAt: now.toISOString(),
+        martingaleStep: schedule.currentMartingaleStep,
+        originalTrend: trend, // Simpan trend asli (buy/sell)
+      }
     };
 
     try {
