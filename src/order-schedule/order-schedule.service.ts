@@ -27,6 +27,13 @@ export class OrderScheduleService {
   }
 
   /**
+   * ✅ Convert DTO to plain object (remove class prototypes)
+   */
+  private toPlainObject<T>(obj: T): T {
+    return JSON.parse(JSON.stringify(obj));
+  }
+
+  /**
    * Membuat schedule order baru
    */
   async create(userId: string, userEmail: string, createDto: CreateOrderScheduleDto): Promise<OrderSchedule> {
@@ -42,20 +49,23 @@ export class OrderScheduleService {
       const scheduleId = uuidv4();
       const now = new Date();
 
+      // ✅ Convert DTO to plain object before saving to Firestore
+      const plainDto = this.toPlainObject(createDto);
+
       const newSchedule: OrderSchedule = {
         id: scheduleId,
         userId,
         userEmail,
-        assetSymbol: createDto.assetSymbol,
-        assetName: createDto.assetName, // ✅ FIX #3: Include assetName from DTO
-        accountType: createDto.accountType,
-        duration: createDto.duration,
-        amount: createDto.amount,
-        schedules: createDto.schedules,
-        martingaleSetting: createDto.martingaleSetting,
-        stopLossProfit: createDto.stopLossProfit || {},
+        assetSymbol: plainDto.assetSymbol,
+        assetName: plainDto.assetName,
+        accountType: plainDto.accountType,
+        duration: plainDto.duration,
+        amount: plainDto.amount,
+        schedules: plainDto.schedules, // ✅ Now plain objects
+        martingaleSetting: plainDto.martingaleSetting, // ✅ Now plain object
+        stopLossProfit: plainDto.stopLossProfit || {}, // ✅ Now plain object
         status: ScheduleStatus.PENDING,
-        isActive: createDto.isActive ?? true,
+        isActive: plainDto.isActive ?? true,
         totalExecuted: 0,
         totalSuccess: 0,
         totalFailed: 0,
@@ -64,7 +74,7 @@ export class OrderScheduleService {
         totalLoss: 0,
         currentMartingaleStep: 0,
         consecutiveLosses: 0,
-        notes: createDto.notes,
+        notes: plainDto.notes,
         createdAt: now,
         updatedAt: now,
       };
@@ -163,8 +173,11 @@ export class OrderScheduleService {
         this.validateScheduleTimes(updateDto.schedules);
       }
 
+      // ✅ Convert DTO to plain object
+      const plainDto = this.toPlainObject(updateDto);
+
       const updatedData: Record<string, any> = {
-        ...updateDto,
+        ...plainDto,
         updatedAt: new Date(),
       };
 
@@ -410,7 +423,7 @@ export class OrderScheduleService {
   }
 
   /**
-   * ✅ FIX #6: Update schedule setelah execution dengan TRANSACTION
+   * ✅ Update schedule setelah execution dengan TRANSACTION
    */
   async updateAfterExecution(
     scheduleId: string,
@@ -457,7 +470,7 @@ export class OrderScheduleService {
             `❌ LOSS - Schedule ${scheduleId}: ${profit} (Consecutive: ${updates.consecutiveLosses}, Step: ${updates.currentMartingaleStep})`
           );
         } else {
-          this.logger.log(`➖ DRAW - Schedule ${scheduleId}`);
+          this.logger.log(`- DRAW - Schedule ${scheduleId}`);
         }
 
         transaction.update(scheduleRef, updates);
