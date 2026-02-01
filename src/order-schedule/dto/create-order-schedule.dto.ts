@@ -64,14 +64,18 @@ export class MartingaleSettingDto {
   @Max(10)
   maxStep: number;
 
+  // ✅ FIX: Ubah @Min(1.1) → @Min(1)
+  // Ketika maxStep = 0 (martingale dinonaktifkan), multiplier tidak digunakan sama sekali,
+  // sehingga nilai 1 adalah valid. Frontend sekarang mengirim 1.1 sebagai default,
+  // tetapi perubahan ini menjadi safety net agar tidak ada edge case yang lolos.
   @ApiProperty({ 
     example: 2,
-    description: 'Multiplier untuk setiap step martingale',
-    minimum: 1.1,
+    description: 'Multiplier untuk setiap step martingale (1 = tidak ada martingale)',
+    minimum: 1,
     maximum: 5
   })
   @IsNumber()
-  @Min(1.1)
+  @Min(1)   // ← dulu: @Min(1.1) — menolak payload saat martingale dinonaktifkan
   @Max(5)
   multiplier: number;
 }
@@ -109,7 +113,6 @@ export class CreateOrderScheduleDto {
   @IsNotEmpty()
   assetSymbol: string;
 
-  // ✅ FIX #3: Tambahkan assetName field (optional)
   @ApiPropertyOptional({ 
     example: 'Euro vs US Dollar',
     description: 'Nama lengkap aset (opsional, akan di-fetch dari database jika tidak disediakan)'
