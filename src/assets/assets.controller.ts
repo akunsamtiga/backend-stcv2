@@ -28,6 +28,7 @@ import { USER_ROLES, ASSET_TYPE_INFO } from '../common/constants';
 import { AssetsService } from './assets.service';
 import { CreateAssetDto } from './dto/create-asset.dto';
 import { UpdateAssetDto } from './dto/update-asset.dto';
+import { UploadIconDto } from './dto/upload-icon.dto';
 import { CryptoPriceSchedulerService } from './services/crypto-price-scheduler.service';
 import { SimulatorPriceRelayService } from './services/simulator-price-relay.service';
 
@@ -138,10 +139,6 @@ export class AssetsController {
     return this.assetsService.bulkCreateAssets(assets, adminId);
   }
 
-  // ==========================================
-  // ENDPOINT REINITIALIZE CANDLES DIHAPUS
-  // ==========================================
-
   @Get('types')
   @ApiOperation({ 
     summary: 'Get available asset types',
@@ -163,10 +160,11 @@ export class AssetsController {
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
   @ApiOperation({ 
     summary: 'Update asset (Admin only)',
-    description: 'Update any asset property including type, simulator and trading settings'
+    description: 'Update any asset property including type, simulator and trading settings. For icon updates, use the dedicated /assets/:id/icon endpoint for better handling of large base64 images.'
   })
   @ApiParam({ name: 'id', description: 'Asset ID' })
   @ApiResponse({ status: 200, description: 'Asset updated successfully' })
+  @ApiResponse({ status: 400, description: 'Validation error - check icon size/format' })
   updateAsset(
     @Param('id') assetId: string,
     @Body() updateAssetDto: UpdateAssetDto,
@@ -315,20 +313,38 @@ export class AssetsController {
     return this.assetsService.getAssetById(assetId);
   }
 
+  // ✅ UPDATED: Icon upload endpoint with dedicated DTO
   @Post(':id/icon')
   @UseGuards(RolesGuard)
-  @Roles(USER_ROLES.SUPER_ADMIN)
+  @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
   @ApiOperation({ 
-    summary: 'Upload asset icon (Super Admin only)',
-    description: 'Upload or update icon/logo for asset'
+    summary: 'Upload/Update asset icon (Admin only)',
+    description: 'Upload or update icon/logo for asset. Accepts base64 image (max 5MB) or URL. Supported formats: png, jpg, jpeg, gif, webp, svg'
   })
   @ApiParam({ name: 'id', description: 'Asset ID' })
-  @ApiResponse({ status: 200, description: 'Icon uploaded successfully' })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Icon uploaded successfully',
+    schema: {
+      example: {
+        success: true,
+        message: 'Icon updated successfully',
+        asset: {
+          id: 'asset_123',
+          icon: 'data:image/png;base64,...'
+        }
+      }
+    }
+  })
+  @ApiResponse({ 
+    status: 400, 
+    description: 'Invalid icon format or size exceeds 5MB'
+  })
   async uploadIcon(
     @Param('id') assetId: string,
-    @Body() body: { iconUrl: string },
+    @Body() uploadIconDto: UploadIconDto,
   ) {
-    return this.assetsService.updateAssetIcon(assetId, body.iconUrl);
+    return this.assetsService.updateAssetIcon(assetId, uploadIconDto.icon);
   }
 
   @Get(':id/price')
