@@ -10,7 +10,6 @@ import {
   Min,
   Max,
   MaxLength,
-  Matches,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
@@ -147,19 +146,14 @@ export class CreateAssetDto {
   @IsString()
   symbol: string;
 
+  // ✅ FIXED: Removed strict regex validation, increased MaxLength
   @ApiPropertyOptional({ 
     example: 'https://example.com/icons/eur-usd.png OR data:image/png;base64,iVBORw0KGgo...',
-    description: 'Asset icon - URL or base64 image (max 5MB when encoded)'
+    description: 'Asset icon - URL or base64 image (max 10MB when encoded). Accepts: png, jpg, jpeg, gif, webp, svg'
   })
   @IsOptional()
   @IsString()
-  @MaxLength(7000000) // ~5MB base64 (base64 is ~1.33x larger than binary)
-  @Matches(
-    /^(https?:\/\/.+|data:image\/(png|jpg|jpeg|gif|webp|svg\+xml);base64,[A-Za-z0-9+/]+=*)$/,
-    {
-      message: 'Icon must be a valid URL or base64 image data (png, jpg, jpeg, gif, webp, svg)',
-    }
-  )
+  @MaxLength(10000000) // ✅ Increased to 10MB
   icon?: string;
 
   @ApiProperty({ 
