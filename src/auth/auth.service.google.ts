@@ -5,7 +5,6 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as admin from 'firebase-admin';
 import * as bcrypt from 'bcrypt';
-import * as crypto from 'crypto';
 import { FirebaseService } from '../firebase/firebase.service';
 import { GoogleLoginDto } from './dto/google-login.dto';
 import { COLLECTIONS, BALANCE_TYPES, BALANCE_ACCOUNT_TYPE, USER_ROLES, USER_STATUS, AFFILIATE_STATUS } from '../common/constants';
@@ -21,27 +20,17 @@ export class GoogleAuthService {
     private configService: ConfigService,
   ) {}
 
-  /**
-   * ✅ FIXED: Generate secure password untuk Google users
-   */
   private async generateGoogleUserPassword(uid: string, email: string): Promise<string> {
-    // Generate deterministic but secure password dari UID + secret
     const secret = this.configService.get('jwt.secret');
     const rawPassword = `google_${uid}_${email}_${secret}`;
-    
-    // Hash dengan bcrypt (akan di-hash lagi saat save)
     return rawPassword;
   }
 
-  /**
-   * ✅ GOOGLE SIGN-IN - Main Method (FIXED)
-   */
   async googleSignIn(googleLoginDto: GoogleLoginDto) {
     const startTime = Date.now();
-    
+
     try {
-      // 1. Verify Firebase ID Token
-      this.logger.log('🔐 Verifying Google ID token...');
+      this.logger.log('Verifying Google ID token...');
       const decodedToken = await this.verifyGoogleIdToken(googleLoginDto.idToken);
 
       if (!decodedToken.email) {
@@ -57,11 +46,10 @@ export class GoogleAuthService {
       const displayName = googleLoginDto.displayName || decodedToken.name || '';
       const photoURL = googleLoginDto.photoURL || decodedToken.picture || '';
 
-      this.logger.log(`✅ Google token verified: ${email}`);
+      this.logger.log(`Google token verified: ${email}`);
 
       const db = this.firebaseService.getFirestore();
 
-      // 2. Check if user exists
       const userSnapshot = await db.collection(COLLECTIONS.USERS)
         .where('email', '==', email)
         .limit(1)
@@ -71,20 +59,18 @@ export class GoogleAuthService {
       let isNewUser = false;
 
       if (userSnapshot.empty) {
-        // 3. CREATE NEW USER (First time Google Sign-In)
-        this.logger.log(`🆕 Creating new user from Google: ${email}`);
+        this.logger.log(`Creating new user from Google: ${email}`);
         user = await this.createGoogleUser(
-          email, 
-          uid, 
-          displayName, 
-          photoURL, 
+          email,
+          uid,
+          displayName,
+          photoURL,
           googleLoginDto.referralCode
         );
         isNewUser = true;
 
       } else {
-        // 4. LOGIN EXISTING USER
-        this.logger.log(`👤 Existing user logging in: ${email}`);
+        this.logger.log(`Existing user logging in: ${email}`);
         const userDoc = userSnapshot.docs[0];
         user = userDoc.data() as User;
 
@@ -92,10 +78,9 @@ export class GoogleAuthService {
           throw new UnauthorizedException('Account is deactivated');
         }
 
-        // ✅ FIXED: Update login stats + refresh password jika empty
         const loginCount = (user.loginCount || 0) + 1;
         const lastLoginAt = new Date().toISOString();
-        
+
         const updateData: any = {
           lastLoginAt,
           loginCount,
@@ -103,13 +88,12 @@ export class GoogleAuthService {
           'profile.avatar.uploadedAt': photoURL ? new Date().toISOString() : user.profile?.avatar?.uploadedAt,
         };
 
-        // ✅ CRITICAL FIX: Regenerate password jika kosong atau invalid
         if (!user.password || user.password === '' || user.password.length < 10) {
           const newPassword = await this.generateGoogleUserPassword(uid, email);
           const hashedPassword = await bcrypt.hash(newPassword, 10);
           updateData.password = hashedPassword;
-          
-          this.logger.warn(`⚠️ Fixed missing password for Google user: ${email}`);
+
+          this.logger.warn(`Fixed missing password for Google user: ${email}`);
         }
 
         await db.collection(COLLECTIONS.USERS).doc(user.id).update(updateData);
@@ -118,13 +102,12 @@ export class GoogleAuthService {
         user.lastLoginAt = lastLoginAt;
       }
 
-      // 5. Generate JWT Token
       const token = this.generateToken(user.id, user.email, user.role);
 
       const duration = Date.now() - startTime;
-      
+
       this.logger.log(
-        `✅ Google Sign-In completed in ${duration}ms: ${email} (${user.role}, ${user.status?.toUpperCase() || 'STANDARD'}${isNewUser ? ', NEW USER' : ''})`
+        `Google Sign-In completed in ${duration}ms: ${email} (${user.role}, ${user.status?.toUpperCase() || 'STANDARD'}${isNewUser ? ', NEW USER' : ''})`
       );
 
       return {
@@ -152,34 +135,28 @@ export class GoogleAuthService {
 
     } catch (error) {
       const duration = Date.now() - startTime;
-      this.logger.error(`❌ Google Sign-In failed after ${duration}ms: ${error.message}`);
-      
+      this.logger.error(`Google Sign-In failed after ${duration}ms: ${error.message}`);
+
       if (error instanceof UnauthorizedException) {
         throw error;
       }
-      
+
       throw new BadRequestException(
         error.message || 'Google Sign-In failed. Please try again.'
       );
     }
   }
 
-  /**
-   * ✅ VERIFY GOOGLE ID TOKEN
-   */
   private async verifyGoogleIdToken(idToken: string): Promise<admin.auth.DecodedIdToken> {
     try {
       const decodedToken = await admin.auth().verifyIdToken(idToken);
       return decodedToken;
     } catch (error) {
-      this.logger.error(`❌ Invalid Google ID token: ${error.message}`);
+      this.logger.error(`Invalid Google ID token: ${error.message}`);
       throw new UnauthorizedException('Invalid Google credentials');
     }
   }
 
-  /**
-   * ✅ CREATE NEW GOOGLE USER (FIXED)
-   */
   private async createGoogleUser(
     email: string,
     googleUid: string,
@@ -189,7 +166,6 @@ export class GoogleAuthService {
   ): Promise<User> {
     const db = this.firebaseService.getFirestore();
 
-    // Check referral code if provided
     let referrerUser = null;
     if (referralCode && referralCode.trim() !== '') {
       const referrerSnapshot = await db.collection(COLLECTIONS.USERS)
@@ -199,30 +175,27 @@ export class GoogleAuthService {
 
       if (!referrerSnapshot.empty) {
         referrerUser = referrerSnapshot.docs[0].data();
-        this.logger.log(`✅ Valid referral code: ${referralCode} from user ${referrerUser.id}`);
+        this.logger.log(`Valid referral code: ${referralCode} from user ${referrerUser.id}`);
       } else {
-        this.logger.warn(`⚠️ Invalid referral code provided: ${referralCode}`);
+        this.logger.warn(`Invalid referral code provided: ${referralCode}`);
       }
     }
 
-    // ✅ CRITICAL FIX: Generate secure password untuk Google user
     const googlePassword = await this.generateGoogleUserPassword(googleUid, email);
     const hashedPassword = await bcrypt.hash(googlePassword, 10);
 
-    // Generate user data
     const userId = await this.firebaseService.generateId(COLLECTIONS.USERS);
     const timestamp = new Date().toISOString();
     const newUserReferralCode = this.generateReferralCode();
 
-    // Create profile with Google info
     const initialProfile: UserProfile = {
       fullName: displayName || undefined,
-      
+
       avatar: photoURL ? {
         url: photoURL,
         uploadedAt: timestamp,
       } : undefined,
-      
+
       settings: {
         emailNotifications: true,
         smsNotifications: true,
@@ -231,9 +204,9 @@ export class GoogleAuthService {
         language: 'id',
         timezone: 'Asia/Jakarta',
       },
-      
+
       verification: {
-        emailVerified: true, // Google email is already verified
+        emailVerified: true,
         phoneVerified: false,
         identityVerified: false,
         bankVerified: false,
@@ -244,7 +217,7 @@ export class GoogleAuthService {
     const userData: User = {
       id: userId,
       email,
-      password: hashedPassword, // ✅ FIXED: Proper hashed password
+      password: hashedPassword,
       role: USER_ROLES.USER,
       status: USER_STATUS.STANDARD,
       isActive: true,
@@ -259,10 +232,8 @@ export class GoogleAuthService {
       lastLoginAt: timestamp,
     };
 
-    // Save user
     await db.collection(COLLECTIONS.USERS).doc(userId).set(userData);
 
-    // Create initial balances
     const balanceId1 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
     const balanceId2 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
 
@@ -287,11 +258,10 @@ export class GoogleAuthService {
       }),
     ]);
 
-    // Process referral if exists
     if (referrerUser) {
       try {
         const affiliateId = await this.firebaseService.generateId(COLLECTIONS.AFFILIATES);
-        
+
         await db.collection(COLLECTIONS.AFFILIATES).doc(affiliateId).set({
           id: affiliateId,
           referrer_id: referrerUser.id,
@@ -302,15 +272,15 @@ export class GoogleAuthService {
         });
 
         this.logger.log(
-          `🎁 Affiliate record created: ${referrerUser.email} referred ${email}`
+          `Affiliate record created: ${referrerUser.email} referred ${email}`
         );
       } catch (affiliateError) {
-        this.logger.error(`⚠️ Failed to create affiliate record: ${affiliateError.message}`);
+        this.logger.error(`Failed to create affiliate record: ${affiliateError.message}`);
       }
     }
 
     this.logger.log(
-      `✅ Google user created: ${email} (Status: STANDARD, Real: Rp 0, Demo: Rp 10,000,000)`
+      `Google user created: ${email} (Status: STANDARD, Real: Rp 0, Demo: Rp 10,000,000)`
     );
 
     if (referrerUser) {
@@ -320,9 +290,6 @@ export class GoogleAuthService {
     return userData;
   }
 
-  /**
-   * ✅ GENERATE REFERRAL CODE
-   */
   private generateReferralCode(): string {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     let code = '';
@@ -332,17 +299,14 @@ export class GoogleAuthService {
     return code;
   }
 
-  /**
-   * ✅ GENERATE JWT TOKEN
-   */
   private generateToken(userId: string, email: string, role: string): string {
     const payload = { sub: userId, email, role };
-    
+
     const token = this.jwtService.sign(payload, {
       secret: this.configService.get('jwt.secret'),
       expiresIn: this.configService.get('jwt.expiresIn'),
     });
-    
+
     return token;
   }
 }

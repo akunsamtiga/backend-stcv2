@@ -37,10 +37,7 @@ import { GetAssetSchedulesQueryDto } from './dto/get-asset-schedules-query.dto';
 export class AssetScheduleController {
   constructor(private readonly assetScheduleService: AssetScheduleService) {}
 
-  // ============================================
   // CREATE SCHEDULE
-  // ============================================
-
   @Post()
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
   @ApiOperation({
@@ -90,10 +87,7 @@ export class AssetScheduleController {
     );
   }
 
-  // ============================================
   // GET ALL SCHEDULES
-  // ============================================
-
   @Get()
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
   @ApiOperation({
@@ -135,10 +129,7 @@ export class AssetScheduleController {
     return this.assetScheduleService.getSchedules(queryDto);
   }
 
-  // ============================================
   // GET SCHEDULE BY ID
-  // ============================================
-
   @Get(':id')
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
   @ApiOperation({
@@ -158,10 +149,7 @@ export class AssetScheduleController {
     return this.assetScheduleService.getScheduleById(id);
   }
 
-  // ============================================
   // GET UPCOMING SCHEDULES
-  // ============================================
-
   @Get('upcoming/next-24h')
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
   @ApiOperation({
@@ -192,10 +180,7 @@ export class AssetScheduleController {
     return this.assetScheduleService.getUpcomingSchedules();
   }
 
-  // ============================================
   // GET STATISTICS
-  // ============================================
-
   @Get('stats/overview')
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
   @ApiOperation({
@@ -223,10 +208,7 @@ export class AssetScheduleController {
     return this.assetScheduleService.getStatistics();
   }
 
-  // ============================================
   // UPDATE SCHEDULE
-  // ============================================
-
   @Put(':id')
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
   @ApiOperation({
@@ -254,10 +236,7 @@ export class AssetScheduleController {
     return this.assetScheduleService.updateSchedule(id, updateDto, user.uid);
   }
 
-  // ============================================
   // CANCEL SCHEDULE
-  // ============================================
-
   @Put(':id/cancel')
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
   @HttpCode(HttpStatus.OK)
@@ -288,10 +267,7 @@ export class AssetScheduleController {
     return this.assetScheduleService.cancelSchedule(id);
   }
 
-  // ============================================
   // DELETE SCHEDULE
-  // ============================================
-
   @Delete(':id')
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
   @HttpCode(HttpStatus.OK)

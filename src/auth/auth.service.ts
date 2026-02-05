@@ -13,12 +13,9 @@ import { User, UserProfile } from '../common/interfaces';
 @Injectable()
 export class AuthService implements OnModuleInit {
   private readonly logger = new Logger(AuthService.name);
-  
   private userCache: Map<string, { user: User; timestamp: number }> = new Map();
   private readonly USER_CACHE_TTL = 60000;
-  
   private readonly BCRYPT_ROUNDS = 10;
-  
   private tokenCache: Map<string, { token: string; timestamp: number }> = new Map();
   private readonly TOKEN_CACHE_TTL = 300000;
 
@@ -45,14 +42,10 @@ export class AuthService implements OnModuleInit {
   private async initializeCollections() {
     try {
       const db = this.firebaseService.getFirestore();
-      
-      const affiliatesSnapshot = await db.collection(COLLECTIONS.AFFILIATES)
-        .limit(1)
-        .get();
+      const affiliatesSnapshot = await db.collection(COLLECTIONS.AFFILIATES).limit(1).get();
 
       if (affiliatesSnapshot.empty) {
         const placeholderId = '_placeholder';
-        
         await db.collection(COLLECTIONS.AFFILIATES).doc(placeholderId).set({
           id: placeholderId,
           _placeholder: true,
@@ -73,7 +66,6 @@ export class AuthService implements OnModuleInit {
       } else {
         this.logger.log('ℹ️ Affiliates collection already exists');
       }
-
     } catch (error) {
       this.logger.warn(`⚠️ Failed to initialize collections: ${error.message}`);
     }
@@ -162,13 +154,11 @@ export class AuthService implements OnModuleInit {
         ]);
 
         this.logger.log(`✅ Super admin created: ${email} (Status: VIP, Real: Rp 0, Demo: Rp 10,000,000)`);
-        
       } else {
         this.logger.log(`ℹ️ Super admin already exists: ${email}`);
       }
     } catch (error) {
       this.logger.error(`❌ Failed to create super admin: ${error.message}`);
-      
       if (error.message.includes('not initialized') || error.message.includes('not ready')) {
         this.logger.log('🔄 Retrying super admin creation in 2 seconds...');
         setTimeout(() => this.createSuperAdminIfNotExists(), 2000);
@@ -193,7 +183,7 @@ export class AuthService implements OnModuleInit {
 
       let referrerUser: any = null;
       let referrerUserId: string | undefined = undefined;
-      
+
       if (referralCode && referralCode.trim() !== '') {
         const referrerSnapshot = await db.collection(COLLECTIONS.USERS)
           .where('referralCode', '==', referralCode.trim())
@@ -220,7 +210,6 @@ export class AuthService implements OnModuleInit {
         dateOfBirth: dateOfBirth || undefined,
         gender: gender as any || undefined,
         nationality: nationality || undefined,
-        
         settings: {
           emailNotifications: true,
           smsNotifications: true,
@@ -229,7 +218,6 @@ export class AuthService implements OnModuleInit {
           language: 'id',
           timezone: 'Asia/Jakarta',
         },
-        
         verification: {
           emailVerified: true,
           phoneVerified: false,
@@ -285,7 +273,6 @@ export class AuthService implements OnModuleInit {
       if (referrerUserId && referrerUser) {
         try {
           const affiliateId = await this.firebaseService.generateId(COLLECTIONS.AFFILIATES);
-          
           await db.collection(COLLECTIONS.AFFILIATES).doc(affiliateId).set({
             id: affiliateId,
             referrer_id: referrerUserId,
@@ -295,16 +282,15 @@ export class AuthService implements OnModuleInit {
             createdAt: timestamp,
             updatedAt: timestamp,
           });
-
           this.logger.log(
-            `🎁 Affiliate record created: ${referrerUser.email} referred ${email} (Commission pending first deposit)`
+            `🎁 Affiliate record created: ${referrerUser.email} referred ${email} (Commission pending first deposit)`,
           );
         } catch (affiliateError) {
           this.logger.error(`⚠️ Failed to create affiliate record: ${affiliateError.message}`);
           this.logger.error(affiliateError.stack);
         }
       }
-      
+
       let profileCompletion = 10;
       if (fullName) profileCompletion += 10;
       if (phoneNumber) profileCompletion += 10;
@@ -312,7 +298,7 @@ export class AuthService implements OnModuleInit {
       if (gender) profileCompletion += 5;
 
       this.logger.log(
-        `✅ User registered: ${email} (Status: STANDARD, Profile: ${profileCompletion}%, Real: Rp 0, Demo: Rp 10,000,000)`
+        `✅ User registered: ${email} (Status: STANDARD, Profile: ${profileCompletion}%, Real: Rp 0, Demo: Rp 10,000,000)`,
       );
 
       if (referrerUserId && referrerUser) {
@@ -342,25 +328,24 @@ export class AuthService implements OnModuleInit {
           real: 0,
           demo: 10000000,
         },
-        affiliate: referrerUserId && referrerUser ? {
-          referredBy: referrerUser.email,
-          referrerId: referrerUserId,
-          commissionPending: true,
-          message: 'Commission will be calculated on first deposit',
-        } : null,
+        affiliate: referrerUserId && referrerUser
+          ? {
+              referredBy: referrerUser.email,
+              referrerId: referrerUserId,
+              commissionPending: true,
+              message: 'Commission will be calculated on first deposit',
+            }
+          : null,
         token,
       };
-
     } catch (error) {
       const duration = Date.now() - startTime;
       this.logger.error(`❌ Registration failed after ${duration}ms: ${error.message}`);
-      
       if (error instanceof ConflictException) {
         throw error;
       }
-      
       throw new BadRequestException(
-        error.message || 'Registration failed. Please check your input and try again.'
+        error.message || 'Registration failed. Please check your input and try again.',
       );
     }
   }
@@ -402,25 +387,23 @@ export class AuthService implements OnModuleInit {
 
     const loginCount = (user.loginCount || 0) + 1;
     const lastLoginAt = new Date().toISOString();
-
     const updates: any = {
       lastLoginAt,
       loginCount,
-    }
+    };
 
     if (loginCount >= 3 && user.tutorialCompleted === false) {
-      updates.tutorialCompleted = true
-      updates.isNewUser = false
+      updates.tutorialCompleted = true;
+      updates.isNewUser = false;
     }
 
     await db.collection(COLLECTIONS.USERS).doc(user.id).update(updates);
-
     const token = this.generateToken(user.id, user.email, user.role);
     this.cacheUser(user.id, user);
 
     const duration = Date.now() - startTime;
     this.logger.log(
-      `✅ User logged in in ${duration}ms: ${email} (${user.role}, ${user.status?.toUpperCase() || 'STANDARD'}, Login #${loginCount})`
+      `✅ User logged in in ${duration}ms: ${email} (${user.role}, ${user.status?.toUpperCase() || 'STANDARD'}, Login #${loginCount})`,
     );
 
     return {
@@ -430,8 +413,8 @@ export class AuthService implements OnModuleInit {
         email: user.email,
         role: user.role,
         status: user.status || USER_STATUS.STANDARD,
-        isNewUser: user.isNewUser !== false, 
-        tutorialCompleted: user.tutorialCompleted || false,  
+        isNewUser: user.isNewUser !== false,
+        tutorialCompleted: user.tutorialCompleted || false,
         loginCount,
         lastLoginAt,
       },
@@ -441,12 +424,10 @@ export class AuthService implements OnModuleInit {
 
   private generateToken(userId: string, email: string, role: string): string {
     const payload = { sub: userId, email, role };
-    
     const token = this.jwtService.sign(payload, {
       secret: this.configService.get('jwt.secret'),
       expiresIn: this.configService.get('jwt.expiresIn'),
     });
-    
     return token;
   }
 
@@ -460,25 +441,21 @@ export class AuthService implements OnModuleInit {
   private getCachedUser(userId: string): User | null {
     const cached = this.userCache.get(userId);
     if (!cached) return null;
-
     const age = Date.now() - cached.timestamp;
     if (age > this.USER_CACHE_TTL) {
       this.userCache.delete(userId);
       return null;
     }
-
     return cached.user;
   }
 
   private cleanupCache(): void {
     const now = Date.now();
-    
     for (const [userId, cached] of this.userCache.entries()) {
       if (now - cached.timestamp > this.USER_CACHE_TTL) {
         this.userCache.delete(userId);
       }
     }
-
     for (const [key, cached] of this.tokenCache.entries()) {
       if (now - cached.timestamp > this.TOKEN_CACHE_TTL) {
         this.tokenCache.delete(key);
@@ -491,17 +468,13 @@ export class AuthService implements OnModuleInit {
     if (cached) {
       return cached;
     }
-
     const db = this.firebaseService.getFirestore();
     const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
-    
     if (!userDoc.exists) {
       return null;
     }
-
     const user = userDoc.data() as User;
     this.cacheUser(userId, user);
-    
     return user;
   }
 

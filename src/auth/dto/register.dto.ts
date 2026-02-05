@@ -7,10 +7,6 @@ import {
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class RegisterDto {
-  // ============================================
-  // REQUIRED FIELDS
-  // ============================================
-
   @ApiProperty({ 
     example: 'user@example.com',
     description: 'User email address (required)'
@@ -30,14 +26,10 @@ export class RegisterDto {
   })
   password: string;
 
-  // ============================================
-  // TRULY OPTIONAL FIELDS
-  // ============================================
-
   @ApiPropertyOptional({ 
     example: 'REF123ABC',
     description: 'Referral code from friend (optional)',
-    required: false // ✅ Mark as not required in Swagger
+    required: false 
   })
   @IsOptional()
   @IsString()

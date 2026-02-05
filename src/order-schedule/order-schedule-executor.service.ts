@@ -1,3 +1,5 @@
+// src/order-schedule/order-schedule-executor.service.ts
+
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { Firestore } from '@google-cloud/firestore';
@@ -27,7 +29,7 @@ export class OrderScheduleExecutorService {
     private priceFetcherService: PriceFetcherService,
     private assetsService: AssetsService,
   ) {
-    this.logger.log('✅ OrderScheduleExecutorService initialized');
+    this.logger.log('✅ OrderScheduleExecutorService initialized with per-order martingale');
   }
 
   private get db(): Firestore {
@@ -164,7 +166,7 @@ export class OrderScheduleExecutorService {
           continue;
         }
 
-        await this.executeOrder(schedule, scheduledOrder.trend, currentTime);
+        await this.executeOrder(schedule, scheduledOrder.trend, scheduledOrder.time);
       }
     } catch (error) {
       this.logger.error(
@@ -211,20 +213,26 @@ export class OrderScheduleExecutorService {
         `🚀 Executing order for schedule ${schedule.id}: ${trend} at ${scheduledTime}`
       );
 
+      // ✅ Ambil state martingale untuk order ini (berdasarkan scheduledTime)
+      const orderState = this.orderScheduleService.getOrderMartingaleState(schedule, scheduledTime);
+      
+      this.logger.log(
+        `📊 Order ${scheduledTime} state: Step=${orderState.currentStep}, ` +
+        `ConsecutiveLosses=${orderState.consecutiveLosses}, LastResult=${orderState.lastResult}`
+      );
+
+      // ✅ Calculate amount berdasarkan state order ini
       const amount = this.orderScheduleService.calculateMartingaleAmount(
         schedule.amount,
-        schedule.currentMartingaleStep,
+        orderState.currentStep,
         schedule.martingaleSetting.multiplier
       );
 
       this.logger.log(
-        `💰 Amount: ${amount} (base: ${schedule.amount}, step: ${schedule.currentMartingaleStep}, multiplier: ${schedule.martingaleSetting.multiplier})`
+        `💰 Amount: ${amount} (base: ${schedule.amount}, step: ${orderState.currentStep}, multiplier: ${schedule.martingaleSetting.multiplier})`
       );
 
-      this.logger.debug(`🔍 STEP 1: Checking balance for account type: ${schedule.accountType}`);
-
       if (schedule.accountType === 'real') {
-        this.logger.debug(`🔍 STEP 2: Validating balance for user ${schedule.userId}`);
         const hasBalance = await this.checkUserBalance(schedule.userId, amount);
         
         if (!hasBalance) {
@@ -235,30 +243,23 @@ export class OrderScheduleExecutorService {
             trend,
             scheduledTime,
             amount,
+            orderState.currentStep,
             'failed',
             'Insufficient balance'
           );
           return;
         }
-        this.logger.debug(`✅ STEP 2: Balance check passed`);
-      } else {
-        this.logger.debug(`✅ STEP 2: Skipped balance check (demo account)`);
       }
-
-      this.logger.debug(`🔍 STEP 3: Creating binary order...`);
       
       let orderId: string;
       try {
-        orderId = await this.createBinaryOrderWithVerification(schedule, trend, amount);
-        this.logger.log(`✅ STEP 3: Binary order created: ${orderId}`);
+        orderId = await this.createBinaryOrderWithVerification(schedule, trend, amount, scheduledTime);
+        this.logger.log(`✅ Binary order created: ${orderId}`);
       } catch (createError) {
-        this.logger.error(`❌ STEP 3 FAILED: ${createError.message}`);
-        this.logger.error(`Error stack: ${createError.stack}`);
+        this.logger.error(`❌ Failed to create order: ${createError.message}`);
         throw createError;
       }
 
-      this.logger.debug(`🔍 STEP 4: Recording execution...`);
-      
       try {
         await this.recordExecution(
           executionId,
@@ -266,13 +267,14 @@ export class OrderScheduleExecutorService {
           trend,
           scheduledTime,
           amount,
+          orderState.currentStep,
           'executed',
           undefined,
           orderId
         );
-        this.logger.log(`✅ STEP 4: Execution recorded`);
+        this.logger.log(`✅ Execution recorded`);
       } catch (recordError) {
-        this.logger.error(`❌ STEP 4 FAILED: ${recordError.message}`);
+        this.logger.error(`❌ Failed to record execution: ${recordError.message}`);
         throw recordError;
       }
 
@@ -280,24 +282,22 @@ export class OrderScheduleExecutorService {
       
     } catch (error) {
       this.logger.error(
-        `❌ CRITICAL ERROR executing order for schedule ${schedule.id}:`,
+        `❌ CRITICAL ERROR executing order for schedule ${schedule.id}: ${error.message}`
       );
-      this.logger.error(`   Message: ${error.message}`);
-      this.logger.error(`   Stack: ${error.stack}`);
-      this.logger.error(`   Name: ${error.name}`);
-      this.logger.error(`   Code: ${error.code || 'N/A'}`);
 
       try {
+        const orderState = this.orderScheduleService.getOrderMartingaleState(schedule, scheduledTime);
+        
         await this.recordExecution(
           executionId,
           schedule,
           trend,
           scheduledTime,
           schedule.amount,
+          orderState.currentStep,
           'failed',
           error.message
         );
-        this.logger.log(`✅ Failed execution recorded`);
       } catch (recordError) {
         this.logger.error(`❌ Failed to record failed execution: ${recordError.message}`);
       }
@@ -306,8 +306,6 @@ export class OrderScheduleExecutorService {
 
   private async getAssetName(assetSymbol: string): Promise<string> {
     try {
-      this.logger.debug(`🔍 Fetching asset name for: ${assetSymbol}`);
-      
       const assetDoc = await this.db
         .collection(this.assetsCollection)
         .where('symbol', '==', assetSymbol)
@@ -316,12 +314,8 @@ export class OrderScheduleExecutorService {
       
       if (!assetDoc.empty) {
         const assetData = assetDoc.docs[0].data();
-        const name = assetData.name || assetSymbol;
-        this.logger.debug(`✅ Asset name found: ${name}`);
-        return name;
+        return assetData.name || assetSymbol;
       }
-      
-      this.logger.debug(`⚠️ Asset not found, using symbol: ${assetSymbol}`);
     } catch (error) {
       this.logger.warn(`⚠️ Error fetching asset name for ${assetSymbol}: ${error.message}`);
     }
@@ -329,25 +323,22 @@ export class OrderScheduleExecutorService {
     return assetSymbol;
   }
 
-  // ✅✅✅ METHOD YANG SUDAH DIPERBAIKI ✅✅✅
   private async createBinaryOrderWithVerification(
     schedule: OrderSchedule,
     trend: TrendType,
-    amount: number
+    amount: number,
+    scheduledTime: string
   ): Promise<string> {
     const orderId = uuidv4();
     const now = new Date();
 
-    this.logger.debug(`🔍 Getting asset name for: ${schedule.assetSymbol}`);
     const assetName = schedule.assetName || await this.getAssetName(schedule.assetSymbol);
 
-    // ✅ DEKLARASI VARIABEL DI SINI (DILUAR TRY BLOCK)
     let entryPrice = 0;
     let assetId: string | null = null;
     let assetData: any = null;
 
     try {
-      // Coba dapatkan asset by symbol
       const assetSnapshot = await this.db
         .collection(this.assetsCollection)
         .where('symbol', '==', schedule.assetSymbol)
@@ -356,7 +347,7 @@ export class OrderScheduleExecutorService {
       
       if (!assetSnapshot.empty) {
         assetData = assetSnapshot.docs[0].data();
-        assetId = assetSnapshot.docs[0].id; // ✅ SET ASSET ID DI SINI
+        assetId = assetSnapshot.docs[0].id;
         
         try {
           const priceData = await this.priceFetcherService.getCurrentPriceRealtime(assetData, true);
@@ -366,7 +357,6 @@ export class OrderScheduleExecutorService {
           }
         } catch (priceError) {
           this.logger.warn(`⚠️ Could not fetch realtime price: ${priceError.message}`);
-          // Fallback ke initial price dari asset settings
           entryPrice = assetData.simulatorSettings?.initialPrice || assetData.initialPrice || 0;
         }
       } else {
@@ -376,99 +366,72 @@ export class OrderScheduleExecutorService {
       this.logger.warn(`⚠️ Could not fetch asset info: ${error.message}`);
     }
 
-    // ✅ KONVERSI DURATION DARI DETIK KE MENIT (BinaryOrdersService pakai menit)
-    // 60 detik = 1 menit, 1 detik = 0.0167 menit
     const durationInMinutes = schedule.duration / 60;
-
-    // ✅ KONVERSI TREND KE DIRECTION (buy -> CALL, sell -> PUT)
     const direction = trend === 'buy' ? 'CALL' : 'PUT';
-
-    // ✅ HITUNG EXPIRY TIME
     const expiryTime = new Date(now.getTime() + schedule.duration * 1000);
 
-    // ✅ STRUKTUR ORDER YANG SESUAI DENGAN BinaryOrdersService
+    // ✅ Simpan scheduledTime dalam metadata untuk tracking
     const order = {
       id: orderId,
       user_id: schedule.userId,
-      asset_id: assetId, // ✅ Gunakan variabel yang sudah dideklarasikan di atas
+      asset_id: assetId,
       asset_symbol: schedule.assetSymbol,
       asset_name: assetName,
       
-      // ✅ FIX: Format field names sesuai BinaryOrdersService
-      accountType: schedule.accountType, // camelCase, bukan account_type
-      direction: direction, // CALL/PUT, bukan buy/sell
+      accountType: schedule.accountType,
+      direction: direction,
       amount: amount,
-      duration: durationInMinutes, // dalam menit, bukan detik
+      duration: durationInMinutes,
       
-      // ✅ FIX: Entry price dari harga realtime
       entry_price: entryPrice || 0,
-      entry_time: now.toISOString(), // ISO string
+      entry_time: now.toISOString(),
       
       exit_price: null,
-      exit_time: expiryTime.toISOString(), // ISO string
+      exit_time: expiryTime.toISOString(),
       
-      // ✅ FIX: Status harus ACTIVE (uppercase)
       status: 'ACTIVE',
       
       profit: null,
       result: null,
       
-      // Metadata untuk tracking
       is_scheduled: true,
       schedule_id: schedule.id,
-      createdAt: now.toISOString(), // camelCase
-      updatedAt: now.toISOString(), // camelCase
+      scheduled_time: scheduledTime,
       
-      // Field tambahan untuk profit calculation
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      
       profitRate: assetData?.profitRate || 85,
       baseProfitRate: assetData?.profitRate || 85,
       statusBonus: 0,
       userStatus: 'standard',
       
-      // Metadata tambahan
       metadata: {
         isScheduled: true,
         scheduledAt: now.toISOString(),
-        martingaleStep: schedule.currentMartingaleStep,
-        originalTrend: trend, // Simpan trend asli (buy/sell)
+        scheduledTime: scheduledTime,
+        martingaleStep: this.orderScheduleService.getOrderMartingaleState(schedule, scheduledTime).currentStep,
+        originalTrend: trend,
       }
     };
 
     try {
       this.logger.log(`📝 Writing order ${orderId} to Firestore...`);
-      this.logger.debug(`   Collection: ${this.ordersCollection}`);
-      this.logger.debug(`   Order data keys: ${Object.keys(order).join(', ')}`);
       
       await this.db.collection(this.ordersCollection).doc(orderId).set(order);
-      
-      this.logger.log(`🔍 Verifying order ${orderId} was written...`);
       
       const verifyDoc = await this.db.collection(this.ordersCollection).doc(orderId).get();
       
       if (!verifyDoc.exists) {
-        this.logger.error(`❌ CRITICAL: Order ${orderId} was NOT written to Firestore!`);
-        this.logger.error(`📊 Attempted order data:`);
-        this.logger.error(JSON.stringify(order, null, 2));
-        
         throw new Error('Failed to write order to Firestore - verification failed');
       }
       
-      const verifiedData = verifyDoc.data();
       this.logger.log(`✅ Verified order ${orderId} exists in Firestore`);
-      this.logger.debug(`   Verified data keys: ${Object.keys(verifiedData || {}).join(', ')}`);
       
       return orderId;
       
     } catch (error) {
-      this.logger.error(`❌ Firestore operation failed for order ${orderId}`);
-      this.logger.error(`   Error type: ${error.constructor.name}`);
-      this.logger.error(`   Error message: ${error.message}`);
-      this.logger.error(`   Error code: ${error.code || 'N/A'}`);
-      
-      if (error.stack) {
-        this.logger.error(`   Stack trace: ${error.stack}`);
-      }
-      
+      this.logger.error(`❌ Firestore operation failed for order ${orderId}: ${error.message}`);
       throw error;
     }
   }
@@ -479,6 +442,7 @@ export class OrderScheduleExecutorService {
     trend: TrendType,
     scheduledTime: string,
     amount: number,
+    martingaleStep: number,
     status: 'pending' | 'executed' | 'failed' | 'skipped',
     errorMessage?: string,
     orderId?: string
@@ -495,8 +459,8 @@ export class OrderScheduleExecutorService {
       amount,
       duration: schedule.duration,
       accountType: schedule.accountType,
-      martingaleStep: schedule.currentMartingaleStep,
-      isRecoveryAttempt: schedule.currentMartingaleStep > 0,
+      martingaleStep,
+      isRecoveryAttempt: martingaleStep > 0,
       status,
       errorMessage,
       createdAt: new Date(),
@@ -505,7 +469,7 @@ export class OrderScheduleExecutorService {
 
     try {
       await this.db.collection(this.executionsCollection).doc(executionId).set(execution);
-      this.logger.debug(`✅ Execution ${executionId} recorded with status: ${status}`);
+      this.logger.debug(`✅ Execution ${executionId} recorded with status: ${status}, step: ${martingaleStep}`);
     } catch (error) {
       this.logger.error(`❌ Failed to record execution: ${error.message}`);
       throw error;
@@ -533,7 +497,7 @@ export class OrderScheduleExecutorService {
 
         if (!orderDoc.exists) {
           if (attempt < maxRetries - 1) {
-            this.logger.warn(`⚠️ Order ${orderId} not found, retrying in 2s...`);
+            this.logger.warn(`⚠️ Order ${orderId} not found, retrying...`);
             await new Promise(resolve => setTimeout(resolve, 2000));
             attempt++;
             continue;
@@ -554,7 +518,7 @@ export class OrderScheduleExecutorService {
 
         if (!order || !order.result) {
           if (attempt < maxRetries - 1) {
-            this.logger.warn(`⚠️ Order ${orderId} has no result yet, retrying in 2s...`);
+            this.logger.warn(`⚠️ Order ${orderId} has no result yet, retrying...`);
             await new Promise(resolve => setTimeout(resolve, 2000));
             attempt++;
             continue;
@@ -564,6 +528,13 @@ export class OrderScheduleExecutorService {
           return;
         }
 
+        // ✅ Ambil scheduledTime dari order untuk update yang tepat
+        const scheduledTime = order.scheduled_time || order.metadata?.scheduledTime;
+        
+        if (!scheduledTime) {
+          this.logger.warn(`⚠️ scheduledTime not found for order ${orderId}`);
+        }
+
         await this.db.collection(this.executionsCollection).doc(executionId).update({
           result: order.result,
           profit: order.profit || 0,
@@ -571,14 +542,16 @@ export class OrderScheduleExecutorService {
           updatedAt: new Date(),
         });
 
+        // ✅ Update dengan scheduledTime untuk update state yang tepat
         await this.orderScheduleService.updateAfterExecution(
           scheduleId,
+          scheduledTime || '',
           order.result,
           order.profit || 0
         );
 
         this.logger.log(
-          `✅ Order ${orderId} completed: ${order.result}, profit: ${order.profit}`
+          `✅ Order ${orderId} completed: ${order.result}, profit: ${order.profit}, scheduledTime: ${scheduledTime}`
         );
         
         return;
@@ -610,8 +583,6 @@ export class OrderScheduleExecutorService {
 
   private async checkUserBalance(userId: string, requiredAmount: number): Promise<boolean> {
     try {
-      this.logger.debug(`🔍 Checking balance for user: ${userId}, required: ${requiredAmount}`);
-      
       const balanceSnapshot = await this.db
         .collection('balance')
         .where('user_id', '==', userId)

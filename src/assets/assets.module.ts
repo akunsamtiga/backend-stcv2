@@ -1,4 +1,5 @@
-// backendv2\src\assets\assets.module.ts
+// src/assets/assets.module.ts
+
 import { Module, forwardRef } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
@@ -11,7 +12,7 @@ import { SimulatorPriceRelayService } from './services/simulator-price-relay.ser
 import { InitializeAssetCandlesHelper } from './helpers/initialize-asset-candles.helper';
 import { AuthModule } from '../auth/auth.module';
 import { WebSocketModule } from '../websocket/websocket.module';
-import { EventEmitterModule } from '@nestjs/event-emitter'; // PASTIKAN INI ADA
+import { EventEmitterModule } from '@nestjs/event-emitter'; 
 
 @Module({
   imports: [

@@ -1,9 +1,10 @@
-// assets\services\simulator-price-relay.service.ts
+// src/assets/services/simulator-price-relay.service.ts
+
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import { OnEvent } from '@nestjs/event-emitter'; // TAMBAHKAN INI
+import { OnEvent } from '@nestjs/event-emitter';
 import { FirebaseService } from '../../firebase/firebase.service';
-import { AssetsService } from '../assets.service'; // TAMBAHKAN INI (jika belum ada)
+import { AssetsService } from '../assets.service';
 import { TradingGateway } from '../../websocket/trading.gateway';
 import { ASSET_CATEGORY } from '../../common/constants';
 import { Asset } from '../../common/interfaces';
@@ -11,18 +12,18 @@ import { Asset } from '../../common/interfaces';
 @Injectable()
 export class SimulatorPriceRelayService implements OnModuleInit {
   private readonly logger = new Logger(SimulatorPriceRelayService.name);
-  
+
   private normalAssets: Asset[] = [];
   private isRunning = false;
   private relayInterval: NodeJS.Timeout | null = null;
-  
+
   private relayCount = 0;
   private errorCount = 0;
   private lastSuccessTime = 0;
 
   constructor(
     private firebaseService: FirebaseService,
-    private assetsService: AssetsService, // INJECT AssetsService
+    private assetsService: AssetsService,
     private tradingGateway: TradingGateway,
   ) {}
 
@@ -35,138 +36,129 @@ export class SimulatorPriceRelayService implements OnModuleInit {
   private async initialize() {
     try {
       await this.loadNormalAssets();
-      
+
       if (this.normalAssets.length > 0) {
         await this.startRelay();
       } else {
-        this.logger.warn('⚠️ No normal assets found, relay not started');
+        this.logger.warn('No normal assets found, relay not started');
       }
     } catch (error) {
-      this.logger.error(`❌ Relay initialization failed: ${error.message}`);
+      this.logger.error(`Relay initialization failed: ${error.message}`);
     }
   }
 
-  // ============================================
-  // 🎯 EVENT LISTENER: Asset Baru Dibuat
-  // ============================================
-  
   @OnEvent('simulator.asset.new')
-  async handleNewSimulatorAsset(payload: { 
-    assetId: string; 
-    symbol: string; 
+  async handleNewSimulatorAsset(payload: {
+    assetId: string;
+    symbol: string;
     realtimeDbPath: string;
     simulatorSettings?: any;
   }) {
-    this.logger.log(`🆕 New simulator asset detected via event: ${payload.symbol}`);
-    
+    this.logger.log(`New simulator asset detected via event: ${payload.symbol}`);
+
     try {
-      // Reload assets dari database untuk mendapatkan asset terbaru
       await this.loadNormalAssets();
-      
-      // Jika relay belum jalan, start sekarang
+
       if (!this.isRunning && this.normalAssets.length > 0) {
-        this.logger.log('🚀 Starting relay for new asset...');
+        this.logger.log('Starting relay for new asset...');
         await this.startRelay();
       } else {
-        this.logger.log(`📡 Relay already running with ${this.normalAssets.length} assets`);
+        this.logger.log(`Relay already running with ${this.normalAssets.length} assets`);
       }
     } catch (error) {
-      this.logger.error(`❌ Failed to handle new simulator asset: ${error.message}`);
+      this.logger.error(`Failed to handle new simulator asset: ${error.message}`);
     }
   }
 
-  @OnEvent('asset.refresh.requested') // Untuk manual refresh
+  @OnEvent('asset.refresh.requested')
   async handleRefreshRequest() {
-    this.logger.log('🔄 Manual refresh requested for simulator relay');
+    this.logger.log('Manual refresh requested for simulator relay');
     await this.loadNormalAssets();
   }
-
-  // (Sisanya sama seperti kode sebelumnya...)
 
   @Cron('*/10 * * * *')
   async refreshAssets() {
     const previousCount = this.normalAssets.length;
     await this.loadNormalAssets();
     const currentCount = this.normalAssets.length;
-    
+
     if (previousCount !== currentCount) {
-      this.logger.log(`🔄 Assets changed: ${previousCount} → ${currentCount}`);
+      this.logger.log(`Assets changed: ${previousCount} → ${currentCount}`);
     }
-    
+
     if (previousCount === 0 && currentCount > 0 && !this.isRunning) {
-      this.logger.log('✅ Assets detected, starting relay...');
+      this.logger.log('Assets detected, starting relay...');
       await this.startRelay();
     } else if (currentCount === 0 && this.isRunning) {
-      this.logger.warn('⚠️ No more assets, stopping relay...');
+      this.logger.warn('No more assets, stopping relay...');
       this.stopRelay();
     }
   }
 
   private async loadNormalAssets() {
     try {
-      // ✅ Gunakan getAllAssets dari AssetsService untuk mendapatkan data terbaru
       const { assets } = await this.assetsService.getAllAssets(true);
-      
+
       this.normalAssets = assets.filter(a => a.category === ASSET_CATEGORY.NORMAL);
-      
-      this.logger.log(`📡 Loaded ${this.normalAssets.length} normal assets for relay`);
-      
+
+      this.logger.log(`Loaded ${this.normalAssets.length} normal assets for relay`);
+
     } catch (error) {
-      this.logger.error(`❌ Failed to load normal assets: ${error.message}`);
+      this.logger.error(`Failed to load normal assets: ${error.message}`);
       this.normalAssets = [];
     }
   }
 
   private async startRelay() {
     if (this.isRunning) {
-      this.logger.warn('⚠️ Relay already running');
+      this.logger.warn('Relay already running');
       return;
     }
-    
+
     if (this.normalAssets.length === 0) {
-      this.logger.warn('⚠️ Cannot start relay: no normal assets');
+      this.logger.warn('Cannot start relay: no normal assets');
       return;
     }
-    
+
     this.isRunning = true;
-    
-    this.logger.log('🚀 Starting simulator price relay...');
+
+    this.logger.log('Starting simulator price relay...');
     this.logger.log(`   Assets: ${this.normalAssets.map(a => a.symbol).join(', ')}`);
-    
+
     this.relayInterval = setInterval(async () => {
       await this.relayPrices();
     }, 1000);
-    
-    this.logger.log('✅ Simulator price relay started');
+
+    this.logger.log('Simulator price relay started');
   }
 
   private stopRelay() {
     if (!this.isRunning) return;
-    
+
     this.isRunning = false;
-    
+
     if (this.relayInterval) {
       clearInterval(this.relayInterval);
       this.relayInterval = null;
     }
-    
-    this.logger.log('🛑 Simulator price relay stopped');
+
+    this.logger.log('Simulator price relay stopped');
   }
 
   private async relayPrices() {
     if (this.normalAssets.length === 0) return;
-    
+
     const results = await Promise.allSettled(
       this.normalAssets.map(asset => this.relayAssetPrice(asset))
     );
-    
+
     const successCount = results.filter(r => r.status === 'fulfilled').length;
     const failCount = results.filter(r => r.status === 'rejected').length;
-    
+
     if (failCount > 0) {
       this.errorCount += failCount;
     }
-    
+
     if (successCount > 0) {
       this.relayCount += successCount;
       this.lastSuccessTime = Date.now();
@@ -176,16 +168,16 @@ export class SimulatorPriceRelayService implements OnModuleInit {
   private async relayAssetPrice(asset: Asset): Promise<void> {
     try {
       const path = this.getAssetPath(asset);
-      
+
       const priceData = await this.firebaseService.getRealtimeDbValue(
         `${path}/current_price`,
         true
       );
-      
+
       if (!priceData || !priceData.price) {
         return;
       }
-      
+
       this.tradingGateway.emitPriceUpdate(asset.id, {
         price: priceData.price,
         timestamp: priceData.timestamp,
@@ -195,7 +187,7 @@ export class SimulatorPriceRelayService implements OnModuleInit {
         high24h: priceData.price,
         low24h: priceData.price,
       });
-      
+
     } catch (error) {
       this.logger.debug(`Relay failed for ${asset.symbol}: ${error.message}`);
       throw error;
@@ -204,33 +196,33 @@ export class SimulatorPriceRelayService implements OnModuleInit {
 
   private getAssetPath(asset: Asset): string {
     if (asset.realtimeDbPath) {
-      return asset.realtimeDbPath.startsWith('/') 
-        ? asset.realtimeDbPath 
+      return asset.realtimeDbPath.startsWith('/')
+        ? asset.realtimeDbPath
         : `/${asset.realtimeDbPath}`;
     }
-    
+
     if (asset.dataSource === 'mock') {
       return `/mock/${asset.symbol.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
     }
-    
+
     if (asset.dataSource === 'api' && asset.apiEndpoint) {
       return `/api/${asset.symbol.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
     }
-    
+
     return `/${asset.symbol.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
   }
 
   getStatus() {
-    const timeSinceLastSuccess = this.lastSuccessTime > 0 
+    const timeSinceLastSuccess = this.lastSuccessTime > 0
       ? Math.floor((Date.now() - this.lastSuccessTime) / 1000)
       : null;
-    
+
     return {
       isRunning: this.isRunning,
       normalAssets: this.normalAssets.length,
       relayCount: this.relayCount,
       errorCount: this.errorCount,
-      lastSuccess: timeSinceLastSuccess !== null 
+      lastSuccess: timeSinceLastSuccess !== null
         ? `${timeSinceLastSuccess}s ago`
         : 'Never',
       isHealthy: this.isRunning && timeSinceLastSuccess !== null && timeSinceLastSuccess < 10,

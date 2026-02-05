@@ -1,4 +1,5 @@
 // src/assets/assets.controller.ts
+
 import { 
   Controller, 
   Get, 
@@ -313,7 +314,6 @@ export class AssetsController {
     return this.assetsService.getAssetById(assetId);
   }
 
-  // ✅ UPDATED: Icon upload endpoint with dedicated DTO
   @Post(':id/icon')
   @UseGuards(RolesGuard)
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)

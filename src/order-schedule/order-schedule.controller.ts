@@ -23,6 +23,7 @@ import {
   ApiQuery
 } from '@nestjs/swagger';
 import { OrderScheduleService } from './order-schedule.service';
+import { OrderScheduleExecutorService } from './order-schedule-executor.service';
 import { CreateOrderScheduleDto } from './dto/create-order-schedule.dto';
 import { UpdateOrderScheduleDto } from './dto/update-order-schedule.dto';
 import { QueryOrderScheduleDto } from './dto/query-order-schedule.dto';
@@ -33,7 +34,10 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 @UseGuards(JwtAuthGuard)
 @Controller('order-schedule')
 export class OrderScheduleController {
-  constructor(private readonly orderScheduleService: OrderScheduleService) {}
+  constructor(
+    private readonly orderScheduleService: OrderScheduleService,
+    private readonly orderScheduleExecutorService: OrderScheduleExecutorService,
+  ) {}
 
   @Post()
   @ApiOperation({ 
@@ -276,5 +280,20 @@ export class OrderScheduleController {
   ) {
     const userId = req.user.sub;
     return this.orderScheduleService.getStatistics(userId, id);
+  }
+
+  // ✅ Endpoint untuk manual trigger (admin only)
+  @Post(':id/trigger')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ 
+    summary: 'Manual trigger schedule',
+    description: 'Trigger schedule execution manually for testing'
+  })
+  async manualTrigger(
+    @Request() req: any,
+    @Param('id') id: string,
+    @Body('time') time: string
+  ) {
+    return this.orderScheduleExecutorService.manualTrigger(id, time);
   }
 }

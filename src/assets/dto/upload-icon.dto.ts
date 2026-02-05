@@ -2,7 +2,6 @@
 import { IsString, IsNotEmpty, MaxLength } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
-// ✅ SIMPLIFIED: Removed strict regex validation
 export class UploadIconDto {
   @ApiProperty({ 
     example: 'data:image/png;base64,iVBORw0KGgo...',
@@ -10,6 +9,6 @@ export class UploadIconDto {
   })
   @IsString()
   @IsNotEmpty({ message: 'Icon cannot be empty' })
-  @MaxLength(10000000, { message: 'Icon size exceeds maximum allowed (10MB)' }) // ✅ Increased limit
+  @MaxLength(10000000, { message: 'Icon size exceeds maximum allowed (10MB)' }) 
   icon: string;
 }

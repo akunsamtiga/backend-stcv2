@@ -1,16 +1,6 @@
 // src/assets/helpers/initialize-asset-candles.helper.ts
-
 import { Injectable, Logger } from '@nestjs/common';
 import * as admin from 'firebase-admin';
-
-/**
- * ✅ UPDATED VERSION: Candle initialization dengan volatilitas 10x
- * 
- * Perubahan utama:
- * 1. Volatilitas untuk generate 240 candle = 10x dari settingan aset
- * 2. Contoh: 0.00001-0.00008 → 0.0001-0.0008 untuk candle
- * 3. Price terakhir disimpan ke current_price (tidak loncat ke initial)
- */
 
 @Injectable()
 export class InitializeAssetCandlesHelper {
@@ -29,8 +19,6 @@ export class InitializeAssetCandlesHelper {
   };
 
   private readonly CANDLES_TO_CREATE = 240;
-  
-  // ✅ Multiplier untuk initialization volatility (10x) - Tidak terlalu agresif
   private readonly VOLATILITY_MULTIPLIER = 10;
 
   constructor() {}
@@ -60,7 +48,7 @@ export class InitializeAssetCandlesHelper {
     },
   ): Promise<void> {
     this.logger.log(`🚀 Initializing 240 candles for asset: ${symbol} (${assetId})`);
-    
+
     const originalSettings = {
       dailyVolatilityMin: simulatorSettings?.dailyVolatilityMin ?? 0.001,
       dailyVolatilityMax: simulatorSettings?.dailyVolatilityMax ?? 0.005,
@@ -68,7 +56,6 @@ export class InitializeAssetCandlesHelper {
       secondVolatilityMax: simulatorSettings?.secondVolatilityMax ?? 0.00008,
     };
 
-    // Kalikan dengan 10 untuk initialization
     const settings = {
       dailyVolatilityMin: originalSettings.dailyVolatilityMin * this.VOLATILITY_MULTIPLIER,
       dailyVolatilityMax: originalSettings.dailyVolatilityMax * this.VOLATILITY_MULTIPLIER,
@@ -92,9 +79,9 @@ export class InitializeAssetCandlesHelper {
 
       for (const [timeframe, durationInSeconds] of Object.entries(this.TIMEFRAMES)) {
         this.logger.log(`📈 Generating ${this.CANDLES_TO_CREATE} candles for ${symbol} - ${timeframe}`);
-        
+
         const volatility = this.getVolatilityForTimeframe(timeframe, settings);
-        
+
         const timeframeFinalPrice = await this.generateCandlesForTimeframe(
           realtimeDbPath,
           timeframe,
@@ -105,7 +92,7 @@ export class InitializeAssetCandlesHelper {
           settings.minPrice,
           settings.maxPrice,
         );
-        
+
         if (timeframe === '1s') {
           finalPrice = timeframeFinalPrice;
         }
@@ -156,32 +143,31 @@ export class InitializeAssetCandlesHelper {
     minPrice: number,
     maxPrice: number,
   ): Promise<number> {
-    
     const candles: Record<string, any> = {};
     let price = basePrice;
 
     for (let i = this.CANDLES_TO_CREATE - 1; i >= 0; i--) {
       const candleTimestamp = currentTimestamp - (i * durationInSeconds);
-      
+
       const open = price;
       const priceChange = this.generatePriceMovement(price, volatility);
-      
+
       let close = open + priceChange;
       close = Math.max(minPrice, Math.min(maxPrice, close));
-      
+
       const variationFactor = Math.abs(priceChange) * Math.random() * 1.5;
       let high = Math.max(open, close) + variationFactor;
       let low = Math.min(open, close) - variationFactor;
-      
+
       high = Math.max(minPrice, Math.min(maxPrice, high));
       low = Math.max(minPrice, Math.min(maxPrice, low));
-      
+
       price = close;
-      
+
       const priceRange = maxPrice - minPrice;
       const distanceToMin = price - minPrice;
       const distanceToMax = maxPrice - price;
-      
+
       if (distanceToMin < priceRange * 0.1) {
         price = price + priceRange * 0.05;
       } else if (distanceToMax < priceRange * 0.1) {
@@ -199,7 +185,7 @@ export class InitializeAssetCandlesHelper {
     }
 
     const path = `${realtimeDbPath}/ohlc_${timeframe}`;
-    
+
     try {
       await this.getRealtimeDb().ref(path).set(candles);
       this.logger.debug(`✅ Written ${this.CANDLES_TO_CREATE} candles to ${path} (volatility: ${volatility.toExponential(2)})`);
@@ -229,7 +215,7 @@ export class InitializeAssetCandlesHelper {
   private async setLastPrice(realtimeDbPath: string, price: number): Promise<void> {
     try {
       const timestamp = Math.floor(Date.now() / 1000);
-      
+
       const priceData = {
         price: this.roundPrice(price),
         current: this.roundPrice(price),
@@ -239,7 +225,7 @@ export class InitializeAssetCandlesHelper {
         timezone: 'Asia/Jakarta',
         change: 0,
       };
-      
+
       await this.getRealtimeDb().ref(`${realtimeDbPath}/current_price`).set(priceData);
       this.logger.debug(`✅ Set current_price for ${realtimeDbPath}: ${price}`);
     } catch (error) {

@@ -9,24 +9,24 @@ export interface ScheduleExecution {
   
   // Execution Details
   executedAt: Date;
-  scheduledTime: string; // waktu yang dijadwalkan (HH:mm)
+  scheduledTime: string;
   trend: TrendType;
   
   // Order Details
-  orderId?: string; // ID dari binary_orders
+  orderId?: string;
   assetSymbol: string;
   amount: number;
   duration: number;
   accountType: AccountType;
   
-  // Martingale Info
-  martingaleStep: number; // step ke berapa dalam martingale
-  isRecoveryAttempt: boolean; // apakah ini attempt untuk recovery loss
+  // ✅ Martingale Info per execution
+  martingaleStep: number;
+  isRecoveryAttempt: boolean;
   
   // Result
   status: 'pending' | 'executed' | 'failed' | 'skipped';
   result?: 'win' | 'loss' | 'draw';
-  profit?: number; // profit/loss dari execution ini
+  profit?: number;
   
   // Error Info
   errorMessage?: string;

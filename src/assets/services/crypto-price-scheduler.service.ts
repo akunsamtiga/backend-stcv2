@@ -1,4 +1,5 @@
 // src/assets/services/crypto-price-scheduler.service.ts
+
 import { Injectable, Logger, OnModuleInit, Inject, forwardRef } from '@nestjs/common';
 import { Cron, SchedulerRegistry } from '@nestjs/schedule';
 import { FirebaseService } from '../../firebase/firebase.service';
@@ -13,22 +14,22 @@ import { OnEvent } from '@nestjs/event-emitter';
 @Injectable()
 export class CryptoPriceSchedulerService implements OnModuleInit {
   private readonly logger = new Logger(CryptoPriceSchedulerService.name);
-  
+
   private cryptoAssets: Asset[] = [];
   private isRunning = false;
   private updateCount = 0;
   private errorCount = 0;
   private lastUpdateTime = 0;
-  
+
   private timeframeManagers: Map<string, CryptoTimeframeManager> = new Map();
-  
+
   private readonly UPDATE_INTERVAL = 1000;
-  private readonly AGGRESSIVE_CLEANUP_INTERVAL = 60000; // Every 1 minute
-  private readonly CLEANUP_INTERVAL = 1800000; // Every 30 minutes
-  
+  private readonly AGGRESSIVE_CLEANUP_INTERVAL = 60000;
+  private readonly CLEANUP_INTERVAL = 1800000;
+
   private lastCleanupTime = 0;
   private lastAggressiveCleanupTime = 0;
-  
+
   private cleanupStats = {
     totalRuns: 0,
     totalDeleted: 0,
@@ -36,10 +37,10 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     errors: 0,
     byTimeframe: {} as Record<string, number>,
   };
-  
+
   private schedulerActive = false;
   private updateIntervalHandle: any = null;
-  
+
   private initAttempts = 0;
   private readonly MAX_INIT_ATTEMPTS = 10;
 
@@ -56,7 +57,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     setTimeout(async () => {
       await this.initializeScheduler();
     }, 3000);
-    
+
     const retryInterval = setInterval(async () => {
       if (!this.schedulerActive && this.initAttempts < this.MAX_INIT_ATTEMPTS) {
         this.initAttempts++;
@@ -75,10 +76,10 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
   private async initializeScheduler() {
     try {
       this.initAttempts++;
-      
+
       await this.firebaseService.waitForFirestore(10000);
       await this.loadCryptoAssets();
-      
+
       if (this.cryptoAssets.length > 0) {
         await this.startScheduler();
         this.startCleanupSchedulers();
@@ -94,34 +95,34 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
   private async loadCryptoAssets(): Promise<void> {
     try {
       const { assets } = await this.assetsService.getAllAssets(true);
-      
+
       this.cryptoAssets = assets.filter(
         asset => asset.category === ASSET_CATEGORY.CRYPTO
       );
-      
+
       if (this.cryptoAssets.length === 0) {
         this.logger.debug('No active crypto assets found in Firestore');
         return;
       }
-      
+
       this.cryptoAssets.forEach(asset => {
         if (!this.timeframeManagers.has(asset.id)) {
           this.timeframeManagers.set(asset.id, new CryptoTimeframeManager());
           this.logger.debug(`Initialized OHLC manager for ${asset.symbol}`);
         }
       });
-      
+
       this.logger.log('');
       this.logger.log('================================================');
       this.logger.log(`Active Crypto Assets: ${this.cryptoAssets.length}`);
       this.cryptoAssets.forEach(asset => {
         const pair = `${asset.cryptoConfig?.baseCurrency}/${asset.cryptoConfig?.quoteCurrency}`;
-        const path = asset.realtimeDbPath || 
+        const path = asset.realtimeDbPath ||
           `/crypto/${asset.cryptoConfig?.baseCurrency.toLowerCase()}_${asset.cryptoConfig?.quoteCurrency.toLowerCase().replace('usd', 'usdt')}`;
         this.logger.log(`   • ${asset.symbol} (${pair}) → ${path}`);
       });
       this.logger.log('================================================');
-      
+
     } catch (error) {
       this.logger.error(`Failed to load crypto assets: ${error.message}`);
     }
@@ -140,41 +141,38 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
 
     this.isRunning = true;
     this.schedulerActive = true;
-    
+
     this.logger.log('Starting initial crypto price fetch...');
     await this.updateAllPrices();
-    
+
     this.updateIntervalHandle = setInterval(async () => {
       if (this.isRunning && this.schedulerActive) {
         await this.updateAllPrices();
       }
     }, this.UPDATE_INTERVAL);
-    
+
     this.logger.log('Crypto price scheduler started (WEBSOCKET MODE)');
   }
 
   private startCleanupSchedulers(): void {
-    // Aggressive 1s cleanup every 1 minute
     setInterval(async () => {
       await this.aggressiveCleanup1sBars();
     }, this.AGGRESSIVE_CLEANUP_INTERVAL);
-    
-    // Regular cleanup every 30 minutes
+
     setInterval(async () => {
       await this.regularCleanup();
     }, this.CLEANUP_INTERVAL);
-    
-    this.logger.log('✅ Cleanup schedulers started:');
+
+    this.logger.log('Cleanup schedulers started:');
     this.logger.log('   • 1s bars: Every 1 minute (time-based, 4 min retention = 240 bars)');
     this.logger.log('   • Other timeframes: Every 30 minutes');
   }
 
-  // ✅ FIXED: Time-based cleanup ONLY for 1s bars
   private async aggressiveCleanup1sBars(): Promise<void> {
     if (this.cryptoAssets.length === 0) return;
 
     const startTime = Date.now();
-    this.logger.log('🗑️ 1S CLEANUP STARTED (4-min retention, time-based only)...');
+    this.logger.log('1S CLEANUP STARTED (4-min retention, time-based only)...');
 
     try {
       let totalDeleted = 0;
@@ -182,11 +180,11 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
 
       for (let i = 0; i < this.cryptoAssets.length; i += PARALLEL_ASSETS) {
         const batch = this.cryptoAssets.slice(i, i + PARALLEL_ASSETS);
-        
+
         const results = await Promise.allSettled(
           batch.map(asset => this.cleanupAsset1sTimeBased(asset))
         );
-        
+
         results.forEach((result, index) => {
           if (result.status === 'fulfilled') {
             totalDeleted += result.value.deleted;
@@ -206,31 +204,27 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       this.lastAggressiveCleanupTime = Date.now();
       this.cleanupStats.totalRuns++;
       this.cleanupStats.totalDeleted += totalDeleted;
-      this.cleanupStats.lastRun = Date.now();
       this.cleanupStats.byTimeframe['1s'] = (this.cleanupStats.byTimeframe['1s'] || 0) + totalDeleted;
 
-      this.logger.log(`✅ 1S CLEANUP DONE: ${totalDeleted} bars deleted in ${duration}ms (time-based only)`);
+      this.logger.log(`1S CLEANUP DONE: ${totalDeleted} bars deleted in ${duration}ms (time-based only)`);
 
     } catch (error) {
-      this.logger.error(`❌ Aggressive 1s cleanup failed: ${error.message}`);
+      this.logger.error(`Aggressive 1s cleanup failed: ${error.message}`);
       this.cleanupStats.errors++;
     }
   }
 
-  // ✅ FIXED: Time-based cleanup ONLY - NO max bars limit!
   private async cleanupAsset1sTimeBased(asset: Asset) {
     const path = this.getAssetPath(asset);
     const ohlcPath = `${path}/ohlc_1s`;
     const now = Math.floor(Date.now() / 1000);
-    
-    // ✅ RETENTION: 4 minutes = 240 seconds
+
     const FOUR_MINUTES_AGO = now - 240;
 
     try {
       const useAdminSDK = this.firebaseService.isRealtimeDbAdminAvailable();
 
       if (useAdminSDK) {
-        // ✅ Admin SDK method
         const snapshot = await this.firebaseService.getRealtimeDatabase()
           .ref(ohlcPath)
           .orderByKey()
@@ -251,7 +245,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
             .ref(ohlcPath)
             .limitToLast(1)
             .once('value');
-          
+
           const allData = allSnapshot.val();
           const remaining = allData ? Object.keys(allData).length : 0;
           const oldestKey = allData ? Math.min(...Object.keys(allData).map(k => parseInt(k))) : now;
@@ -260,7 +254,6 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
           return { deleted: 0, remaining, oldestAge };
         }
 
-        // ✅ Batch delete
         const updates: Record<string, null> = {};
         keysToDelete.forEach(key => {
           updates[key] = null;
@@ -270,12 +263,11 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
           .ref(ohlcPath)
           .update(updates);
 
-        // Count remaining
         const remainingSnapshot = await this.firebaseService.getRealtimeDatabase()
           .ref(ohlcPath)
           .limitToLast(1)
           .once('value');
-        
+
         const remainingData = remainingSnapshot.val();
         const remaining = remainingData ? Object.keys(remainingData).length : 0;
         const oldestKey = remainingData ? Math.min(...Object.keys(remainingData).map(k => parseInt(k))) : now;
@@ -284,7 +276,6 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
         return { deleted: keysToDelete.length, remaining, oldestAge };
 
       } else {
-        // ✅ REST API method
         const response = await this.firebaseService.getRealtimeDbValue(
           ohlcPath,
           false
@@ -306,7 +297,6 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
           return { deleted: 0, remaining, oldestAge };
         }
 
-        // Delete via REST API
         for (const key of keysToDelete) {
           await this.firebaseService.setRealtimeDbValue(
             `${ohlcPath}/${key}`,
@@ -329,12 +319,11 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     }
   }
 
-  // ✅ Regular cleanup for other timeframes
   private async regularCleanup(): Promise<void> {
     if (this.cryptoAssets.length === 0) return;
 
     const startTime = Date.now();
-    this.logger.log('🗑️ REGULAR CLEANUP STARTED (all timeframes except 1s)...');
+    this.logger.log('REGULAR CLEANUP STARTED (all timeframes except 1s)...');
 
     try {
       const timeframes = ['1m', '5m', '15m', '30m', '1h', '4h', '1d'];
@@ -355,10 +344,10 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       this.lastCleanupTime = Date.now();
       this.cleanupStats.totalDeleted += totalDeleted;
 
-      this.logger.log(`✅ REGULAR CLEANUP DONE: ${totalDeleted} bars deleted in ${duration}ms`);
+      this.logger.log(`REGULAR CLEANUP DONE: ${totalDeleted} bars deleted in ${duration}ms`);
 
     } catch (error) {
-      this.logger.error(`❌ Regular cleanup failed: ${error.message}`);
+      this.logger.error(`Regular cleanup failed: ${error.message}`);
       this.cleanupStats.errors++;
     }
   }
@@ -366,13 +355,13 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
   private async cleanupTimeframe(asset: Asset, timeframe: string): Promise<number> {
     const path = this.getAssetPath(asset);
     const ohlcPath = `${path}/ohlc_${timeframe}`;
-    
+
     const manager = this.timeframeManagers.get(asset.id);
     if (!manager) return 0;
 
     const retentionDays = manager.getRetentionDays();
     const retention = retentionDays[timeframe];
-    
+
     if (!retention) return 0;
 
     const now = Math.floor(Date.now() / 1000);
@@ -442,11 +431,11 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
   @Cron('*/10 * * * *')
   async refreshCryptoAssets() {
     this.logger.debug('Refreshing crypto assets list...');
-    
+
     const previousCount = this.cryptoAssets.length;
     await this.loadCryptoAssets();
     const currentCount = this.cryptoAssets.length;
-    
+
     if (previousCount === 0 && currentCount > 0) {
       this.logger.log('Crypto assets detected! Starting scheduler...');
       await this.startScheduler();
@@ -465,23 +454,23 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     }
 
     const startTime = Date.now();
-    
+
     try {
       const priceMap = await this.binanceService.getMultiplePrices(
         this.cryptoAssets,
         true
       );
-      
+
       let successCount = 0;
       let failCount = 0;
-      
+
       for (const asset of this.cryptoAssets) {
         const cryptoPrice = priceMap.get(asset.id);
-        
+
         if (cryptoPrice) {
           successCount++;
           await this.generateOHLC(asset, cryptoPrice);
-          
+
           try {
             this.tradingGateway.emitPriceUpdate(asset.id, {
               price: cryptoPrice.price,
@@ -495,24 +484,24 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
           } catch (wsError) {
             this.logger.debug(`WebSocket emit skipped: ${wsError.message}`);
           }
-          
+
         } else {
           failCount++;
         }
       }
-      
+
       this.updateCount++;
       this.lastUpdateTime = Date.now();
-      
+
       const duration = Date.now() - startTime;
-      
+
       if (this.updateCount % 30 === 0) {
         this.logger.log(
           `Update #${this.updateCount}: ${successCount}/${this.cryptoAssets.length} ` +
           `prices + OHLC + WS in ${duration}ms`
         );
       }
-      
+
     } catch (error) {
       this.errorCount++;
       this.logger.error(`Batch update failed: ${error.message}`);
@@ -526,70 +515,67 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
         this.logger.error(`No timeframe manager for ${asset.symbol}`);
         return;
       }
-      
+
       const timestamp = cryptoPrice.timestamp;
       const price = cryptoPrice.price;
       const volume = cryptoPrice.volume24h || 0;
-      
+
       const { completedBars, currentBars } = manager.updateBars(
         asset.id,
         timestamp,
         price,
         volume
       );
-      
+
       const path = this.getAssetPath(asset);
-      
+
       for (const [timeframe, bar] of currentBars.entries()) {
         const barPath = `${path}/ohlc_${timeframe}/${bar.timestamp}`;
-        
+
         await this.firebaseService.setRealtimeDbValue(
           barPath,
           this.cleanBarData(bar),
           false
         );
       }
-      
+
       for (const [timeframe, bar] of completedBars.entries()) {
         const barPath = `${path}/ohlc_${timeframe}/${bar.timestamp}`;
-        
+
         await this.firebaseService.setRealtimeDbValue(
           barPath,
           this.cleanBarData(bar),
           true
         );
       }
-      
+
     } catch (error) {
       this.logger.error(`OHLC generation failed for ${asset.symbol}: ${error.message}`);
     }
   }
 
   @OnEvent('crypto.asset.new')
-async handleNewCryptoAsset(payload: {
-  assetId: string;
-  symbol: string;
-  cryptoConfig: any;
-  realtimeDbPath: string;
-}) {
-  this.logger.log(`🆕 New crypto asset detected via event: ${payload.symbol}`);
-  
-  try {
-    // Reload assets
-    await this.loadCryptoAssets();
-    
-    // Jika scheduler belum aktif, start sekarang
-    if (!this.schedulerActive && this.cryptoAssets.length > 0) {
-      this.logger.log('🚀 Starting crypto scheduler for new asset...');
-      await this.startScheduler();
-    } else {
-      this.logger.log(`⚡ Scheduler already active with ${this.cryptoAssets.length} crypto assets`);
-    }
-  } catch (error) {
-    this.logger.error(`❌ Failed to handle new crypto asset: ${error.message}`);
-  }
-}
+  async handleNewCryptoAsset(payload: {
+    assetId: string;
+    symbol: string;
+    cryptoConfig: any;
+    realtimeDbPath: string;
+  }) {
+    this.logger.log(`New crypto asset detected via event: ${payload.symbol}`);
 
+    try {
+      await this.loadCryptoAssets();
+
+      if (!this.schedulerActive && this.cryptoAssets.length > 0) {
+        this.logger.log('Starting crypto scheduler for new asset...');
+        await this.startScheduler();
+      } else {
+        this.logger.log(`Scheduler already active with ${this.cryptoAssets.length} crypto assets`);
+      }
+    } catch (error) {
+      this.logger.error(`Failed to handle new crypto asset: ${error.message}`);
+    }
+  }
 
   private cleanBarData(bar: any): any {
     return {
@@ -608,16 +594,16 @@ async handleNewCryptoAsset(payload: {
 
   private getAssetPath(asset: Asset): string {
     if (asset.realtimeDbPath) {
-      return asset.realtimeDbPath.startsWith('/') 
-        ? asset.realtimeDbPath 
+      return asset.realtimeDbPath.startsWith('/')
+        ? asset.realtimeDbPath
         : `/${asset.realtimeDbPath}`;
     }
-    
+
     if (!asset.cryptoConfig) {
       this.logger.warn(`Asset ${asset.symbol} missing cryptoConfig, using fallback path`);
       return `/crypto/${asset.symbol.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
     }
-    
+
     const { baseCurrency, quoteCurrency } = asset.cryptoConfig;
     const quote = quoteCurrency.toLowerCase().replace('usd', 'usdt');
     return `/crypto/${baseCurrency.toLowerCase()}_${quote}`;
@@ -628,9 +614,9 @@ async handleNewCryptoAsset(payload: {
     if (!this.schedulerActive || this.cryptoAssets.length === 0) {
       return;
     }
-    
+
     const stats = this.binanceService.getStats();
-    
+
     this.logger.log('');
     this.logger.log('================================================');
     this.logger.log('CRYPTO SCHEDULER STATS');
@@ -644,7 +630,7 @@ async handleNewCryptoAsset(payload: {
     this.logger.log(`Total Runs: ${this.cleanupStats.totalRuns}`);
     this.logger.log(`Total Deleted: ${this.cleanupStats.totalDeleted}`);
     this.logger.log(`Errors: ${this.cleanupStats.errors}`);
-    this.logger.log(`1s Retention: 4 minutes (240 bars) - NO MAX LIMIT ✅`);
+    this.logger.log(`1s Retention: 4 minutes (240 bars) - NO MAX LIMIT`);
     this.logger.log('By Timeframe:');
     Object.entries(this.cleanupStats.byTimeframe).forEach(([tf, count]) => {
       this.logger.log(`  ${tf}: ${count} bars`);
@@ -658,34 +644,34 @@ async handleNewCryptoAsset(payload: {
       this.logger.warn('Cannot trigger update: no crypto assets');
       return;
     }
-    
+
     this.logger.log('Manual update triggered');
     await this.updateAllPrices();
   }
 
   async triggerCleanup(): Promise<void> {
-    this.logger.log('🗑️ Manual cleanup triggered');
+    this.logger.log('Manual cleanup triggered');
     await this.aggressiveCleanup1sBars();
     await this.regularCleanup();
   }
 
   getStatus() {
     const ohlcStats: any = {};
-    
+
     this.cryptoAssets.forEach(asset => {
       const manager = this.timeframeManagers.get(asset.id);
       if (manager) {
         ohlcStats[asset.symbol] = manager.getStats(asset.id);
       }
     });
-    
+
     return {
       isRunning: this.isRunning,
       schedulerActive: this.schedulerActive,
       assetCount: this.cryptoAssets.length,
       updateCount: this.updateCount,
       errorCount: this.errorCount,
-      lastUpdate: this.lastUpdateTime > 0 
+      lastUpdate: this.lastUpdateTime > 0
         ? `${Math.floor((Date.now() - this.lastUpdateTime) / 1000)}s ago`
         : 'Never',
       websocket: {
@@ -698,7 +684,7 @@ async handleNewCryptoAsset(payload: {
           lastRun: this.lastAggressiveCleanupTime > 0
             ? `${Math.floor((Date.now() - this.lastAggressiveCleanupTime) / 60000)}m ago`
             : 'Never',
-          retention: '4 minutes (240 bars) - Time-based only ✅',
+          retention: '4 minutes (240 bars) - Time-based only',
           method: 'Time-based cleanup ONLY, NO max bars limit',
         },
         regular: {
@@ -721,15 +707,15 @@ async handleNewCryptoAsset(payload: {
 
   private async stopScheduler(): Promise<void> {
     this.logger.log('Stopping crypto price scheduler...');
-    
+
     this.isRunning = false;
     this.schedulerActive = false;
-    
+
     if (this.updateIntervalHandle) {
       clearInterval(this.updateIntervalHandle);
       this.updateIntervalHandle = null;
     }
-    
+
     this.logger.log('Crypto price scheduler stopped');
   }
 

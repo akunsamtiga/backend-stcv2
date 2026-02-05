@@ -9,6 +9,21 @@ import {
   ScheduleTimeDto 
 } from '../dto/create-order-schedule.dto';
 
+// ✅ Re-export dari file terpisah
+export { ScheduleExecution } from './schedule-execution.entity';
+
+// ✅ State martingale per order (per scheduled time)
+export interface OrderMartingaleState {
+  scheduledTime: string;
+  currentStep: number;
+  consecutiveLosses: number;
+  lastResult: 'win' | 'loss' | 'draw' | null;
+  lastExecutedAt: Date | null;
+  totalExecuted: number;
+  totalWins: number;
+  totalLosses: number;
+}
+
 export interface OrderSchedule {
   id: string;
   userId: string;
@@ -20,14 +35,17 @@ export interface OrderSchedule {
   accountType: AccountType;
   
   // Order Settings
-  duration: number; // dalam detik
-  amount: number; // dalam IDR
+  duration: number;
+  amount: number;
   
   // Schedules
   schedules: ScheduleTimeDto[];
   
   // Martingale Settings
   martingaleSetting: MartingaleSettingDto;
+  
+  // ✅ State martingale per order
+  orderMartingaleStates?: OrderMartingaleState[];
   
   // Stop Loss/Profit Settings
   stopLossProfit?: StopLossProfitDto;
@@ -37,18 +55,18 @@ export interface OrderSchedule {
   isActive: boolean;
   
   // Execution Tracking
-  totalExecuted: number; // total order yang sudah dieksekusi
-  totalSuccess: number; // total order yang sukses
-  totalFailed: number; // total order yang gagal
+  totalExecuted: number;
+  totalSuccess: number;
+  totalFailed: number;
   
   // Profit/Loss Tracking
-  currentProfit: number; // profit/loss saat ini (IDR)
-  totalProfit: number; // total profit sejak dibuat (IDR)
-  totalLoss: number; // total loss sejak dibuat (IDR)
+  currentProfit: number;
+  totalProfit: number;
+  totalLoss: number;
   
-  // Martingale Tracking
-  currentMartingaleStep: number; // step martingale saat ini
-  consecutiveLosses: number; // jumlah loss berturut-turut
+  // Backward compatibility fields
+  currentMartingaleStep: number;
+  consecutiveLosses: number;
   
   // Last Execution
   lastExecutedAt?: Date;
@@ -58,11 +76,7 @@ export interface OrderSchedule {
   notes?: string;
   createdAt: Date;
   updatedAt: Date;
-  startedAt?: Date; // kapan schedule mulai berjalan
-  completedAt?: Date; // kapan schedule selesai
-  pausedAt?: Date; // kapan schedule di-pause
+  startedAt?: Date;
+  completedAt?: Date;
+  pausedAt?: Date;
 }
-
-// Re-export dari file terpisah
-export { ScheduleExecution } from './schedule-execution.entity';
-export { ScheduleStatistics } from './schedule-statistics.entity';

@@ -21,30 +21,29 @@ export interface BinancePrice {
 export class BinanceService {
   private readonly logger = new Logger(BinanceService.name);
   private readonly axios: AxiosInstance;
-  
+
   private priceCache: Map<string, {
     price: BinancePrice;
     timestamp: number;
   }> = new Map();
-  
+
   private pendingRequests: Map<string, Promise<BinancePrice | null>> = new Map();
-  
-  // ✅ REDUCED CACHE for true 1-second updates
-  private readonly CACHE_TTL = 500;  // 500ms instead of 1000ms
+
+  private readonly CACHE_TTL = 500;
   private readonly STALE_CACHE_TTL = 5000;
-  
+
   private apiCallCount = 0;
   private cacheHitCount = 0;
   private errorCount = 0;
   private deduplicatedCount = 0;
   private lastCallTime = 0;
   private realtimeWriteCount = 0;
-  
+
   private lastApiCallTime = 0;
-  private readonly MIN_CALL_INTERVAL = 50;  // 50ms instead of 60ms
+  private readonly MIN_CALL_INTERVAL = 50;
   private isRateLimited = false;
   private rateLimitUntil = 0;
-  
+
   private readonly BINANCE_SYMBOL_MAP: Record<string, string> = {
     'BTC': 'BTCUSDT',
     'ETH': 'ETHUSDT',
@@ -86,49 +85,31 @@ export class BinanceService {
     });
 
     setInterval(() => this.cleanupCache(), 5000);
-    
-    this.logger.log('');
-    this.logger.log('⚡ ================================================');
-    this.logger.log('⚡ BINANCE SERVICE - TRUE 1-SECOND MODE');
-    this.logger.log('⚡ ================================================');
-    this.logger.log('⚡ Cache TTL: 500ms → TRUE REALTIME! ✅');
-    this.logger.log('⚡ Update Frequency: Every 1 second (actual)');
-    this.logger.log('⚡ API Calls: ~7,200/hour per asset (2× vs old)');
-    this.logger.log('⚡ Safe For: Up to 10 crypto assets');
-    this.logger.log('⚡ Rate Limit: 1200 req/min (Binance FREE)');
-    this.logger.log('⚡ Deduplication: ENABLED');
-    this.logger.log('⚡ Auto USD→USDT: ENABLED');
-    this.logger.log('⚡ 1s Trading: FULLY SUPPORTED ✅');
-    this.logger.log('⚡ ================================================');
-    this.logger.log('');
-    this.logger.warn('⚠️  WARNING: Higher API usage for true 1s updates!');
-    this.logger.warn('⚠️  Recommended: Max 8-10 crypto assets');
-    this.logger.warn('⚠️  Monitor rate limits closely!');
-    this.logger.log('');
+
+    this.logger.log('Binance Service initialized with 500ms cache TTL');
   }
 
   async getCurrentPrice(asset: Asset, forceFresh = false): Promise<BinancePrice | null> {
     if (!asset.cryptoConfig) {
-      this.logger.error(`❌ Asset ${asset.symbol} missing cryptoConfig`);
+      this.logger.error(`Asset ${asset.symbol} missing cryptoConfig`);
       return null;
     }
 
     const { baseCurrency } = asset.cryptoConfig;
     let { quoteCurrency } = asset.cryptoConfig;
-    
+
     if (quoteCurrency.toUpperCase() === 'USD') {
       quoteCurrency = 'USDT';
     }
-    
+
     const binanceSymbol = this.getBinanceSymbol(baseCurrency);
     if (!binanceSymbol) {
-      this.logger.error(`❌ Unsupported coin: ${baseCurrency}`);
+      this.logger.error(`Unsupported coin: ${baseCurrency}`);
       return null;
     }
 
     const cacheKey = `${baseCurrency}/${quoteCurrency}`;
 
-    // ✅ FORCE FRESH: Skip cache if requested
     if (!forceFresh) {
       const cached = this.getCachedPrice(cacheKey);
       if (cached) {
@@ -140,7 +121,7 @@ export class BinanceService {
     const pending = this.pendingRequests.get(cacheKey);
     if (pending) {
       this.deduplicatedCount++;
-      this.logger.debug(`🔄 Deduplicated request for ${cacheKey}`);
+      this.logger.debug(`Deduplicated request for ${cacheKey}`);
       return await pending;
     }
 
@@ -165,13 +146,13 @@ export class BinanceService {
       if (now < this.rateLimitUntil) {
         const staleCache = this.getStaleCache(cacheKey);
         if (staleCache) {
-          this.logger.warn(`⚠️ Using stale cache for ${cacheKey} (rate limited)`);
+          this.logger.warn(`Using stale cache for ${cacheKey} (rate limited)`);
           return staleCache;
         }
         return null;
       } else {
         this.isRateLimited = false;
-        this.logger.log('✅ Rate limit expired, resuming');
+        this.logger.log('Rate limit expired, resuming');
       }
     }
 
@@ -196,7 +177,7 @@ export class BinanceService {
       }
 
       const data = response.data;
-      
+
       const price: BinancePrice = {
         price: parseFloat(parseFloat(data.lastPrice).toFixed(6)),
         timestamp: TimezoneUtil.getCurrentTimestamp(),
@@ -214,12 +195,12 @@ export class BinanceService {
       });
 
       this.writePriceToRealtimeDb(asset, price).catch(error => {
-        this.logger.error(`❌ RT DB write failed: ${error.message}`);
+        this.logger.error(`Realtime DB write failed: ${error.message}`);
       });
 
       if (this.apiCallCount % 60 === 0) {
         this.logger.log(
-          `⚡ ${cacheKey}: $${price.price} ` +
+          `${cacheKey}: $${price.price} ` +
           `(${price.changePercent24h?.toFixed(2)}%) ` +
           `[API #${this.apiCallCount}, Rate: ${this.calculateAPIRate()}/min]`
         );
@@ -229,27 +210,26 @@ export class BinanceService {
 
     } catch (error) {
       this.errorCount++;
-      
+
       if (error.response?.status === 429) {
         this.isRateLimited = true;
         this.rateLimitUntil = Date.now() + 60000;
-        
-        this.logger.error(`🚨 RATE LIMIT HIT (429) for ${cacheKey}!`);
-        this.logger.error(`⏸️ Paused for 60 seconds`);
-        this.logger.error(`📊 Total API calls: ${this.apiCallCount}`);
-        this.logger.error(`📊 Consider reducing crypto assets or increasing cache!`);
-        
+
+        this.logger.error(`Rate limit hit (429) for ${cacheKey}!`);
+        this.logger.error(`Paused for 60 seconds`);
+        this.logger.error(`Total API calls: ${this.apiCallCount}`);
+
         const staleCache = this.getStaleCache(cacheKey);
         if (staleCache) {
           return staleCache;
         }
       } else if (error.response) {
         this.logger.error(
-          `❌ API error for ${binanceSymbol}: ` +
+          `API error for ${binanceSymbol}: ` +
           `${error.response.status} - ${error.response.statusText}`
         );
       } else {
-        this.logger.error(`❌ Error for ${cacheKey}: ${error.message}`);
+        this.logger.error(`Error for ${cacheKey}: ${error.message}`);
       }
 
       return null;
@@ -258,15 +238,15 @@ export class BinanceService {
 
   async getMultiplePrices(
     assets: Asset[],
-    forceFresh = true  // ✅ Default to fresh for scheduler
+    forceFresh = true
   ): Promise<Map<string, BinancePrice | null>> {
     const results = new Map<string, BinancePrice | null>();
-    
+
     const promises = assets.map(async (asset) => {
       if (!asset.cryptoConfig) {
         return { assetId: asset.id, price: null };
       }
-      
+
       try {
         const price = await this.getCurrentPrice(asset, forceFresh);
         return { assetId: asset.id, price };
@@ -277,7 +257,7 @@ export class BinanceService {
     });
 
     const settled = await Promise.allSettled(promises);
-    
+
     settled.forEach((result) => {
       if (result.status === 'fulfilled' && result.value) {
         results.set(result.value.assetId, result.value.price);
@@ -289,10 +269,10 @@ export class BinanceService {
 
   private calculateAPIRate(): number {
     if (this.lastCallTime === 0) return 0;
-    
+
     const uptimeSeconds = (Date.now() - this.lastCallTime) / 1000;
     if (uptimeSeconds < 1) return 0;
-    
+
     return Math.round((this.apiCallCount / uptimeSeconds) * 60);
   }
 
@@ -313,9 +293,9 @@ export class BinanceService {
 
     const binanceSymbol = this.getBinanceSymbol(baseCurrency);
     if (!binanceSymbol) {
-      return { 
-        valid: false, 
-        error: `Unsupported coin: ${baseCurrency}. Supported: ${Object.keys(this.BINANCE_SYMBOL_MAP).join(', ')}` 
+      return {
+        valid: false,
+        error: `Unsupported coin: ${baseCurrency}. Supported: ${Object.keys(this.BINANCE_SYMBOL_MAP).join(', ')}`
       };
     }
 
@@ -364,7 +344,7 @@ export class BinanceService {
       this.realtimeWriteCount++;
 
     } catch (error) {
-      this.logger.error(`❌ RT DB write failed: ${error.message}`);
+      this.logger.error(`Realtime DB write failed: ${error.message}`);
     }
   }
 
@@ -374,16 +354,16 @@ export class BinanceService {
     }
 
     if (asset.realtimeDbPath) {
-      return asset.realtimeDbPath.startsWith('/') 
-        ? asset.realtimeDbPath 
+      return asset.realtimeDbPath.startsWith('/')
+        ? asset.realtimeDbPath
         : `/${asset.realtimeDbPath}`;
     }
 
     const { baseCurrency, quoteCurrency } = asset.cryptoConfig;
-    const normalizedQuote = quoteCurrency.toUpperCase() === 'USD' 
-      ? 'usdt' 
+    const normalizedQuote = quoteCurrency.toUpperCase() === 'USD'
+      ? 'usdt'
       : quoteCurrency.toLowerCase();
-    
+
     return `/crypto/${baseCurrency.toLowerCase()}_${normalizedQuote}`;
   }
 
@@ -409,7 +389,7 @@ export class BinanceService {
 
   private cleanupCache(): void {
     const now = Date.now();
-    
+
     for (const [key, cached] of this.priceCache.entries()) {
       if (now - cached.timestamp > this.STALE_CACHE_TTL) {
         this.priceCache.delete(key);
@@ -428,40 +408,40 @@ export class BinanceService {
     const estimatedCallsPerHour = uptimeSeconds > 0
       ? Math.round((this.apiCallCount / uptimeSeconds) * 3600)
       : 0;
-    
+
     const currentRatePerMin = this.calculateAPIRate();
 
     return {
-      mode: '⚡ TRUE 1-SECOND MODE (500ms cache)',
+      mode: 'True 1-Second Mode (500ms cache)',
       apiCalls: this.apiCallCount,
       cacheHits: this.cacheHitCount,
       deduplicated: this.deduplicatedCount,
       cacheHitRate: `${cacheHitRate}%`,
       errors: this.errorCount,
       realtimeWrites: this.realtimeWriteCount,
-      rateLimit: this.isRateLimited 
-        ? `🚨 RATE LIMITED until ${new Date(this.rateLimitUntil).toLocaleTimeString()}` 
-        : '✅ OK',
-      cacheTTL: '500ms ⚡ TRUE REALTIME!',
+      rateLimit: this.isRateLimited
+        ? `Rate limited until ${new Date(this.rateLimitUntil).toLocaleTimeString()}`
+        : 'OK',
+      cacheTTL: '500ms',
       performance: {
         currentRatePerMin: `${currentRatePerMin} calls/min`,
         estimatedCallsPerHour: estimatedCallsPerHour,
         binanceLimit: '1200 calls/min',
         utilizationPercent: Math.round((currentRatePerMin / 1200) * 100),
         avgCacheAge: '~0.25s',
-        updateFrequency: 'Every ~1s (actual)',
+        updateFrequency: 'Every ~1s',
       },
       capacity: {
         currentAssets: this.priceCache.size,
         maxRecommended: 10,
         maxTheoretical: 15,
-        warning: estimatedCallsPerHour > 60000 
-          ? '⚠️ HIGH API USAGE - Consider reducing assets!' 
-          : '✅ Usage normal',
+        warning: estimatedCallsPerHour > 60000
+          ? 'High API usage - Consider reducing assets!'
+          : 'Usage normal',
       },
       comparison: {
-        vsOldCache: '2× more API calls (better realtime)',
-        benefit: 'True 1-second updates ✅',
+        vsOldCache: '2x more API calls (better realtime)',
+        benefit: 'True 1-second updates',
         tradeoff: 'Higher API usage for better UX',
       }
     };
@@ -470,6 +450,6 @@ export class BinanceService {
   clearCache(): void {
     this.priceCache.clear();
     this.pendingRequests.clear();
-    this.logger.log('🗑️ Cache cleared');
+    this.logger.log('Cache cleared');
   }
 }

@@ -33,10 +33,6 @@ export class AuthController {
     return this.authService.login(loginDto);
   }
 
-  // ============================================
-  // GOOGLE SIGN-IN
-  // ============================================
-
   @Post('google')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ 

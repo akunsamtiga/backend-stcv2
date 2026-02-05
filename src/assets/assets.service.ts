@@ -1,4 +1,5 @@
 // src/assets/assets.service.ts
+
 import { Injectable, NotFoundException, ConflictException, Logger, RequestTimeoutException, BadRequestException } from '@nestjs/common';
 import { FirebaseService } from '../firebase/firebase.service';
 import { PriceFetcherService } from './services/price-fetcher.service';
@@ -14,13 +15,10 @@ import { InitializeAssetCandlesHelper } from './helpers/initialize-asset-candles
 @Injectable()
 export class AssetsService {
   private readonly logger = new Logger(AssetsService.name);
-  
   private assetCache: Map<string, { asset: Asset; timestamp: number }> = new Map();
   private allAssetsCache: { assets: Asset[]; timestamp: number } | null = null;
-  
   private readonly ASSET_CACHE_TTL = 60000;
   private readonly ALL_ASSETS_CACHE_TTL = 30000;
-
   private readonly DEFAULT_SIMULATOR_SETTINGS = {
     initialPrice: 40.022,
     dailyVolatilityMin: 0.001,
@@ -30,7 +28,6 @@ export class AssetsService {
     minPrice: 20.011,
     maxPrice: 80.044,
   };
-
   private readonly DEFAULT_TRADING_SETTINGS = {
     minOrderAmount: 1000,
     maxOrderAmount: 1000000,
@@ -55,7 +52,7 @@ export class AssetsService {
         this.logger.error(`Cache warmup delayed: ${error.message}`);
       }
     }, 3000);
-    
+
     setInterval(() => this.refreshCache(), 60000);
   }
 
@@ -63,31 +60,24 @@ export class AssetsService {
     if (obj === null || obj === undefined) {
       return obj;
     }
-    
     if (Array.isArray(obj)) {
       return obj.map(item => this.toPlainObject(item));
     }
-    
     if (obj instanceof Date) {
       return obj.toISOString();
     }
-    
     if (typeof obj === 'object') {
       const plain: any = {};
-      
       for (const key in obj) {
         if (obj.hasOwnProperty(key)) {
           const value = obj[key];
-          
           if (value !== undefined) {
             plain[key] = this.toPlainObject(value);
           }
         }
       }
-      
       return plain;
     }
-    
     return obj;
   }
 
@@ -100,48 +90,46 @@ export class AssetsService {
 
   private validateSimulatorSettingsHighPrecision(settings: any): void {
     if (!settings) return;
-    
+
     if (settings.dailyVolatilityMin > settings.dailyVolatilityMax) {
       throw new BadRequestException(
         'dailyVolatilityMin must be <= dailyVolatilityMax'
       );
     }
-    
+
     if (settings.secondVolatilityMin > settings.secondVolatilityMax) {
       throw new BadRequestException(
         'secondVolatilityMin must be <= secondVolatilityMax'
       );
     }
-    
+
     if (settings.minPrice !== undefined && settings.maxPrice !== undefined) {
       if (settings.minPrice >= settings.maxPrice) {
         throw new BadRequestException(
           `minPrice (${settings.minPrice}) must be < maxPrice (${settings.maxPrice})`
         );
       }
-      
+
       const priceRange = settings.maxPrice - settings.minPrice;
-      
       if (priceRange < 0.0000001) {
         throw new BadRequestException(
           `Price range too small: ${priceRange.toExponential()}. Minimum range is 0.0000001`
         );
       }
-      
+
       if (settings.initialPrice < settings.minPrice || settings.initialPrice > settings.maxPrice) {
         throw new BadRequestException(
           `initialPrice (${settings.initialPrice}) must be between minPrice (${settings.minPrice}) and maxPrice (${settings.maxPrice})`
         );
       }
     }
-    
+
     if (settings.minPrice !== undefined && settings.maxPrice !== undefined && settings.secondVolatilityMax !== undefined) {
       const priceRange = settings.maxPrice - settings.minPrice;
       const maxPriceChange = settings.initialPrice * settings.secondVolatilityMax;
-      
       if (maxPriceChange > priceRange) {
         this.logger.warn(
-          `⚠️ High volatility: Max price change per second (${maxPriceChange.toExponential()}) ` +
+          `High volatility: Max price change per second (${maxPriceChange.toExponential()}) ` +
           `exceeds price range (${priceRange.toExponential()}). ` +
           `Price may hit boundaries frequently.`
         );
@@ -151,13 +139,12 @@ export class AssetsService {
 
   async createAsset(createAssetDto: CreateAssetDto, createdBy: string) {
     try {
-      this.logger.log('🔧 Starting asset creation...');
+      this.logger.log('Starting asset creation...');
       this.logger.log(`Category: ${createAssetDto.category}`);
       this.logger.log(`Type: ${createAssetDto.type}`);
       this.logger.log(`DataSource: ${createAssetDto.dataSource}`);
-      
-      const db = this.firebaseService.getFirestore();
 
+      const db = this.firebaseService.getFirestore();
       const existingSnapshot = await db.collection(COLLECTIONS.ASSETS)
         .where('symbol', '==', createAssetDto.symbol)
         .limit(1)
@@ -169,27 +156,27 @@ export class AssetsService {
 
       if (createAssetDto.icon) {
         const isBase64 = createAssetDto.icon.startsWith('data:image/');
-        const isURL = createAssetDto.icon.startsWith('http://') || 
-                      createAssetDto.icon.startsWith('https://');
-        
+        const isURL = createAssetDto.icon.startsWith('http://') ||
+          createAssetDto.icon.startsWith('https://');
+
         if (!isBase64 && !isURL) {
           throw new BadRequestException(
             'Icon must be a valid URL or base64 encoded image'
           );
         }
-        
+
         if (isBase64 && createAssetDto.icon.length > 2800000) {
           throw new BadRequestException(
             'Icon file too large. Maximum size is 2MB'
           );
         }
-        
+
         if (isBase64) {
           const validFormats = ['data:image/png', 'data:image/jpeg', 'data:image/jpg', 'data:image/svg+xml'];
-          const hasValidFormat = validFormats.some(format => 
+          const hasValidFormat = validFormats.some(format =>
             createAssetDto.icon!.startsWith(format)
           );
-          
+
           if (!hasValidFormat) {
             throw new BadRequestException(
               'Icon must be PNG, JPEG, JPG, or SVG format'
@@ -225,29 +212,28 @@ export class AssetsService {
         throw new BadRequestException('Category is required (normal or crypto)');
       }
 
-      if (createAssetDto.category !== ASSET_CATEGORY.NORMAL && 
-          createAssetDto.category !== ASSET_CATEGORY.CRYPTO) {
+      if (createAssetDto.category !== ASSET_CATEGORY.NORMAL &&
+        createAssetDto.category !== ASSET_CATEGORY.CRYPTO) {
         throw new BadRequestException(
           `Invalid category: ${createAssetDto.category}. Must be 'normal' or 'crypto'`
         );
       }
 
       if (createAssetDto.category === ASSET_CATEGORY.CRYPTO) {
-        this.logger.log('🔍 Validating crypto asset...');
+        this.logger.log('Validating crypto asset...');
         await this.validateCryptoAsset(createAssetDto);
       } else {
-        this.logger.log('🔍 Validating normal asset...');
+        this.logger.log('Validating normal asset...');
         this.validateNormalAsset(createAssetDto);
       }
 
       const assetId = await this.firebaseService.generateId(COLLECTIONS.ASSETS);
       const timestamp = new Date().toISOString();
-
       let assetData: any;
 
       if (createAssetDto.category === ASSET_CATEGORY.CRYPTO) {
-        this.logger.log('💎 Creating crypto asset...');
-        
+        this.logger.log('Creating crypto asset...');
+
         if (!createAssetDto.cryptoConfig) {
           throw new BadRequestException('cryptoConfig is required for crypto assets');
         }
@@ -257,7 +243,7 @@ export class AssetsService {
           createAssetDto.tradingSettings || this.DEFAULT_TRADING_SETTINGS
         );
 
-        const realtimeDbPath = createAssetDto.realtimeDbPath || 
+        const realtimeDbPath = createAssetDto.realtimeDbPath ||
           `/crypto/${plainCryptoConfig.baseCurrency.toLowerCase()}_${plainCryptoConfig.quoteCurrency.toLowerCase()}`;
 
         assetData = {
@@ -283,14 +269,14 @@ export class AssetsService {
           createdBy,
         };
 
-        this.logger.log('💎 Crypto asset data prepared:', {
+        this.logger.log('Crypto asset data prepared:', {
           pair: `${assetData.cryptoConfig.baseCurrency}/${assetData.cryptoConfig.quoteCurrency}`,
           path: realtimeDbPath,
         });
 
       } else {
-        this.logger.log('📊 Creating normal asset...');
-        
+        this.logger.log('Creating normal asset...');
+
         if (createAssetDto.dataSource === ASSET_DATA_SOURCE.REALTIME_DB) {
           if (!createAssetDto.realtimeDbPath) {
             throw new BadRequestException('realtimeDbPath is required for realtime_db data source');
@@ -301,18 +287,17 @@ export class AssetsService {
         }
 
         const baseSimulatorSettings = createAssetDto.simulatorSettings || this.DEFAULT_SIMULATOR_SETTINGS;
-        
         const plainSimulatorSettings = this.toPlainObject({
           initialPrice: this.preserveHighPrecision(baseSimulatorSettings.initialPrice, this.DEFAULT_SIMULATOR_SETTINGS.initialPrice),
           dailyVolatilityMin: this.preserveHighPrecision(baseSimulatorSettings.dailyVolatilityMin, this.DEFAULT_SIMULATOR_SETTINGS.dailyVolatilityMin),
           dailyVolatilityMax: this.preserveHighPrecision(baseSimulatorSettings.dailyVolatilityMax, this.DEFAULT_SIMULATOR_SETTINGS.dailyVolatilityMax),
           secondVolatilityMin: this.preserveHighPrecision(baseSimulatorSettings.secondVolatilityMin, this.DEFAULT_SIMULATOR_SETTINGS.secondVolatilityMin),
           secondVolatilityMax: this.preserveHighPrecision(baseSimulatorSettings.secondVolatilityMax, this.DEFAULT_SIMULATOR_SETTINGS.secondVolatilityMax),
-          minPrice: baseSimulatorSettings.minPrice !== undefined 
-            ? this.preserveHighPrecision(baseSimulatorSettings.minPrice) 
+          minPrice: baseSimulatorSettings.minPrice !== undefined
+            ? this.preserveHighPrecision(baseSimulatorSettings.minPrice)
             : baseSimulatorSettings.initialPrice * 0.5,
-          maxPrice: baseSimulatorSettings.maxPrice !== undefined 
-            ? this.preserveHighPrecision(baseSimulatorSettings.maxPrice) 
+          maxPrice: baseSimulatorSettings.maxPrice !== undefined
+            ? this.preserveHighPrecision(baseSimulatorSettings.maxPrice)
             : baseSimulatorSettings.initialPrice * 2.0,
         });
 
@@ -342,61 +327,49 @@ export class AssetsService {
           createdBy,
         };
 
-        this.logger.log('📊 Normal asset data prepared:', {
+        this.logger.log('Normal asset data prepared:', {
           dataSource: assetData.dataSource,
           realtimeDbPath: assetData.realtimeDbPath,
         });
       }
 
       const plainAssetData = this.toPlainObject(assetData);
-
-      this.logger.log(`💾 Saving asset to Firestore...`);
+      this.logger.log(`Saving asset to Firestore...`);
       await db.collection(COLLECTIONS.ASSETS).doc(assetId).set(plainAssetData);
 
-      // ============================================
-      // ✅ INITIALIZE 240 CANDLES FOR NORMAL ASSETS
-      // ✅ UPDATED: Pass full simulatorSettings instead of just volatility
-      // ============================================
-      if (createAssetDto.category === ASSET_CATEGORY.NORMAL && 
-          (createAssetDto.dataSource === ASSET_DATA_SOURCE.REALTIME_DB || 
-           createAssetDto.dataSource === ASSET_DATA_SOURCE.MOCK)) {
-        
-        this.logger.log(`📈 Initializing 240 candles for ${createAssetDto.symbol}...`);
-        
-        try {
-          const initialPrice = plainAssetData.simulatorSettings?.initialPrice || 
-                              createAssetDto.initialPrice || 
-                              1.0;
+      if (createAssetDto.category === ASSET_CATEGORY.NORMAL &&
+        (createAssetDto.dataSource === ASSET_DATA_SOURCE.REALTIME_DB ||
+          createAssetDto.dataSource === ASSET_DATA_SOURCE.MOCK)) {
+        this.logger.log(`Initializing 240 candles for ${createAssetDto.symbol}...`);
 
-          // ✅ UPDATED: Pass FULL simulatorSettings object instead of just volatility
+        try {
+          const initialPrice = plainAssetData.simulatorSettings?.initialPrice ||
+            createAssetDto.initialPrice ||
+            1.0;
+
           await this.initializeCandlesHelper.initializeAssetCandles(
             assetId,
             createAssetDto.symbol,
             plainAssetData.realtimeDbPath,
             initialPrice,
-            plainAssetData.simulatorSettings, // ✅ CHANGED: Pass entire settings object
+            plainAssetData.simulatorSettings,
           );
 
-          this.logger.log(`✅ 240 candles initialized successfully for ${createAssetDto.symbol}`);
-          
-          // ✅ NEW: Log the settings used for transparency
+          this.logger.log(`240 candles initialized successfully for ${createAssetDto.symbol}`);
+
           if (plainAssetData.simulatorSettings) {
-            this.logger.log(`📊 Candles generated with settings:`);
+            this.logger.log(`Candles generated with settings:`);
             this.logger.log(`   Daily Volatility: ${plainAssetData.simulatorSettings.dailyVolatilityMin} - ${plainAssetData.simulatorSettings.dailyVolatilityMax}`);
             this.logger.log(`   Second Volatility: ${plainAssetData.simulatorSettings.secondVolatilityMin} - ${plainAssetData.simulatorSettings.secondVolatilityMax}`);
             this.logger.log(`   Price Range: ${plainAssetData.simulatorSettings.minPrice} - ${plainAssetData.simulatorSettings.maxPrice}`);
           }
         } catch (candleError) {
-          this.logger.error(`❌ Failed to initialize candles: ${candleError.message}`);
+          this.logger.error(`Failed to initialize candles: ${candleError.message}`);
         }
       }
 
       this.invalidateCache();
 
-      // ============================================
-      // 🔔 EMIT EVENT UNTUK NOTIFY SERVICE LAIN
-      // ============================================
-      // Emit event agar simulator langsung pick up asset baru tanpa restart
       this.eventEmitter.emit('asset.created', {
         assetId,
         symbol: createAssetDto.symbol,
@@ -408,7 +381,6 @@ export class AssetsService {
         simulatorSettings: plainAssetData.simulatorSettings,
       });
 
-      // Emit event khusus untuk simulator relay
       if (createAssetDto.category === ASSET_CATEGORY.NORMAL) {
         this.eventEmitter.emit('simulator.asset.new', {
           assetId,
@@ -416,10 +388,9 @@ export class AssetsService {
           realtimeDbPath: plainAssetData.realtimeDbPath,
           simulatorSettings: plainAssetData.simulatorSettings,
         });
-        this.logger.log(`📡 Emitted simulator.asset.new event for ${createAssetDto.symbol}`);
+        this.logger.log(`Emitted simulator.asset.new event for ${createAssetDto.symbol}`);
       }
 
-      // Emit event khusus untuk crypto scheduler
       if (createAssetDto.category === ASSET_CATEGORY.CRYPTO) {
         this.eventEmitter.emit('crypto.asset.new', {
           assetId,
@@ -427,78 +398,75 @@ export class AssetsService {
           cryptoConfig: plainAssetData.cryptoConfig,
           realtimeDbPath: plainAssetData.realtimeDbPath,
         });
-        this.logger.log(`📡 Emitted crypto.asset.new event for ${createAssetDto.symbol}`);
+        this.logger.log(`Emitted crypto.asset.new event for ${createAssetDto.symbol}`);
       }
 
       this.logger.log('');
-      this.logger.log('');
-      this.logger.log('🎉 ================================================');
-      this.logger.log(`🎉 NEW ${createAssetDto.type.toUpperCase()} ASSET: ${createAssetDto.symbol}`);
-      this.logger.log('🎉 ================================================');
+      this.logger.log('===============================================');
+      this.logger.log(`NEW ${createAssetDto.type.toUpperCase()} ASSET: ${createAssetDto.symbol}`);
+      this.logger.log('===============================================');
       this.logger.log(`   Name: ${createAssetDto.name}`);
       this.logger.log(`   Icon: ${plainAssetData.icon}`);
       this.logger.log(`   Type: ${createAssetDto.type.toUpperCase()}`);
       this.logger.log(`   Category: ${createAssetDto.category.toUpperCase()}`);
       this.logger.log(`   Data Source: ${createAssetDto.dataSource}`);
-      
       if (createAssetDto.category === ASSET_CATEGORY.CRYPTO) {
-        this.logger.log(`   💎 Pair: ${createAssetDto.cryptoConfig?.baseCurrency}/${createAssetDto.cryptoConfig?.quoteCurrency}`);
+        this.logger.log(`   Pair: ${createAssetDto.cryptoConfig?.baseCurrency}/${createAssetDto.cryptoConfig?.quoteCurrency}`);
         if (createAssetDto.cryptoConfig?.exchange) {
-          this.logger.log(`   💎 Exchange: ${createAssetDto.cryptoConfig.exchange}`);
+          this.logger.log(`   Exchange: ${createAssetDto.cryptoConfig.exchange}`);
         }
-        this.logger.log(`   🔗 RT DB Path: ${plainAssetData.realtimeDbPath}`);
-        this.logger.log(`   ⚡ Price Source: Binance API (FREE)`);
+        this.logger.log(`   RT DB Path: ${plainAssetData.realtimeDbPath}`);
+        this.logger.log(`   Price Source: Binance API (FREE)`);
       } else {
-        this.logger.log(`   🔗 RT DB Path: ${createAssetDto.realtimeDbPath || 'N/A'}`);
-        this.logger.log(`   ⚡ Simulator: WILL BE SIMULATED`);
+        this.logger.log(`   RT DB Path: ${createAssetDto.realtimeDbPath || 'N/A'}`);
+        this.logger.log(`   Simulator: WILL BE SIMULATED`);
         if (plainAssetData.simulatorSettings) {
-          this.logger.log(`   💰 Initial Price: ${plainAssetData.simulatorSettings.initialPrice}`);
-          this.logger.log(`   📊 Price Range: ${plainAssetData.simulatorSettings.minPrice} - ${plainAssetData.simulatorSettings.maxPrice}`);
+          this.logger.log(`   Initial Price: ${plainAssetData.simulatorSettings.initialPrice}`);
+          this.logger.log(`   Price Range: ${plainAssetData.simulatorSettings.minPrice} - ${plainAssetData.simulatorSettings.maxPrice}`);
         }
-        this.logger.log(`   📈 240 Candles: ${createAssetDto.dataSource === ASSET_DATA_SOURCE.REALTIME_DB || createAssetDto.dataSource === ASSET_DATA_SOURCE.MOCK ? 'GENERATED ✅' : 'SKIPPED (API source)'}`);
+        this.logger.log(`   240 Candles: ${createAssetDto.dataSource === ASSET_DATA_SOURCE.REALTIME_DB || createAssetDto.dataSource === ASSET_DATA_SOURCE.MOCK ? 'GENERATED' : 'SKIPPED (API source)'}`);
       }
-      
-      this.logger.log(`   📈 Profit Rate: ${createAssetDto.profitRate}%`);
-      this.logger.log(`   🎯 Status: ${createAssetDto.isActive ? 'ACTIVE' : 'INACTIVE'}`);
-      this.logger.log('🎉 ================================================');
+      this.logger.log(`   Profit Rate: ${createAssetDto.profitRate}%`);
+      this.logger.log(`   Status: ${createAssetDto.isActive ? 'ACTIVE' : 'INACTIVE'}`);
+      this.logger.log('===============================================');
       this.logger.log('');
 
       return {
         message: `${createAssetDto.type} ${createAssetDto.category} asset created successfully`,
         asset: plainAssetData,
-        storageInfo: createAssetDto.category === 'crypto' 
+        storageInfo: createAssetDto.category === 'crypto'
           ? {
-              type: 'crypto',
-              description: '💎 Crypto prices fetched from Binance API and stored to Realtime Database',
-              priceFlow: 'Binance API → Backend → Realtime Database',
-              realtimeDbPath: plainAssetData.realtimeDbPath,
-              updateFrequency: 'Every price fetch (cached 60s)',
-              simulatorUsed: false,
-              icon: plainAssetData.icon,
-              apiInfo: 'Binance FREE - No API key needed',
-            }
+            type: 'crypto',
+            description: 'Crypto prices fetched from Binance API and stored to Realtime Database',
+            priceFlow: 'Binance API → Backend → Realtime Database',
+            realtimeDbPath: plainAssetData.realtimeDbPath,
+            updateFrequency: 'Every price fetch (cached 60s)',
+            simulatorUsed: false,
+            icon: plainAssetData.icon,
+            apiInfo: 'Binance FREE - No API key needed',
+          }
           : {
-              type: 'normal',
-              description: '📊 Normal asset will be simulated by trading-simulator service',
-              priceFlow: 'Simulator → Realtime Database',
-              realtimeDbPath: plainAssetData.realtimeDbPath,
-              updateFrequency: '1 second',
-              icon: plainAssetData.icon,
-              simulatorUsed: true,
-              candlesInitialized: createAssetDto.dataSource === ASSET_DATA_SOURCE.REALTIME_DB || createAssetDto.dataSource === ASSET_DATA_SOURCE.MOCK,
-              initialCandles: 240,
-            },
+            type: 'normal',
+            description: 'Normal asset will be simulated by trading-simulator service',
+            priceFlow: 'Simulator → Realtime Database',
+            realtimeDbPath: plainAssetData.realtimeDbPath,
+            updateFrequency: '1 second',
+            icon: plainAssetData.icon,
+            simulatorUsed: true,
+            candlesInitialized: createAssetDto.dataSource === ASSET_DATA_SOURCE.REALTIME_DB || createAssetDto.dataSource === ASSET_DATA_SOURCE.MOCK,
+            initialCandles: 240,
+          },
       };
 
     } catch (error) {
-      this.logger.error('❌ Asset creation error:', error.message);
+      this.logger.error('Asset creation error:', error.message);
       this.logger.error(error.stack);
-      
-      if (error instanceof BadRequestException || 
-          error instanceof ConflictException) {
+
+      if (error instanceof BadRequestException ||
+        error instanceof ConflictException) {
         throw error;
       }
-      
+
       throw new BadRequestException(
         `Failed to create asset: ${error.message}`
       );
@@ -507,7 +475,6 @@ export class AssetsService {
 
   async bulkCreateAssets(assets: CreateAssetDto[], createdBy: string) {
     this.logger.log(`Bulk creating ${assets.length} assets`);
-
     const results = [];
     let successCount = 0;
     let failCount = 0;
@@ -515,10 +482,10 @@ export class AssetsService {
     for (const assetDto of assets) {
       try {
         const result = await this.createAsset(assetDto, createdBy);
-        results.push({ 
-          success: true, 
+        results.push({
+          success: true,
           symbol: assetDto.symbol,
-          data: result 
+          data: result
         });
         successCount++;
       } catch (error) {
@@ -556,7 +523,6 @@ export class AssetsService {
       'MATIC': 'https://cryptologos.cc/logos/polygon-matic-logo.png',
       'LTC': 'https://cryptologos.cc/logos/litecoin-ltc-logo.png',
     };
-    
     return iconMap[currency] || `https://via.placeholder.com/64?text=${currency}`;
   }
 
@@ -567,14 +533,13 @@ export class AssetsService {
       'commodity': 'https://via.placeholder.com/64?text=COMMODITY',
       'index': 'https://via.placeholder.com/64?text=INDEX',
     };
-    
-    return type && iconMap[type] 
-      ? iconMap[type] 
+    return type && iconMap[type]
+      ? iconMap[type]
       : 'https://via.placeholder.com/64?text=Asset';
   }
 
   private async validateCryptoAsset(dto: CreateAssetDto): Promise<void> {
-    this.logger.log('🔍 Validating crypto asset configuration...');
+    this.logger.log('Validating crypto asset configuration...');
 
     if (dto.dataSource !== ASSET_DATA_SOURCE.BINANCE) {
       throw new BadRequestException(
@@ -647,17 +612,16 @@ export class AssetsService {
       }
 
       this.logger.log(
-        `🔍 Custom Realtime DB path provided: ${dto.realtimeDbPath}`
+        `Custom Realtime DB path provided: ${dto.realtimeDbPath}`
       );
     } else {
       const defaultPath = `/crypto/${baseCurrency.toLowerCase()}_${quoteCurrency.toLowerCase().replace('usd', 'usdt')}`;
       this.logger.log(
-        `🔍 No path provided, will use default: ${defaultPath}`
+        `No path provided, will use default: ${defaultPath}`
       );
     }
 
     const currencyRegex = /^[A-Z]{2,10}$/;
-    
     if (!currencyRegex.test(baseCurrency.toUpperCase())) {
       throw new BadRequestException(
         `Invalid baseCurrency format: ${baseCurrency}. Must be 2-10 uppercase letters (e.g., BTC, ETH)`
@@ -670,11 +634,11 @@ export class AssetsService {
       );
     }
 
-    this.logger.log(`✅ Basic validation passed: ${baseCurrency}/${quoteCurrency}`);
+    this.logger.log(`Basic validation passed: ${baseCurrency}/${quoteCurrency}`);
 
     try {
-      this.logger.log(`🔌 Testing Binance API for ${baseCurrency}/${quoteCurrency}...`);
-      
+      this.logger.log(`Testing Binance API for ${baseCurrency}/${quoteCurrency}...`);
+
       const testAsset: Asset = {
         id: 'test',
         name: dto.name,
@@ -693,32 +657,31 @@ export class AssetsService {
       };
 
       const pricePromise = this.binanceService.getCurrentPrice(testAsset);
-      const timeoutPromise = new Promise<never>((_, reject) => 
+      const timeoutPromise = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('Binance API timeout (5s)')), 5000)
       );
 
       const price = await Promise.race([pricePromise, timeoutPromise]);
-      
+
       if (!price) {
         this.logger.warn(
-          `⚠️ Could not fetch price for ${baseCurrency}/${quoteCurrency}, but continuing with creation`
+          `Could not fetch price for ${baseCurrency}/${quoteCurrency}, but continuing with creation`
         );
       } else {
         this.logger.log(
-          `✅ Price test successful: ${baseCurrency}/${quoteCurrency} = $${price.price}`
+          `Price test successful: ${baseCurrency}/${quoteCurrency} = $${price.price}`
         );
       }
-
     } catch (error) {
       this.logger.warn(
-        `⚠️ Price validation failed for ${baseCurrency}/${quoteCurrency}: ${error.message}`
+        `Price validation failed for ${baseCurrency}/${quoteCurrency}: ${error.message}`
       );
     }
 
     this.logger.log('');
-    this.logger.log('✅ ================================================');
-    this.logger.log('✅ CRYPTO ASSET VALIDATION COMPLETE (BINANCE)');
-    this.logger.log('✅ ================================================');
+    this.logger.log('===============================================');
+    this.logger.log('CRYPTO ASSET VALIDATION COMPLETE (BINANCE)');
+    this.logger.log('===============================================');
     this.logger.log('');
   }
 
@@ -767,7 +730,6 @@ export class AssetsService {
 
     if (dto.tradingSettings) {
       const t = dto.tradingSettings;
-      
       if (t.minOrderAmount > t.maxOrderAmount) {
         throw new BadRequestException(
           'minOrderAmount must be <= maxOrderAmount'
@@ -784,8 +746,8 @@ export class AssetsService {
 
   async updateAsset(assetId: string, updateAssetDto: UpdateAssetDto) {
     const db = this.firebaseService.getFirestore();
-
     const assetDoc = await db.collection(COLLECTIONS.ASSETS).doc(assetId).get();
+
     if (!assetDoc.exists) {
       throw new NotFoundException('Asset not found');
     }
@@ -819,10 +781,8 @@ export class AssetsService {
     });
 
     await db.collection(COLLECTIONS.ASSETS).doc(assetId).update(plainUpdateData);
-
     this.invalidateCache();
-
-    this.logger.log(`✅ Asset updated: ${currentAsset.symbol}`);
+    this.logger.log(`Asset updated: ${currentAsset.symbol}`);
 
     return {
       message: 'Asset updated successfully',
@@ -831,8 +791,8 @@ export class AssetsService {
 
   async updateAssetIcon(assetId: string, iconUrl: string) {
     const db = this.firebaseService.getFirestore();
-
     const assetDoc = await db.collection(COLLECTIONS.ASSETS).doc(assetId).get();
+
     if (!assetDoc.exists) {
       throw new NotFoundException('Asset not found');
     }
@@ -843,8 +803,7 @@ export class AssetsService {
     });
 
     this.invalidateCache();
-
-    this.logger.log(`✅ Icon updated for asset ${assetId}`);
+    this.logger.log(`Icon updated for asset ${assetId}`);
 
     return {
       message: 'Asset icon updated successfully',
@@ -854,9 +813,8 @@ export class AssetsService {
 
   async deleteAsset(assetId: string) {
     const db = this.firebaseService.getFirestore();
-
     const assetDoc = await db.collection(COLLECTIONS.ASSETS).doc(assetId).get();
-    
+
     if (!assetDoc.exists) {
       throw new NotFoundException('Asset not found');
     }
@@ -865,38 +823,37 @@ export class AssetsService {
     const assetPath = asset.realtimeDbPath || this.generateAssetPath(asset);
 
     this.logger.log('');
-    this.logger.log('🗑️ ================================================');
-    this.logger.log('🗑️ DELETING ASSET WITH REALTIME DB CLEANUP');
-    this.logger.log('🗑️ ================================================');
+    this.logger.log('===============================================');
+    this.logger.log('DELETING ASSET WITH REALTIME DB CLEANUP');
+    this.logger.log('===============================================');
     this.logger.log(`   Asset: ${asset.symbol} (${assetId})`);
     this.logger.log(`   Type: ${asset.type}`);
     this.logger.log(`   Category: ${asset.category}`);
     this.logger.log(`   RT DB Path: ${assetPath}`);
-    this.logger.log('🗑️ ================================================');
+    this.logger.log('===============================================');
 
     let realtimeDeleteSuccess = false;
+
     try {
       realtimeDeleteSuccess = await this.firebaseService.deleteRealtimeDbData(assetPath);
-      
       if (realtimeDeleteSuccess) {
-        this.logger.log(`✅ Realtime DB cleanup successful for ${asset.symbol}`);
+        this.logger.log(`Realtime DB cleanup successful for ${asset.symbol}`);
       } else {
-        this.logger.warn(`⚠️ Realtime DB cleanup may have failed for ${asset.symbol}`);
+        this.logger.warn(`Realtime DB cleanup may have failed for ${asset.symbol}`);
       }
     } catch (error) {
-      this.logger.error(`❌ Realtime DB cleanup error: ${error.message}`);
+      this.logger.error(`Realtime DB cleanup error: ${error.message}`);
     }
 
     await db.collection(COLLECTIONS.ASSETS).doc(assetId).delete();
-
     this.invalidateCache();
 
     this.logger.log('');
-    this.logger.log('✅ Asset deletion complete');
+    this.logger.log('Asset deletion complete');
     this.logger.log(`   Symbol: ${asset.symbol}`);
     this.logger.log(`   RT DB: ${realtimeDeleteSuccess ? 'Cleaned' : 'Failed'}`);
     this.logger.log(`   Firestore: Deleted`);
-    this.logger.log('🗑️ ================================================');
+    this.logger.log('===============================================');
     this.logger.log('');
 
     return {
@@ -925,14 +882,12 @@ export class AssetsService {
 
   async getAllAssets(activeOnly: boolean = false, type?: string) {
     const startTime = Date.now();
-    
+
     if (this.allAssetsCache && !activeOnly && !type) {
       const age = Date.now() - this.allAssetsCache.timestamp;
-      
       if (age < this.ALL_ASSETS_CACHE_TTL) {
         const duration = Date.now() - startTime;
-        this.logger.debug(`⚡ All assets from cache (${duration}ms)`);
-        
+        this.logger.debug(`Assets from cache (${duration}ms)`);
         return {
           assets: this.allAssetsCache.assets,
           total: this.allAssetsCache.assets.length,
@@ -942,7 +897,7 @@ export class AssetsService {
 
     const db = this.firebaseService.getFirestore();
     let query = db.collection(COLLECTIONS.ASSETS);
-    
+
     if (activeOnly) {
       query = query.where('isActive', '==', true) as any;
     }
@@ -960,17 +915,16 @@ export class AssetsService {
     const snapshot = await query.get();
     const assets = snapshot.docs.map(doc => {
       const data = doc.data() as Asset;
-      
       if (data.category !== ASSET_CATEGORY.CRYPTO) {
         if (!data.simulatorSettings) {
           data.simulatorSettings = this.DEFAULT_SIMULATOR_SETTINGS;
         }
       }
-      
+
       if (!data.tradingSettings) {
         data.tradingSettings = this.DEFAULT_TRADING_SETTINGS;
       }
-      
+
       return data;
     });
 
@@ -989,7 +943,6 @@ export class AssetsService {
     }
 
     const duration = Date.now() - startTime;
-    
     const byType = assets.reduce((acc, asset) => {
       if (!acc[asset.type]) {
         acc[asset.type] = 0;
@@ -997,9 +950,9 @@ export class AssetsService {
       acc[asset.type]++;
       return acc;
     }, {} as Record<string, number>);
-    
+
     this.logger.debug(
-      `⚡ Fetched ${assets.length} assets in ${duration}ms ` +
+      `Fetched ${assets.length} assets in ${duration}ms ` +
       `(${Object.entries(byType).map(([t, c]) => `${t}: ${c}`).join(', ')})`
     );
 
@@ -1016,21 +969,20 @@ export class AssetsService {
 
   async getAssetById(assetId: string): Promise<Asset> {
     const startTime = Date.now();
-    
     const cached = this.assetCache.get(assetId);
+
     if (cached) {
       const age = Date.now() - cached.timestamp;
-      
       if (age < this.ASSET_CACHE_TTL) {
         const duration = Date.now() - startTime;
-        this.logger.debug(`⚡ Asset ${assetId} from cache (${duration}ms)`);
+        this.logger.debug(`Asset ${assetId} from cache (${duration}ms)`);
         return cached.asset;
       }
     }
 
     const db = this.firebaseService.getFirestore();
     const assetDoc = await db.collection(COLLECTIONS.ASSETS).doc(assetId).get();
-    
+
     if (!assetDoc.exists) {
       throw new NotFoundException('Asset not found');
     }
@@ -1042,7 +994,7 @@ export class AssetsService {
         asset.simulatorSettings = this.DEFAULT_SIMULATOR_SETTINGS;
       }
     }
-    
+
     if (!asset.tradingSettings) {
       asset.tradingSettings = this.DEFAULT_TRADING_SETTINGS;
     }
@@ -1053,19 +1005,19 @@ export class AssetsService {
     });
 
     const duration = Date.now() - startTime;
-    this.logger.debug(`⚡ Fetched asset ${assetId} in ${duration}ms)`);
+    this.logger.debug(`Fetched asset ${assetId} in ${duration}ms`);
 
     return asset;
   }
 
   async getCurrentPrice(assetId: string) {
     const startTime = Date.now();
+
     try {
       const asset = await this.getAssetById(assetId);
-
       const priceData = await Promise.race([
         this.priceFetcherService.getCurrentPrice(asset, true),
-        new Promise<never>((_, reject) => 
+        new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error('Price timeout')), 2000)
         ),
       ]);
@@ -1075,7 +1027,7 @@ export class AssetsService {
       }
 
       const duration = Date.now() - startTime;
-      this.logger.debug(`⚡ Got price for ${asset.symbol} in ${duration}ms`);
+      this.logger.debug(`Got price for ${asset.symbol} in ${duration}ms`);
 
       return {
         asset: {
@@ -1090,15 +1042,14 @@ export class AssetsService {
         datetime: priceData.datetime,
         responseTime: duration,
       };
-
     } catch (error) {
       const duration = Date.now() - startTime;
       this.logger.error(`Price fetch failed after ${duration}ms: ${error.message}`);
-      
+
       if (error.message.includes('timeout')) {
         throw new RequestTimeoutException('Price service timeout');
       }
-      
+
       throw error;
     }
   }
@@ -1110,27 +1061,23 @@ export class AssetsService {
   private async warmupCache(): Promise<void> {
     try {
       if (!this.firebaseService.isFirestoreReady()) {
-        this.logger.warn('⚠️ Firestore not ready, skipping cache warmup');
+        this.logger.warn('Firestore not ready, skipping cache warmup');
         return;
       }
 
-      this.logger.log('⚡ Warming up asset cache...');
-      
+      this.logger.log('Warming up asset cache...');
       const { assets } = await this.getAllAssets(false);
-      
-      this.logger.log(`✅ Cache warmed: ${assets.length} assets`);
-      
+      this.logger.log(`Cache warmed: ${assets.length} assets`);
+
       const activeAssets = assets.filter(a => a.isActive);
       if (activeAssets.length > 0) {
         await this.priceFetcherService.prefetchPrices(activeAssets);
       }
-      
+
       const cryptoAssets = assets.filter(a => a.category === ASSET_CATEGORY.CRYPTO);
-      
       if (cryptoAssets.length > 0) {
-        this.logger.log(`💎 ${cryptoAssets.length} crypto assets ready (Binance)`);
+        this.logger.log(`Crypto assets ready (Binance): ${cryptoAssets.length}`);
       }
-      
     } catch (error) {
       this.logger.error(`Cache warmup failed: ${error.message}`);
     }
@@ -1140,11 +1087,12 @@ export class AssetsService {
     try {
       await this.getAllAssets(false);
       const activeAssets = this.allAssetsCache?.assets.filter(a => a.isActive) || [];
+
       if (activeAssets.length > 0) {
         await this.priceFetcherService.prefetchPrices(activeAssets);
       }
-      
-      this.logger.debug('⚡ Cache refreshed');
+
+      this.logger.debug('Cache refreshed');
     } catch (error) {
       this.logger.error(`Cache refresh failed: ${error.message}`);
     }
@@ -1173,12 +1121,11 @@ export class AssetsService {
     }
 
     if (uncachedIds.length > 0) {
-      const promises = uncachedIds.map(id => 
+      const promises = uncachedIds.map(id =>
         this.getAssetById(id).catch(() => null)
       );
-      
+
       const assets = await Promise.all(promises);
-      
       assets.forEach((asset, index) => {
         if (asset) {
           results.set(uncachedIds[index], asset);

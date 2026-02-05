@@ -1,5 +1,7 @@
+// src/order-schedule/order-schedule.service.ts
+
 import { Injectable, BadRequestException, NotFoundException, ForbiddenException, Logger } from '@nestjs/common';
-import { Firestore } from '@google-cloud/firestore';
+import { Firestore, FieldValue } from '@google-cloud/firestore';
 import { v4 as uuidv4 } from 'uuid';
 import { FirebaseService } from '../firebase/firebase.service';
 import { 
@@ -8,7 +10,7 @@ import {
 } from './dto/create-order-schedule.dto';
 import { UpdateOrderScheduleDto } from './dto/update-order-schedule.dto';
 import { QueryOrderScheduleDto } from './dto/query-order-schedule.dto';
-import { OrderSchedule, ScheduleExecution, ScheduleStatistics } from './entities/order-schedule.entity';
+import { OrderSchedule, ScheduleExecution, OrderMartingaleState } from './entities/order-schedule.entity';
 
 @Injectable()
 export class OrderScheduleService {
@@ -41,6 +43,18 @@ export class OrderScheduleService {
 
       const plainDto = this.toPlainObject(createDto);
 
+      // ✅ Inisialisasi state martingale untuk setiap order
+      const orderMartingaleStates: OrderMartingaleState[] = createDto.schedules.map(schedule => ({
+        scheduledTime: schedule.time,
+        currentStep: 0,
+        consecutiveLosses: 0,
+        lastResult: null,
+        lastExecutedAt: null,
+        totalExecuted: 0,
+        totalWins: 0,
+        totalLosses: 0,
+      }));
+
       const newSchedule: OrderSchedule = {
         id: scheduleId,
         userId,
@@ -55,6 +69,7 @@ export class OrderScheduleService {
         stopLossProfit: plainDto.stopLossProfit || {},
         status: ScheduleStatus.PENDING,
         isActive: plainDto.isActive ?? true,
+        orderMartingaleStates,
         totalExecuted: 0,
         totalSuccess: 0,
         totalFailed: 0,
@@ -70,7 +85,7 @@ export class OrderScheduleService {
 
       await this.db.collection(this.schedulesCollection).doc(scheduleId).set(newSchedule);
 
-      this.logger.log(`✅ Created schedule ${scheduleId} for user ${userEmail}`);
+      this.logger.log(`✅ Created schedule ${scheduleId} for user ${userEmail} with ${orderMartingaleStates.length} order states`);
 
       return newSchedule;
     } catch (error) {
@@ -151,6 +166,31 @@ export class OrderScheduleService {
 
       if (updateDto.schedules) {
         this.validateScheduleTimes(updateDto.schedules);
+        
+        // ✅ Re-inisialisasi state martingale jika schedules berubah
+        const existingStates = (schedule as any).orderMartingaleStates || [];
+        const newStates: OrderMartingaleState[] = updateDto.schedules.map(newSchedule => {
+          const existingState = existingStates.find((s: OrderMartingaleState) => 
+            s.scheduledTime === newSchedule.time
+          );
+          
+          if (existingState) {
+            return existingState;
+          }
+          
+          return {
+            scheduledTime: newSchedule.time,
+            currentStep: 0,
+            consecutiveLosses: 0,
+            lastResult: null,
+            lastExecutedAt: null,
+            totalExecuted: 0,
+            totalWins: 0,
+            totalLosses: 0,
+          };
+        });
+        
+        (updateDto as any).orderMartingaleStates = newStates;
       }
 
       const plainDto = this.toPlainObject(updateDto);
@@ -244,7 +284,7 @@ export class OrderScheduleService {
     }
   }
 
-  async getStatistics(userId: string, scheduleId: string): Promise<ScheduleStatistics[]> {
+  async getStatistics(userId: string, scheduleId: string): Promise<any[]> {
     try {
       await this.findOne(userId, scheduleId);
 
@@ -256,7 +296,7 @@ export class OrderScheduleService {
         .limit(30)
         .get();
 
-      return snapshot.docs.map(doc => doc.data() as ScheduleStatistics);
+      return snapshot.docs.map(doc => doc.data());
     } catch (error) {
       this.logger.error(`❌ Failed to fetch statistics: ${error.message}`);
       throw new BadRequestException(`Failed to fetch statistics: ${error.message}`);
@@ -364,11 +404,38 @@ export class OrderScheduleService {
     if (currentStep === 0) {
       return baseAmount;
     }
-    return baseAmount * Math.pow(multiplier, currentStep);
+    return Math.round(baseAmount * Math.pow(multiplier, currentStep));
   }
 
+  // ✅ Get martingale state untuk order tertentu
+  getOrderMartingaleState(
+    schedule: OrderSchedule, 
+    scheduledTime: string
+  ): OrderMartingaleState {
+    const states = (schedule as any).orderMartingaleStates as OrderMartingaleState[] || [];
+    
+    let state = states.find(s => s.scheduledTime === scheduledTime);
+    
+    if (!state) {
+      state = {
+        scheduledTime,
+        currentStep: 0,
+        consecutiveLosses: 0,
+        lastResult: null,
+        lastExecutedAt: null,
+        totalExecuted: 0,
+        totalWins: 0,
+        totalLosses: 0,
+      };
+    }
+    
+    return state;
+  }
+
+  // ✅ Update setelah eksekusi - update state per order
   async updateAfterExecution(
     scheduleId: string,
+    scheduledTime: string,
     executionResult: 'win' | 'loss' | 'draw',
     profit: number
   ): Promise<void> {
@@ -382,39 +449,82 @@ export class OrderScheduleService {
         }
 
         const schedule = scheduleDoc.data() as OrderSchedule;
+        
+        // ✅ Ambil state martingale untuk order ini
+        const orderStates = [...((schedule as any).orderMartingaleStates || [])] as OrderMartingaleState[];
+        const orderStateIndex = orderStates.findIndex(s => s.scheduledTime === scheduledTime);
+        
+        let orderState: OrderMartingaleState;
+        
+        if (orderStateIndex >= 0) {
+          orderState = { ...orderStates[orderStateIndex] };
+        } else {
+          orderState = {
+            scheduledTime,
+            currentStep: 0,
+            consecutiveLosses: 0,
+            lastResult: null,
+            lastExecutedAt: null,
+            totalExecuted: 0,
+            totalWins: 0,
+            totalLosses: 0,
+          };
+        }
 
-        const updates: Partial<OrderSchedule> = {
-          totalExecuted: schedule.totalExecuted + 1,
+        // ✅ Update state untuk order ini saja
+        orderState.lastExecutedAt = new Date();
+        orderState.totalExecuted++;
+        orderState.lastResult = executionResult;
+
+        if (executionResult === 'win') {
+          orderState.totalWins++;
+          orderState.consecutiveLosses = 0;
+          orderState.currentStep = 0;
+        } else if (executionResult === 'loss') {
+          orderState.totalLosses++;
+          orderState.consecutiveLosses++;
+          
+          if (orderState.currentStep < schedule.martingaleSetting.maxStep) {
+            orderState.currentStep++;
+          }
+        }
+
+        if (orderStateIndex >= 0) {
+          orderStates[orderStateIndex] = orderState;
+        } else {
+          orderStates.push(orderState);
+        }
+
+        // ✅ Update total aggregated
+        const updates: any = {
+          totalExecuted: FieldValue.increment(1),
           lastExecutedAt: new Date(),
           lastExecutionResult: executionResult,
           updatedAt: new Date(),
-          currentProfit: schedule.currentProfit + profit,
+          currentProfit: FieldValue.increment(profit),
+          orderMartingaleStates: orderStates,
         };
 
         if (profit > 0) {
-          updates.totalProfit = schedule.totalProfit + profit;
-          updates.totalSuccess = schedule.totalSuccess + 1;
-          updates.consecutiveLosses = 0;
-          updates.currentMartingaleStep = 0;
-          
-          this.logger.log(`✅ WIN - Schedule ${scheduleId}: +${profit} (Total: ${updates.currentProfit})`);
+          updates.totalProfit = FieldValue.increment(profit);
+          updates.totalSuccess = FieldValue.increment(1);
         } else if (profit < 0) {
-          updates.totalLoss = schedule.totalLoss + Math.abs(profit);
-          updates.totalFailed = schedule.totalFailed + 1;
-          updates.consecutiveLosses = schedule.consecutiveLosses + 1;
-
-          if (schedule.currentMartingaleStep < schedule.martingaleSetting.maxStep) {
-            updates.currentMartingaleStep = schedule.currentMartingaleStep + 1;
-          }
-          
-          this.logger.log(
-            `❌ LOSS - Schedule ${scheduleId}: ${profit} (Consecutive: ${updates.consecutiveLosses}, Step: ${updates.currentMartingaleStep})`
-          );
-        } else {
-          this.logger.log(`- DRAW - Schedule ${scheduleId}`);
+          updates.totalLoss = FieldValue.increment(Math.abs(profit));
+          updates.totalFailed = FieldValue.increment(1);
         }
 
+        // Update backward compatibility fields
+        const avgStep = orderStates.reduce((sum, s) => sum + s.currentStep, 0) / orderStates.length;
+        updates.currentMartingaleStep = Math.round(avgStep);
+        updates.consecutiveLosses = orderStates.reduce((sum, s) => sum + s.consecutiveLosses, 0);
+
         transaction.update(scheduleRef, updates);
+
+        this.logger.log(
+          `✅ Order ${scheduledTime} result: ${executionResult.toUpperCase()}, ` +
+          `Step: ${orderState.currentStep}, Consecutive Losses: ${orderState.consecutiveLosses}, ` +
+          `Profit: ${profit}`
+        );
       });
 
       await this.checkStopLossProfit(scheduleId);

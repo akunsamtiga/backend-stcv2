@@ -9,9 +9,8 @@ import { AssetScheduleService } from './asset-schedule.service';
 
 @Module({
   imports: [
-    ScheduleModule.forRoot(), // Enable cron jobs
+    ScheduleModule.forRoot(), 
     
-    // ✅ PERBAIKAN: Tambahkan JwtModule untuk mendukung JwtAuthGuard
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

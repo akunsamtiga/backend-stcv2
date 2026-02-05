@@ -1,5 +1,4 @@
 // src/asset-schedule/asset-schedule.service.ts
-// ✅ FIX: Inisialisasi Firestore di onModuleInit, bukan di constructor
 
 import { Injectable, NotFoundException, BadRequestException, Logger, OnModuleInit } from '@nestjs/common';
 import { Firestore, Timestamp, FieldValue } from 'firebase-admin/firestore';
@@ -7,7 +6,6 @@ import { CreateAssetScheduleDto } from './dto/create-asset-schedule.dto';
 import { UpdateAssetScheduleDto } from './dto/update-asset-schedule.dto';
 import { GetAssetSchedulesQueryDto } from './dto/get-asset-schedules-query.dto';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import * as admin from 'firebase-admin';
 import { FirebaseService } from '../firebase/firebase.service';
 
 @Injectable()
@@ -16,32 +14,23 @@ export class AssetScheduleService implements OnModuleInit {
   private readonly COLLECTION_NAME = 'asset_schedules';
   private firestore: Firestore;
 
-  // ✅ FIX: Jangan akses Firestore di constructor
   constructor(
     private readonly firebaseService: FirebaseService,
   ) {
     this.logger.log('AssetScheduleService created, waiting for Firestore...');
   }
 
-  // ✅ FIX: Inisialisasi Firestore di onModuleInit setelah Firebase siap
   async onModuleInit() {
     try {
-      // Tunggu sampai Firestore ready
       await this.firebaseService.waitForFirestore(10000);
-      
-      // Sekarang ambil Firestore instance
       this.firestore = this.firebaseService.getFirestore();
-      
-      this.logger.log('✅ AssetScheduleService initialized with Firestore');
+      this.logger.log('AssetScheduleService initialized with Firestore');
     } catch (error) {
-      this.logger.error('❌ Failed to initialize Firestore:', error.message);
+      this.logger.error('Failed to initialize Firestore:', error.message);
       throw error;
     }
   }
 
-  /**
-   * Create new asset schedule
-   */
   async createSchedule(
     createDto: CreateAssetScheduleDto,
     userId: string,
@@ -50,12 +39,10 @@ export class AssetScheduleService implements OnModuleInit {
     const scheduledTime = new Date(createDto.scheduledTime);
     const now = new Date();
 
-    // Validate scheduled time is in the future
     if (scheduledTime <= now) {
       throw new BadRequestException('Scheduled time must be in the future');
     }
 
-    // Verify asset exists
     const assetDoc = await this.firestore
       .collection('assets')
       .where('symbol', '==', createDto.assetSymbol)
@@ -98,16 +85,12 @@ export class AssetScheduleService implements OnModuleInit {
     };
   }
 
-  /**
-   * Get all schedules with filters and pagination
-   */
   async getSchedules(queryDto: GetAssetSchedulesQueryDto) {
     const { page = 1, limit = 50, assetSymbol, trend, timeframe, status, isActive, fromDate, toDate } = queryDto;
     const offset = (page - 1) * limit;
 
     let query = this.firestore.collection(this.COLLECTION_NAME) as any;
 
-    // Apply filters
     if (assetSymbol) {
       query = query.where('assetSymbol', '==', assetSymbol);
     }
@@ -136,14 +119,11 @@ export class AssetScheduleService implements OnModuleInit {
       query = query.where('scheduledTime', '<=', Timestamp.fromDate(new Date(toDate)));
     }
 
-    // Order by scheduledTime
     query = query.orderBy('scheduledTime', 'desc');
 
-    // Get total count
     const totalSnapshot = await query.get();
     const total = totalSnapshot.size;
 
-    // Apply pagination
     const snapshot = await query.offset(offset).limit(limit).get();
 
     const schedules = snapshot.docs.map((doc: any) => ({
@@ -167,9 +147,6 @@ export class AssetScheduleService implements OnModuleInit {
     };
   }
 
-  /**
-   * Get schedule by ID
-   */
   async getScheduleById(id: string) {
     const docRef = this.firestore.collection(this.COLLECTION_NAME).doc(id);
     const doc = await docRef.get();
@@ -196,9 +173,6 @@ export class AssetScheduleService implements OnModuleInit {
     };
   }
 
-  /**
-   * Update schedule
-   */
   async updateSchedule(id: string, updateDto: UpdateAssetScheduleDto, userId: string) {
     const docRef = this.firestore.collection(this.COLLECTION_NAME).doc(id);
     const doc = await docRef.get();
@@ -212,12 +186,10 @@ export class AssetScheduleService implements OnModuleInit {
       throw new NotFoundException('Schedule data not found');
     }
 
-    // Cannot update executed or failed schedules
     if (currentData.status !== 'pending') {
       throw new BadRequestException(`Cannot update ${currentData.status} schedule`);
     }
 
-    // If scheduledTime is being updated, validate it's in the future
     if (updateDto.scheduledTime) {
       const newScheduledTime = new Date(updateDto.scheduledTime);
       const now = new Date();
@@ -226,7 +198,6 @@ export class AssetScheduleService implements OnModuleInit {
       }
     }
 
-    // Verify asset exists if assetSymbol is being updated
     if (updateDto.assetSymbol) {
       const assetDoc = await this.firestore
         .collection('assets')
@@ -259,9 +230,6 @@ export class AssetScheduleService implements OnModuleInit {
     };
   }
 
-  /**
-   * Cancel schedule
-   */
   async cancelSchedule(id: string) {
     const docRef = this.firestore.collection(this.COLLECTION_NAME).doc(id);
     const doc = await docRef.get();
@@ -293,9 +261,6 @@ export class AssetScheduleService implements OnModuleInit {
     };
   }
 
-  /**
-   * Delete schedule
-   */
   async deleteSchedule(id: string) {
     const docRef = this.firestore.collection(this.COLLECTION_NAME).doc(id);
     const doc = await docRef.get();
@@ -314,16 +279,12 @@ export class AssetScheduleService implements OnModuleInit {
     };
   }
 
-  /**
-   * Execute pending schedules (called by cron job every minute)
-   */
   @Cron(CronExpression.EVERY_MINUTE)
   async executePendingSchedules() {
     try {
       const now = new Date();
       const nowTimestamp = Timestamp.fromDate(now);
 
-      // Get all pending schedules that should be executed
       const schedulesSnapshot = await this.firestore
         .collection(this.COLLECTION_NAME)
         .where('status', '==', 'pending')
@@ -346,14 +307,10 @@ export class AssetScheduleService implements OnModuleInit {
     }
   }
 
-  /**
-   * Execute individual schedule
-   */
   private async executeSchedule(scheduleId: string, scheduleData: any) {
     try {
       this.logger.log(`Executing schedule ${scheduleId} for ${scheduleData.assetSymbol}`);
 
-      // Get current asset data
       const assetSnapshot = await this.firestore
         .collection('assets')
         .where('symbol', '==', scheduleData.assetSymbol)
@@ -369,7 +326,6 @@ export class AssetScheduleService implements OnModuleInit {
       const assetData = assetDoc.data();
       const currentPrice = assetData.currentPrice || 0;
 
-      // ✅ PUSH SCHEDULED TREND TO REALTIME DATABASE
       await this.pushScheduledTrendToRTDB(
         scheduleData.assetSymbol,
         scheduleData.trend,
@@ -378,13 +334,11 @@ export class AssetScheduleService implements OnModuleInit {
         currentPrice
       );
 
-      // Update Firestore asset with last schedule executed
       await this.firestore.collection('assets').doc(assetDoc.id).update({
         lastScheduleExecuted: scheduleId,
         updatedAt: FieldValue.serverTimestamp(),
       });
 
-      // Mark schedule as executed
       await this.firestore.collection(this.COLLECTION_NAME).doc(scheduleId).update({
         status: 'executed',
         executedAt: FieldValue.serverTimestamp(),
@@ -396,11 +350,10 @@ export class AssetScheduleService implements OnModuleInit {
         updatedAt: FieldValue.serverTimestamp(),
       });
 
-      this.logger.log(`✅ Successfully executed schedule ${scheduleId} - Trend pushed to RTDB`);
+      this.logger.log(`Successfully executed schedule ${scheduleId} - Trend pushed to RTDB`);
     } catch (error: any) {
       this.logger.error(`Error executing schedule ${scheduleId}:`, error.message);
 
-      // Mark schedule as failed
       await this.firestore.collection(this.COLLECTION_NAME).doc(scheduleId).update({
         status: 'failed',
         executedAt: FieldValue.serverTimestamp(),
@@ -414,75 +367,69 @@ export class AssetScheduleService implements OnModuleInit {
   }
 
   private async pushScheduledTrendToRTDB(
-  assetSymbol: string,
-  trend: string,
-  timeframe: string,
-  scheduleId: string,
-  startPrice?: number,
-): Promise<void> {
-  try {
-    const now = Date.now();
-    const duration = this.getTimeframeDurationInMs(timeframe);
-    const endTime = now + duration;
+    assetSymbol: string,
+    trend: string,
+    timeframe: string,
+    scheduleId: string,
+    startPrice?: number,
+  ): Promise<void> {
+    try {
+      const now = Date.now();
+      const duration = this.getTimeframeDurationInMs(timeframe);
+      const endTime = now + duration;
 
-    const trendData = {
-      trend: trend,
-      timeframe: timeframe,
-      startTime: now,
-      endTime: endTime,
-      duration: duration,
-      scheduleId: scheduleId,
-      startPrice: startPrice,
-      isActive: true,
-      createdAt: Date.now(),
-    };
+      const trendData = {
+        trend: trend,
+        timeframe: timeframe,
+        startTime: now,
+        endTime: endTime,
+        duration: duration,
+        scheduleId: scheduleId,
+        startPrice: startPrice,
+        isActive: true,
+        createdAt: Date.now(),
+      };
 
-    // ✅ Normalize symbol untuk consistency
-    const normalizedSymbol = assetSymbol.toLowerCase().replace(/[^a-z0-9]/g, '_');
-    const path = `_scheduled_trends/${normalizedSymbol}`;
-    
-    this.logger.log(`📝 Writing trend to ${path} (original: ${assetSymbol})`);
+      const normalizedSymbol = assetSymbol.toLowerCase().replace(/[^a-z0-9]/g, '_');
+      const path = `_scheduled_trends/${normalizedSymbol}`;
 
-    // ✅ IMPROVED: Multiple write attempts dengan exponential backoff
-    let writeSuccess = false;
-    const maxWriteAttempts = 3;
-    
-    for (let attempt = 1; attempt <= maxWriteAttempts; attempt++) {
-      try {
-        // Write dengan critical=true untuk immediate execution
-        await this.firebaseService.setRealtimeDbValue(path, trendData, true);
-        
-        // ✅ IMPROVED: Increased delay untuk REST API mode
-        const verifyDelay = attempt === 1 ? 1000 : 1500;
-        await new Promise(resolve => setTimeout(resolve, verifyDelay));
-        
-        // Verify write
-        const verified = await this.firebaseService.getRealtimeDbValue(path, false); // useCache=false
-        
-        if (verified && verified.scheduleId === scheduleId) {
-          writeSuccess = true;
-          this.logger.log(`✅ Trend verified on attempt ${attempt}: ${normalizedSymbol}`);
-          break;
-        } else {
-          this.logger.warn(`⚠️ Verification failed on attempt ${attempt}/${maxWriteAttempts}`);
-          
+      this.logger.log(`Writing trend to ${path} (original: ${assetSymbol})`);
+
+      let writeSuccess = false;
+      const maxWriteAttempts = 3;
+
+      for (let attempt = 1; attempt <= maxWriteAttempts; attempt++) {
+        try {
+          await this.firebaseService.setRealtimeDbValue(path, trendData, true);
+
+          const verifyDelay = attempt === 1 ? 1000 : 1500;
+          await new Promise(resolve => setTimeout(resolve, verifyDelay));
+
+          const verified = await this.firebaseService.getRealtimeDbValue(path, false);
+
+          if (verified && verified.scheduleId === scheduleId) {
+            writeSuccess = true;
+            this.logger.log(`Trend verified on attempt ${attempt}: ${normalizedSymbol}`);
+            break;
+          } else {
+            this.logger.warn(`Verification failed on attempt ${attempt}/${maxWriteAttempts}`);
+
+            if (attempt < maxWriteAttempts) {
+              await new Promise(resolve => setTimeout(resolve, 500 * attempt));
+            }
+          }
+
+        } catch (writeError) {
+          this.logger.error(`Write attempt ${attempt}/${maxWriteAttempts} failed: ${writeError.message}`);
+
           if (attempt < maxWriteAttempts) {
-            // Exponential backoff sebelum retry
-            await new Promise(resolve => setTimeout(resolve, 500 * attempt));
+            await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
           }
         }
-        
-      } catch (writeError) {
-        this.logger.error(`❌ Write attempt ${attempt}/${maxWriteAttempts} failed: ${writeError.message}`);
-        
-        if (attempt < maxWriteAttempts) {
-          await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
-        }
       }
-    }
 
-    if (!writeSuccess) {
-      throw new Error(`Failed to write trend after ${maxWriteAttempts} attempts. Possible causes:
+      if (!writeSuccess) {
+        throw new Error(`Failed to write trend after ${maxWriteAttempts} attempts. Possible causes:
 1. RTDB Rules deny write to _scheduled_trends
 2. Network connectivity issues
 3. Firebase REST API rate limiting
@@ -492,37 +439,31 @@ Please check:
 - Firebase Console → Realtime Database → Rules
 - Network connectivity to Firebase
 - Firebase service status`);
+      }
+
+      this.logger.log(`Successfully pushed trend: ${assetSymbol} → ${trend}`);
+      this.logger.log(`Active for ${duration/1000}s (until ${new Date(endTime).toLocaleTimeString()})`);
+
+    } catch (error) {
+      this.logger.error(`Failed to push trend for ${assetSymbol}: ${error.message}`);
+      throw error;
     }
-
-    this.logger.log(`🔥 Successfully pushed trend: ${assetSymbol} → ${trend}`);
-    this.logger.log(`📅 Active for ${duration/1000}s (until ${new Date(endTime).toLocaleTimeString()})`);
-    
-  } catch (error) {
-    this.logger.error(`❌ Failed to push trend for ${assetSymbol}: ${error.message}`);
-    throw error;
   }
-}
 
-  /**
-   * Get timeframe duration in milliseconds
-   */
   private getTimeframeDurationInMs(timeframe: string): number {
     const durations: { [key: string]: number } = {
-      '1m': 60 * 1000,           // 1 minute
-      '5m': 5 * 60 * 1000,       // 5 minutes
-      '15m': 15 * 60 * 1000,     // 15 minutes
-      '30m': 30 * 60 * 1000,     // 30 minutes
-      '1h': 60 * 60 * 1000,      // 1 hour
-      '4h': 4 * 60 * 60 * 1000,  // 4 hours
-      '1d': 24 * 60 * 60 * 1000, // 1 day
+      '1m': 60 * 1000,
+      '5m': 5 * 60 * 1000,
+      '15m': 15 * 60 * 1000,
+      '30m': 30 * 60 * 1000,
+      '1h': 60 * 60 * 1000,
+      '4h': 4 * 60 * 60 * 1000,
+      '1d': 24 * 60 * 60 * 1000,
     };
 
-    return durations[timeframe] || 60 * 1000; // Default 1 minute
+    return durations[timeframe] || 60 * 1000;
   }
 
-  /**
-   * Get upcoming schedules (next 24 hours)
-   */
   async getUpcomingSchedules() {
     const now = new Date();
     const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
@@ -551,19 +492,14 @@ Please check:
     };
   }
 
-  /**
-   * Get schedule execution history
-   */
   async getExecutionHistory(queryDto: GetAssetSchedulesQueryDto) {
     const { page = 1, limit = 50, assetSymbol, trend, timeframe, fromDate, toDate } = queryDto;
     const offset = (page - 1) * limit;
 
     let query = this.firestore.collection(this.COLLECTION_NAME) as any;
 
-    // Only get executed or failed schedules
     query = query.where('status', 'in', ['executed', 'failed']);
 
-    // Apply additional filters
     if (assetSymbol) {
       query = query.where('assetSymbol', '==', assetSymbol);
     }
@@ -584,14 +520,11 @@ Please check:
       query = query.where('executedAt', '<=', Timestamp.fromDate(new Date(toDate)));
     }
 
-    // Order by executedAt
     query = query.orderBy('executedAt', 'desc');
 
-    // Get total count
     const totalSnapshot = await query.get();
     const total = totalSnapshot.size;
 
-    // Apply pagination
     const snapshot = await query.offset(offset).limit(limit).get();
 
     const history = snapshot.docs.map((doc: any) => ({
@@ -615,37 +548,25 @@ Please check:
     };
   }
 
-  /**
-   * Get schedule statistics
-   */
   async getStatistics() {
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const todayTimestamp = Timestamp.fromDate(today);
 
-    // Get all schedules
     const allSnapshot = await this.firestore.collection(this.COLLECTION_NAME).get();
-    
-    // Get today's schedules
     const todaySnapshot = await this.firestore
       .collection(this.COLLECTION_NAME)
       .where('createdAt', '>=', todayTimestamp)
       .get();
-
-    // Get pending schedules
     const pendingSnapshot = await this.firestore
       .collection(this.COLLECTION_NAME)
       .where('status', '==', 'pending')
       .where('isActive', '==', true)
       .get();
-
-    // Get executed schedules
     const executedSnapshot = await this.firestore
       .collection(this.COLLECTION_NAME)
       .where('status', '==', 'executed')
       .get();
-
-    // Get failed schedules
     const failedSnapshot = await this.firestore
       .collection(this.COLLECTION_NAME)
       .where('status', '==', 'failed')
