@@ -3,7 +3,7 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import { Firestore } from '@google-cloud/firestore';
+import { Firestore, FieldValue } from '@google-cloud/firestore';
 import { v4 as uuidv4 } from 'uuid';
 import { FirebaseService } from '../firebase/firebase.service';
 import { OrderScheduleService } from './order-schedule.service';
@@ -30,6 +30,10 @@ export class OrderScheduleExecutorService {
   // ✅ Track schedules yang sudah selesai semua (untuk auto-delete)
   private completedSchedules: Set<string> = new Set();
   
+    // ✅ Track martingale recovery yang sedang berjalan (untuk mencegah duplicate)
+  // Key: "scheduleId:scheduledTime"
+  private activeRecoveries: Set<string> = new Set();
+
   private checkResultsRunCount = 0;
   private processSchedulesRunCount = 0;
 
@@ -85,72 +89,124 @@ export class OrderScheduleExecutorService {
   }
 
   // ============================================================================
-  // ✅ Cek dan hapus schedule jika semua order sudah selesai
+  // ✅ Cek dan hapus schedule jika semua order sudah selesai (termasuk martingale)
   // ============================================================================
 
   private async checkAndDeleteIfAllCompleted(schedule: OrderSchedule): Promise<void> {
     try {
       const allScheduledTimes = schedule.schedules.map(s => s.time);
-      
+
       // Cek semua execution hari ini untuk schedule ini
       const today = new Date();
       today.setHours(0, 0, 0, 0);
-      
+
       const executionsSnapshot = await this.db
         .collection(this.executionsCollection)
         .where('scheduleId', '==', schedule.id)
         .where('executedAt', '>=', today)
         .get();
-      
-      // ✅ FIX: Cek executions yang sudah punya RESULT (bukan hanya executed)
-      const executionsWithResult = executionsSnapshot.docs
-        .filter(doc => {
-          const data = doc.data();
-          return data.result != null; // win, loss, atau draw
-        })
-        .map(doc => doc.data().scheduledTime);
-      
-      const completedTimes = new Set(executionsWithResult);
-      
-      // ✅ Cek apakah semua scheduled times sudah dieksekusi DAN punya result
-      const allCompleted = allScheduledTimes.every(time => completedTimes.has(time));
-      
-      if (allCompleted) {
-        // ✅ FIX MARTINGALE: Cek apakah ada pending recovery
-        const orderStates = (schedule as any).orderMartingaleStates || [];
-        const hasPendingRecovery = orderStates.some((state: any) => state.currentStep > 0);
-        
-        if (hasPendingRecovery) {
-          this.logger.log(
-            `⏳ Schedule ${schedule.id.slice(-8)} has pending martingale recovery. ` +
-            `NOT deleting - will continue tomorrow.`
-          );
-          return; // Jangan hapus, masih ada recovery pending
+
+      // ✅ Group executions by scheduledTime dan cari yang terakhir untuk setiap waktu
+      const executionsByTime = new Map<string, any[]>();
+
+      executionsSnapshot.docs.forEach(doc => {
+        const data = doc.data();
+        const time = data.scheduledTime;
+        if (!executionsByTime.has(time)) {
+          executionsByTime.set(time, []);
         }
-        
+        executionsByTime.get(time)!.push(data);
+      });
+
+      // ✅ Cek untuk setiap scheduled time apakah sudah COMPLETE (win atau max step reached)
+      const orderStates = (schedule as any).orderMartingaleStates || [] as OrderMartingaleState[];
+
+      const completedTimeSlots: string[] = [];
+      const pendingRecoveryTimeSlots: string[] = [];
+
+      for (const time of allScheduledTimes) {
+        const timeExecutions = executionsByTime.get(time) || [];
+        const orderState = orderStates.find((s: OrderMartingaleState) => s.scheduledTime === time);
+
+        // Cek apakah ada recovery yang sedang berjalan untuk waktu ini
+        const recoveryKey = `${schedule.id}:${time}`;
+        const isRecoveryActive = this.activeRecoveries.has(recoveryKey);
+
+        // Cek execution terakhir untuk waktu ini
+        const sortedExecutions = timeExecutions
+          .filter((e: any) => e.result != null)
+          .sort((a: any, b: any) => new Date(b.executedAt).getTime() - new Date(a.executedAt).getTime());
+
+        const lastExecution = sortedExecutions[0];
+
+        if (!lastExecution) {
+          // Belum ada execution dengan result untuk waktu ini
+          pendingRecoveryTimeSlots.push(`${time}(no-result)`);
+          continue;
+        }
+
+        if (lastExecution.result === 'win') {
+          // Win = completed untuk time slot ini
+          completedTimeSlots.push(time);
+        } else if (lastExecution.result === 'loss') {
+          // Loss - cek apakah masih ada recovery pending
+          const currentStep = orderState?.currentStep || 0;
+          const maxStep = schedule.martingaleSetting.maxStep;
+
+          if (currentStep > 0 && currentStep <= maxStep && !isRecoveryActive) {
+            // Masih ada recovery yang perlu dijalankan
+            pendingRecoveryTimeSlots.push(`${time}(step:${currentStep}/${maxStep})`);
+          } else if (isRecoveryActive) {
+            // Recovery sedang berjalan
+            pendingRecoveryTimeSlots.push(`${time}(recovery-active)`);
+          } else {
+            // Max step reached atau sudah selesai recovery = completed
+            completedTimeSlots.push(time);
+          }
+        } else {
+          // Draw = completed
+          completedTimeSlots.push(time);
+        }
+      }
+
+      // ✅ Jika masih ada recovery pending, jangan hapus schedule
+      if (pendingRecoveryTimeSlots.length > 0) {
+        this.logger.debug(
+          `⏳ Schedule ${schedule.id.slice(-8)} has pending recoveries: ` +
+          `${pendingRecoveryTimeSlots.join(', ')}. NOT deleting.`
+        );
+        return;
+      }
+
+      // ✅ Jika semua time slots sudah completed, hapus schedule
+      if (completedTimeSlots.length === allScheduledTimes.length) {
         this.logger.log(
           `✅ Schedule ${schedule.id.slice(-8)} completed! ` +
-          `All ${allScheduledTimes.length} orders finished with results. Auto-deleting...`
+          `All ${allScheduledTimes.length} time slots finished (martingale cycles complete). Auto-deleting...`
         );
-        
+
         // Hapus schedule
         await this.db.collection(this.schedulesCollection).doc(schedule.id).delete();
-        
+
         // Mark sebagai completed
         this.completedSchedules.add(schedule.id);
-        
+
         // Cleanup processed cache untuk schedule ini
         for (const time of allScheduledTimes) {
           this.processedToday.delete(`${schedule.id}:${time}`);
         }
-        
+
+        // Cleanup active recoveries
+        for (const time of allScheduledTimes) {
+          this.activeRecoveries.delete(`${schedule.id}:${time}`);
+        }
+
         this.logger.log(`🗑️ Schedule ${schedule.id.slice(-8)} deleted successfully`);
       }
     } catch (error) {
       this.logger.error(`❌ Error checking/deleting completed schedule: ${error.message}`);
     }
   }
-
   // ============================================================================
   // CRON: Check order results setiap 10 detik
   // ============================================================================
@@ -780,19 +836,49 @@ export class OrderScheduleExecutorService {
           `✅ Execution updated: ${executionId.slice(-8)} (${orderScheduledTime}, result: ${mappedResult})`
         );
 
-        // Update schedule statistics
-        await this.orderScheduleService.updateAfterExecution(
+        // ✅ Update schedule statistics dan dapatkan info untuk recovery
+        const recoveryInfo = await this.updateAfterExecutionWithRecovery(
           scheduleId,
           orderScheduledTime,
           mappedResult,
           profit
         );
-
         this.logger.log(
           `✅ Schedule ${scheduleId.slice(-8)} updated for ${orderScheduledTime}: ` +
           `Order ${orderId.slice(-8)} ${mappedResult.toUpperCase()} ${profit > 0 ? '+' : ''}${profit.toFixed(0)}`
         );
-        
+        // ✅ TRIGGER MARTINGALE RECOVERY: Jika loss dan masih bisa recovery, eksekusi langsung
+        if (recoveryInfo.shouldRecover && recoveryInfo.trend) {
+          const recoveryKey = `${scheduleId}:${orderScheduledTime}`;
+          // Cek apakah sudah ada recovery yang berjalan untuk waktu ini
+          if (!this.activeRecoveries.has(recoveryKey)) {
+            this.logger.log(
+              `🔄 LOSS detected! Triggering martingale recovery for ${orderScheduledTime} ` +
+              `(step ${recoveryInfo.currentStep} → ${recoveryInfo.nextStep})`
+            );
+            // Mark recovery sebagai active
+            this.activeRecoveries.add(recoveryKey);
+            try {
+              // Execute recovery order immediately
+              await this.executeMartingaleRecovery(
+                scheduleId,
+                orderScheduledTime,
+                recoveryInfo.trend,
+                recoveryInfo.nextStep
+              );
+            } finally {
+              // Remove dari active setelah selesai (sukses/gagal)
+              this.activeRecoveries.delete(recoveryKey);
+            }
+          } else {
+            this.logger.warn(`⚠️ Recovery already in progress for ${orderScheduledTime}, skipping duplicate`);
+          }
+        } else if (mappedResult === 'loss') {
+          this.logger.log(
+            `🛑 Max martingale step reached for ${orderScheduledTime} or recovery not needed. ` +
+            `This time slot is COMPLETED.`
+          );
+        }
         return;
 
       } catch (error) {
@@ -819,10 +905,318 @@ export class OrderScheduleExecutorService {
     }
   }
 
+
+  // ============================================================================
+  // ✅ UPDATE AFTER EXECUTION dengan Recovery Info
+  // ============================================================================
+
+  private async updateAfterExecutionWithRecovery(
+    scheduleId: string,
+    scheduledTime: string,
+    executionResult: 'win' | 'loss' | 'draw',
+    profit: number
+  ): Promise<{ shouldRecover: boolean; nextStep: number; currentStep: number; trend?: TrendType }> {
+    try {
+      const scheduleRef = this.db.collection(this.schedulesCollection).doc(scheduleId);
+      const scheduleDoc = await scheduleRef.get();
+
+      if (!scheduleDoc.exists) {
+        throw new Error('Schedule not found');
+      }
+
+      const schedule = scheduleDoc.data() as OrderSchedule;
+
+      const orderStates = [...((schedule as any).orderMartingaleStates || [])] as OrderMartingaleState[];
+      const orderStateIndex = orderStates.findIndex(s => s.scheduledTime === scheduledTime);
+
+      let orderState: OrderMartingaleState;
+
+      if (orderStateIndex >= 0) {
+        orderState = { ...orderStates[orderStateIndex] };
+      } else {
+        orderState = {
+          scheduledTime,
+          currentStep: 0,
+          consecutiveLosses: 0,
+          lastResult: null,
+          lastExecutedAt: null,
+          totalExecuted: 0,
+          totalWins: 0,
+          totalLosses: 0,
+        };
+      }
+
+      const previousStep = orderState.currentStep;
+      orderState.lastExecutedAt = new Date();
+      orderState.totalExecuted++;
+      orderState.lastResult = executionResult;
+
+      let shouldRecover = false;
+      let nextStep = previousStep;
+
+      if (executionResult === 'win') {
+        orderState.totalWins++;
+        orderState.consecutiveLosses = 0;
+        orderState.currentStep = 0;
+        shouldRecover = false;
+      } else if (executionResult === 'loss') {
+        orderState.totalLosses++;
+        orderState.consecutiveLosses++;
+
+        // Cek apakah bisa naik step (belum mencapai maxStep)
+        if (orderState.currentStep < schedule.martingaleSetting.maxStep) {
+          orderState.currentStep++;
+          nextStep = orderState.currentStep;
+          shouldRecover = true;
+        } else {
+          // Sudah max step, reset ke 0 (tidak recovery lagi)
+          orderState.currentStep = 0;
+          shouldRecover = false;
+        }
+      }
+
+      if (orderStateIndex >= 0) {
+        orderStates[orderStateIndex] = orderState;
+      } else {
+        orderStates.push(orderState);
+      }
+
+      const updates: any = {
+        totalExecuted: FieldValue.increment(1),
+        lastExecutedAt: new Date(),
+        lastExecutionResult: executionResult,
+        updatedAt: new Date(),
+        currentProfit: FieldValue.increment(profit),
+        orderMartingaleStates: orderStates,
+      };
+
+      if (profit > 0) {
+        updates.totalProfit = FieldValue.increment(profit);
+        updates.totalSuccess = FieldValue.increment(1);
+      } else if (profit < 0) {
+        updates.totalLoss = FieldValue.increment(Math.abs(profit));
+        updates.totalFailed = FieldValue.increment(1);
+      }
+
+      const avgStep = orderStates.reduce((sum, s) => sum + s.currentStep, 0) / orderStates.length;
+      updates.currentMartingaleStep = Math.round(avgStep);
+      updates.consecutiveLosses = orderStates.reduce((sum, s) => sum + s.consecutiveLosses, 0);
+
+      await scheduleRef.update(updates);
+
+      this.logger.log(
+        `✅ Order ${scheduledTime} result: ${executionResult.toUpperCase()}, ` +
+        `Step: ${previousStep} → ${orderState.currentStep}, ` +
+        `ShouldRecover: ${shouldRecover}`
+      );
+
+      // Get trend untuk scheduled time ini
+      const scheduledOrder = schedule.schedules.find(s => s.time === scheduledTime);
+      const trend = scheduledOrder?.trend;
+
+      return {
+        shouldRecover,
+        nextStep,
+        currentStep: previousStep,
+        trend,
+      };
+    } catch (error) {
+      this.logger.error(`❌ Error updating schedule after execution: ${error.message}`, error.stack);
+      throw error;
+    }
+  }
+
+  // ============================================================================
+  // ✅ EXECUTE MARTINGALE RECOVERY - Eksekusi langsung setelah loss
+  // ============================================================================
+
+  private async executeMartingaleRecovery(
+    scheduleId: string,
+    scheduledTime: string,
+    trend: TrendType,
+    martingaleStep: number
+  ): Promise<void> {
+    const recoveryExecutionId = uuidv4();
+    const maxRetries = 3;
+    let lastError: Error | null = null;
+
+    this.logger.log(
+      `🚀🚀🚀 MARTINGALE RECOVERY for schedule ${scheduleId.slice(-8)} at ${scheduledTime}, ` +
+      `step: ${martingaleStep}, trend: ${trend.toUpperCase()}`
+    );
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        // Fetch latest schedule data
+        const latestSchedule = await this.getLatestSchedule(scheduleId);
+
+        if (!latestSchedule) {
+          throw new Error(`Schedule ${scheduleId} not found`);
+        }
+
+        // Calculate amount untuk recovery step
+        const amount = this.orderScheduleService.calculateMartingaleAmount(
+          latestSchedule.amount,
+          martingaleStep,
+          latestSchedule.martingaleSetting.multiplier
+        );
+
+        this.logger.log(
+          `💰 Recovery amount for ${scheduledTime}: Base=${latestSchedule.amount}, ` +
+          `Step=${martingaleStep} → Final=${amount.toLocaleString()}`
+        );
+
+        // Check balance untuk real account
+        if (latestSchedule.accountType === 'real') {
+          const hasBalance = await this.checkUserBalance(latestSchedule.userId, amount);
+
+          if (!hasBalance) {
+            this.logger.warn(`⚠️ Insufficient balance for recovery ${scheduledTime}: required ${amount.toLocaleString()}`);
+
+            await this.recordRecoveryExecution(
+              recoveryExecutionId,
+              latestSchedule,
+              trend,
+              scheduledTime,
+              amount,
+              martingaleStep,
+              'failed',
+              'Insufficient balance for recovery'
+            );
+            return;
+          }
+        }
+
+        // Create recovery order
+        let orderId: string;
+        try {
+          orderId = await this.createBinaryOrderWithVerification(
+            latestSchedule, 
+            trend, 
+            amount, 
+            scheduledTime
+          );
+
+          this.logger.log(`✅ Recovery order created for ${scheduledTime}: ${orderId.slice(-8)}`);
+        } catch (createError) {
+          this.logger.error(
+            `❌ Failed to create recovery order (attempt ${attempt + 1}/${maxRetries}): ${createError.message}`
+          );
+
+          if (attempt < maxRetries - 1) {
+            const delay = 2000 * Math.pow(2, attempt);
+            await new Promise(resolve => setTimeout(resolve, delay));
+            continue;
+          }
+
+          throw createError;
+        }
+
+        // Record recovery execution
+        await this.recordRecoveryExecution(
+          recoveryExecutionId,
+          latestSchedule,
+          trend,
+          scheduledTime,
+          amount,
+          martingaleStep,
+          'executed',
+          undefined,
+          orderId
+        );
+
+        this.logger.log(
+          `✅✅✅ Recovery order ${orderId.slice(-8)} executed successfully for ${scheduledTime} at step ${martingaleStep}`
+        );
+
+        return;
+
+      } catch (error) {
+        lastError = error;
+
+        if (attempt < maxRetries - 1) {
+          const delay = 2000 * Math.pow(2, attempt);
+          this.logger.warn(`⚠️ Recovery attempt ${attempt + 1}/${maxRetries} failed: ${error.message}`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    }
+
+    // All retries failed
+    this.logger.error(
+      `❌❌❌ CRITICAL: Recovery failed after ${maxRetries} attempts for ${scheduledTime}: ${lastError?.message}`
+    );
+
+    try {
+      const latestSchedule = await this.getLatestSchedule(scheduleId);
+
+      if (latestSchedule) {
+        await this.recordRecoveryExecution(
+          recoveryExecutionId,
+          latestSchedule,
+          trend,
+          scheduledTime,
+          latestSchedule.amount,
+          martingaleStep,
+          'failed',
+          `Failed after ${maxRetries} retries: ${lastError?.message}`
+        );
+      }
+    } catch (recordError) {
+      this.logger.error(`❌ Failed to record failed recovery: ${recordError.message}`);
+    }
+  }
+
+  // ============================================================================
+  // ✅ Record Recovery Execution
+  // ============================================================================
+
+  private async recordRecoveryExecution(
+    executionId: string,
+    schedule: OrderSchedule,
+    trend: TrendType,
+    scheduledTime: string,
+    amount: number,
+    martingaleStep: number,
+    status: 'pending' | 'executed' | 'failed' | 'skipped',
+    errorMessage?: string,
+    orderId?: string
+  ) {
+    const execution: ScheduleExecution = {
+      id: executionId,
+      scheduleId: schedule.id,
+      userId: schedule.userId,
+      executedAt: new Date(),
+      scheduledTime,
+      trend,
+      orderId,
+      assetSymbol: schedule.assetSymbol,
+      amount,
+      duration: schedule.duration,
+      accountType: schedule.accountType,
+      martingaleStep,
+      isRecoveryAttempt: true, // ✅ Mark sebagai recovery
+      status,
+      errorMessage,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    try {
+      await this.db.collection(this.executionsCollection).doc(executionId).set(execution);
+
+      this.logger.debug(
+        `✅ Recovery execution recorded: ${executionId.slice(-8)} (${scheduledTime}, step ${martingaleStep}, status: ${status})`
+      );
+    } catch (error) {
+      this.logger.error(`❌ Failed to record recovery execution: ${error.message}`);
+      throw error;
+    }
+  }
+
   // ============================================================================
   // Helper: Check User Balance
   // ============================================================================
-
   private async checkUserBalance(userId: string, requiredAmount: number): Promise<boolean> {
     try {
       const balanceSnapshot = await this.db
@@ -875,6 +1269,7 @@ export class OrderScheduleExecutorService {
     this.logger.log('🔄 Resetting processed cache for new day');
     this.processedToday.clear();
     this.completedSchedules.clear();
+    this.activeRecoveries.clear();
   }
 
   // ============================================================================
@@ -947,11 +1342,13 @@ export class OrderScheduleExecutorService {
       checkResultsRunCount: this.checkResultsRunCount,
       processedTodayCount: this.processedToday.size,
       completedSchedulesCount: this.completedSchedules.size,
+      activeRecoveriesCount: this.activeRecoveries.size,
       mode: '1 Day Only - Auto Delete After Completion',
       features: {
         checkInterval: '10 seconds',
         autoDelete: true,
         perTimeState: true,
+        instantMartingaleRecovery: true,
       }
     };
   }
