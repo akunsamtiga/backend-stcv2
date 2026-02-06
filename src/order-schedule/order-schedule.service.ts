@@ -43,7 +43,7 @@ export class OrderScheduleService {
 
       const plainDto = this.toPlainObject(createDto);
 
-      // ✅ Inisialisasi state martingale untuk setiap order
+      // Inisialisasi state martingale untuk setiap order
       const orderMartingaleStates: OrderMartingaleState[] = createDto.schedules.map(schedule => ({
         scheduledTime: schedule.time,
         currentStep: 0,
@@ -67,8 +67,8 @@ export class OrderScheduleService {
         schedules: plainDto.schedules,
         martingaleSetting: plainDto.martingaleSetting,
         stopLossProfit: plainDto.stopLossProfit || {},
-        status: ScheduleStatus.PENDING,
-        isActive: plainDto.isActive ?? true,
+        status: ScheduleStatus.ACTIVE,
+        isActive: true,
         orderMartingaleStates,
         totalExecuted: 0,
         totalSuccess: 0,
@@ -85,7 +85,10 @@ export class OrderScheduleService {
 
       await this.db.collection(this.schedulesCollection).doc(scheduleId).set(newSchedule);
 
-      this.logger.log(`✅ Created schedule ${scheduleId} for user ${userEmail} with ${orderMartingaleStates.length} order states`);
+      this.logger.log(
+        `✅ Created schedule ${scheduleId} for user ${userEmail} ` +
+        `with ${orderMartingaleStates.length} order times. Will auto-delete after all completed.`
+      );
 
       return newSchedule;
     } catch (error) {
@@ -110,14 +113,6 @@ export class OrderScheduleService {
 
       if (query?.assetSymbol) {
         firestoreQuery = firestoreQuery.where('assetSymbol', '==', query.assetSymbol);
-      }
-
-      if (query?.fromDate) {
-        firestoreQuery = firestoreQuery.where('createdAt', '>=', new Date(query.fromDate));
-      }
-
-      if (query?.toDate) {
-        firestoreQuery = firestoreQuery.where('createdAt', '<=', new Date(query.toDate));
       }
 
       const snapshot = await firestoreQuery.orderBy('createdAt', 'desc').get();
@@ -160,14 +155,25 @@ export class OrderScheduleService {
     try {
       const schedule = await this.findOne(userId, scheduleId);
 
-      if (schedule.status === ScheduleStatus.ACTIVE && updateDto.schedules) {
-        throw new BadRequestException('Cannot modify schedules of an active schedule. Please pause it first.');
+      // Tidak bisa update jika sudah ada yang ter-execute
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      const executionsSnapshot = await this.db
+        .collection(this.executionsCollection)
+        .where('scheduleId', '==', scheduleId)
+        .where('executedAt', '>=', today)
+        .limit(1)
+        .get();
+      
+      if (!executionsSnapshot.empty && (updateDto.schedules || updateDto.amount || updateDto.martingaleSetting)) {
+        throw new BadRequestException('Cannot modify schedule that has already started executing today');
       }
 
       if (updateDto.schedules) {
         this.validateScheduleTimes(updateDto.schedules);
         
-        // ✅ Re-inisialisasi state martingale jika schedules berubah
+        // Re-inisialisasi state martingale jika schedules berubah
         const existingStates = (schedule as any).orderMartingaleStates || [];
         const newStates: OrderMartingaleState[] = updateDto.schedules.map(newSchedule => {
           const existingState = existingStates.find((s: OrderMartingaleState) => 
@@ -200,17 +206,6 @@ export class OrderScheduleService {
         updatedAt: new Date(),
       };
 
-      if (updateDto.status === ScheduleStatus.ACTIVE && schedule.status !== ScheduleStatus.ACTIVE) {
-        updatedData.startedAt = new Date();
-        this.logger.log(`🚀 Schedule ${scheduleId} activated`);
-      } else if (updateDto.status === ScheduleStatus.PAUSED) {
-        updatedData.pausedAt = new Date();
-        this.logger.log(`⏸️ Schedule ${scheduleId} paused`);
-      } else if (updateDto.status === ScheduleStatus.COMPLETED || updateDto.status === ScheduleStatus.CANCELLED) {
-        updatedData.completedAt = new Date();
-        this.logger.log(`✅ Schedule ${scheduleId} ${updateDto.status}`);
-      }
-
       await this.db.collection(this.schedulesCollection)
         .doc(scheduleId)
         .update(updatedData);
@@ -227,11 +222,7 @@ export class OrderScheduleService {
 
   async remove(userId: string, scheduleId: string): Promise<{ message: string }> {
     try {
-      const schedule = await this.findOne(userId, scheduleId);
-
-      if (schedule.status === ScheduleStatus.ACTIVE) {
-        throw new BadRequestException('Cannot delete an active schedule. Please pause or cancel it first.');
-      }
+      await this.findOne(userId, scheduleId);
 
       await this.db.collection(this.schedulesCollection).doc(scheduleId).delete();
 
@@ -239,7 +230,7 @@ export class OrderScheduleService {
 
       return { message: 'Order schedule deleted successfully' };
     } catch (error) {
-      if (error instanceof BadRequestException || error instanceof NotFoundException || error instanceof ForbiddenException) {
+      if (error instanceof NotFoundException || error instanceof ForbiddenException) {
         throw error;
       }
       this.logger.error(`❌ Failed to delete schedule: ${error.message}`);
@@ -247,18 +238,70 @@ export class OrderScheduleService {
     }
   }
 
+  // ============================================================================
+  // ✅ TAMBAHAN: Activate Schedule
+  // ============================================================================
   async activateSchedule(userId: string, scheduleId: string): Promise<OrderSchedule> {
-    return this.update(userId, scheduleId, { 
-      status: ScheduleStatus.ACTIVE,
-      isActive: true 
-    });
+    try {
+      const schedule = await this.findOne(userId, scheduleId);
+      
+      // Cek apakah masih bisa diaktifkan (belum ada execution hari ini)
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      const executionsSnapshot = await this.db
+        .collection(this.executionsCollection)
+        .where('scheduleId', '==', scheduleId)
+        .where('executedAt', '>=', today)
+        .limit(1)
+        .get();
+      
+      if (!executionsSnapshot.empty) {
+        throw new BadRequestException('Cannot activate schedule that has already been executed today');
+      }
+
+      await this.db.collection(this.schedulesCollection).doc(scheduleId).update({
+        status: ScheduleStatus.ACTIVE,
+        isActive: true,
+        updatedAt: new Date(),
+      });
+
+      this.logger.log(`🚀 Schedule ${scheduleId} activated`);
+
+      return this.findOne(userId, scheduleId);
+    } catch (error) {
+      if (error instanceof NotFoundException || error instanceof ForbiddenException || error instanceof BadRequestException) {
+        throw error;
+      }
+      this.logger.error(`❌ Failed to activate schedule: ${error.message}`);
+      throw new BadRequestException(`Failed to activate schedule: ${error.message}`);
+    }
   }
 
+  // ============================================================================
+  // ✅ TAMBAHAN: Pause Schedule
+  // ============================================================================
   async pauseSchedule(userId: string, scheduleId: string): Promise<OrderSchedule> {
-    return this.update(userId, scheduleId, { 
-      status: ScheduleStatus.PAUSED,
-      isActive: false 
-    });
+    try {
+      await this.findOne(userId, scheduleId);
+
+      await this.db.collection(this.schedulesCollection).doc(scheduleId).update({
+        status: ScheduleStatus.PAUSED,
+        isActive: false,
+        pausedAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      this.logger.log(`⏸️ Schedule ${scheduleId} paused`);
+
+      return this.findOne(userId, scheduleId);
+    } catch (error) {
+      if (error instanceof NotFoundException || error instanceof ForbiddenException) {
+        throw error;
+      }
+      this.logger.error(`❌ Failed to pause schedule: ${error.message}`);
+      throw new BadRequestException(`Failed to pause schedule: ${error.message}`);
+    }
   }
 
   async getExecutionHistory(
@@ -284,19 +327,67 @@ export class OrderScheduleService {
     }
   }
 
-  async getStatistics(userId: string, scheduleId: string): Promise<any[]> {
+  // ============================================================================
+  // ✅ TAMBAHAN: Get Statistics
+  // ============================================================================
+  async getStatistics(userId: string, scheduleId: string): Promise<any> {
     try {
-      await this.findOne(userId, scheduleId);
+      const schedule = await this.findOne(userId, scheduleId);
 
-      const snapshot = await this.db
-        .collection(this.statisticsCollection)
+      // Hitung statistik dari executions
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const executionsSnapshot = await this.db
+        .collection(this.executionsCollection)
         .where('scheduleId', '==', scheduleId)
-        .where('userId', '==', userId)
-        .orderBy('date', 'desc')
-        .limit(30)
+        .where('executedAt', '>=', today)
         .get();
 
-      return snapshot.docs.map(doc => doc.data());
+      const executions = executionsSnapshot.docs.map(doc => doc.data());
+
+      const totalExecuted = executions.length;
+      const wins = executions.filter(e => e.result === 'win').length;
+      const losses = executions.filter(e => e.result === 'loss').length;
+      const draws = executions.filter(e => e.result === 'draw').length;
+      
+      const totalProfit = executions.reduce((sum, e) => sum + (e.profit || 0), 0);
+      const winRate = totalExecuted > 0 ? (wins / totalExecuted) * 100 : 0;
+
+      // Ambil state martingale per waktu
+      const orderStates = (schedule as any).orderMartingaleStates || [];
+
+      return {
+        scheduleId,
+        date: today.toISOString().split('T')[0],
+        totalExecuted,
+        wins,
+        losses,
+        draws,
+        winRate: Math.round(winRate * 100) / 100,
+        totalProfit,
+        totalProfitFromSchedule: schedule.totalProfit,
+        totalLossFromSchedule: schedule.totalLoss,
+        currentProfit: schedule.currentProfit,
+        martingaleStates: orderStates.map((state: OrderMartingaleState) => ({
+          scheduledTime: state.scheduledTime,
+          currentStep: state.currentStep,
+          consecutiveLosses: state.consecutiveLosses,
+          lastResult: state.lastResult,
+          totalExecuted: state.totalExecuted,
+          totalWins: state.totalWins,
+          totalLosses: state.totalLosses,
+        })),
+        executions: executions.map(e => ({
+          scheduledTime: e.scheduledTime,
+          trend: e.trend,
+          amount: e.amount,
+          martingaleStep: e.martingaleStep,
+          result: e.result,
+          profit: e.profit,
+          executedAt: e.executedAt,
+        })),
+      };
     } catch (error) {
       this.logger.error(`❌ Failed to fetch statistics: ${error.message}`);
       throw new BadRequestException(`Failed to fetch statistics: ${error.message}`);
@@ -365,27 +456,11 @@ export class OrderScheduleService {
 
       if (stopLossProfit.stopProfit && currentProfit >= stopLossProfit.stopProfit) {
         this.logger.log(`🎯 Stop profit reached for schedule ${scheduleId}: ${currentProfit}`);
-        
-        await this.db.collection(this.schedulesCollection).doc(scheduleId).update({
-          status: ScheduleStatus.COMPLETED,
-          isActive: false,
-          completedAt: new Date(),
-          updatedAt: new Date(),
-        });
-        
         return true;
       }
 
       if (stopLossProfit.stopLoss && Math.abs(currentProfit) >= stopLossProfit.stopLoss) {
         this.logger.log(`🛑 Stop loss reached for schedule ${scheduleId}: ${currentProfit}`);
-        
-        await this.db.collection(this.schedulesCollection).doc(scheduleId).update({
-          status: ScheduleStatus.COMPLETED,
-          isActive: false,
-          completedAt: new Date(),
-          updatedAt: new Date(),
-        });
-        
         return true;
       }
 
@@ -407,7 +482,6 @@ export class OrderScheduleService {
     return Math.round(baseAmount * Math.pow(multiplier, currentStep));
   }
 
-  // ✅ Get martingale state untuk order tertentu
   getOrderMartingaleState(
     schedule: OrderSchedule, 
     scheduledTime: string
@@ -432,7 +506,6 @@ export class OrderScheduleService {
     return state;
   }
 
-  // ✅ Update setelah eksekusi - update state per order
   async updateAfterExecution(
     scheduleId: string,
     scheduledTime: string,
@@ -450,7 +523,6 @@ export class OrderScheduleService {
 
         const schedule = scheduleDoc.data() as OrderSchedule;
         
-        // ✅ Ambil state martingale untuk order ini
         const orderStates = [...((schedule as any).orderMartingaleStates || [])] as OrderMartingaleState[];
         const orderStateIndex = orderStates.findIndex(s => s.scheduledTime === scheduledTime);
         
@@ -471,7 +543,6 @@ export class OrderScheduleService {
           };
         }
 
-        // ✅ Update state untuk order ini saja
         orderState.lastExecutedAt = new Date();
         orderState.totalExecuted++;
         orderState.lastResult = executionResult;
@@ -495,7 +566,6 @@ export class OrderScheduleService {
           orderStates.push(orderState);
         }
 
-        // ✅ Update total aggregated
         const updates: any = {
           totalExecuted: FieldValue.increment(1),
           lastExecutedAt: new Date(),
@@ -513,7 +583,6 @@ export class OrderScheduleService {
           updates.totalFailed = FieldValue.increment(1);
         }
 
-        // Update backward compatibility fields
         const avgStep = orderStates.reduce((sum, s) => sum + s.currentStep, 0) / orderStates.length;
         updates.currentMartingaleStep = Math.round(avgStep);
         updates.consecutiveLosses = orderStates.reduce((sum, s) => sum + s.consecutiveLosses, 0);
@@ -522,12 +591,9 @@ export class OrderScheduleService {
 
         this.logger.log(
           `✅ Order ${scheduledTime} result: ${executionResult.toUpperCase()}, ` +
-          `Step: ${orderState.currentStep}, Consecutive Losses: ${orderState.consecutiveLosses}, ` +
-          `Profit: ${profit}`
+          `Step: ${orderState.currentStep}, Profit: ${profit}`
         );
       });
-
-      await this.checkStopLossProfit(scheduleId);
       
     } catch (error) {
       this.logger.error(`❌ Error updating schedule after execution: ${error.message}`, error.stack);
