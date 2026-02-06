@@ -102,17 +102,23 @@ export class OrderScheduleExecutorService {
         .where('executedAt', '>=', today)
         .get();
       
-      const executedTimes = new Set(
-        executionsSnapshot.docs.map(doc => doc.data().scheduledTime)
-      );
+      // ✅ FIX: Cek executions yang sudah punya RESULT (bukan hanya executed)
+      const executionsWithResult = executionsSnapshot.docs
+        .filter(doc => {
+          const data = doc.data();
+          return data.result != null; // win, loss, atau draw
+        })
+        .map(doc => doc.data().scheduledTime);
       
-      // Cek apakah semua scheduled times sudah dieksekusi
-      const allCompleted = allScheduledTimes.every(time => executedTimes.has(time));
+      const completedTimes = new Set(executionsWithResult);
+      
+      // ✅ Cek apakah semua scheduled times sudah dieksekusi DAN punya result
+      const allCompleted = allScheduledTimes.every(time => completedTimes.has(time));
       
       if (allCompleted) {
         this.logger.log(
           `✅ Schedule ${schedule.id.slice(-8)} completed! ` +
-          `All ${allScheduledTimes.length} orders executed. Auto-deleting...`
+          `All ${allScheduledTimes.length} orders finished with results. Auto-deleting...`
         );
         
         // Hapus schedule
