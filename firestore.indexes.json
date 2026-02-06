@@ -173,6 +173,20 @@
       ]
     },
     {
+      "collectionGroup": "schedule_executions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "schedule_statistics",
       "queryScope": "COLLECTION",
       "fields": [

@@ -1,5 +1,6 @@
 // src/order-schedule/order-schedule-executor.service.ts
-// ✅ FIXED VERSION - Dengan Cron Job untuk Update Statistik
+// ✅ VERSI FINAL - MARTINGALE PER WAKTU (INDEPENDENT)
+// Setiap scheduledTime punya state martingale sendiri-sendiri
 
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
@@ -24,8 +25,13 @@ export class OrderScheduleExecutorService {
   private isProcessingSchedules = false;
   private isCheckingResults = false;
   
-  // ✅ TAMBAHAN: Counter untuk logging
+  // ✅ Track processed schedules untuk avoid duplicate
+  // Key: "scheduleId:scheduledTime" (e.g., "abc123:09:00")
+  // Ini memastikan setiap kombinasi schedule+time di-track terpisah
+  private processedToday: Set<string> = new Set();
+  
   private checkResultsRunCount = 0;
+  private processSchedulesRunCount = 0;
 
   constructor(
     private firebaseService: FirebaseService,
@@ -33,7 +39,15 @@ export class OrderScheduleExecutorService {
     private priceFetcherService: PriceFetcherService,
     private assetsService: AssetsService,
   ) {
-    this.logger.log('✅ OrderScheduleExecutorService initialized with per-order martingale');
+    this.logger.log('✅ OrderScheduleExecutorService initialized');
+    this.logger.log('🎯 MARTINGALE MODE: Independent per scheduled time');
+    this.logger.log('📝 Example:');
+    this.logger.log('   - 09:00 LOSS → 09:00 step 1 (amount 20k)');
+    this.logger.log('   - 10:00 WIN  → 10:00 step 0 (amount 10k) ← independent!');
+    this.logger.log('   - 14:00 LOSS → 14:00 step 1 (amount 20k) ← independent!');
+    this.logger.log('🔧 Features: 10s check, missed recovery, retry mechanism');
+    
+    this.resetProcessedDaily();
   }
 
   private get db(): Firestore {
@@ -41,42 +55,96 @@ export class OrderScheduleExecutorService {
   }
 
   // ============================================================================
-  // CRON: Eksekusi Order Sesuai Jadwal (Every Minute)
+  // CRON: Check scheduled orders setiap 10 detik
   // ============================================================================
 
-  @Cron(CronExpression.EVERY_MINUTE)
+  @Cron('*/10 * * * * *')
   async handleScheduledOrders() {
     if (this.isProcessingSchedules) {
-      this.logger.warn('⏭️ Skipping scheduled orders - previous execution still running');
+      if (this.processSchedulesRunCount % 60 === 0) {
+        this.logger.warn('⏭️ Skipping - previous execution still running');
+      }
+      this.processSchedulesRunCount++;
       return;
     }
 
     this.isProcessingSchedules = true;
 
     try {
-      this.logger.log('🔍 Checking for scheduled orders...');
+      if (this.processSchedulesRunCount % 6 === 0) {
+        this.logger.debug(`🔍 Checking scheduled orders (run #${this.processSchedulesRunCount})...`);
+      }
 
       const currentTime = this.getCurrentTime();
       const activeSchedules = await this.getActiveSchedules();
 
-      this.logger.log(`📊 Found ${activeSchedules.length} active schedules`);
+      if (activeSchedules.length > 0) {
+        this.logger.log(`📊 Found ${activeSchedules.length} active schedules at ${currentTime}`);
+      }
 
       for (const schedule of activeSchedules) {
         await this.processSchedule(schedule, currentTime);
       }
+
+      // ✅ Recover missed schedules dalam 5 menit terakhir
+      await this.recoverMissedSchedules(currentTime);
+
+      this.processSchedulesRunCount++;
     } catch (error) {
-      this.logger.error(`❌ Error in scheduled orders handler: ${error.message}`, error.stack);
+      this.logger.error(`❌ Error in handleScheduledOrders: ${error.message}`, error.stack);
     } finally {
       this.isProcessingSchedules = false;
     }
   }
 
   // ============================================================================
-  // ✅ FIX: CRON untuk Check Order Results dan Update Statistik
-  // Berjalan setiap 10 detik untuk check hasil order
+  // RECOVERY untuk Missed Schedules
   // ============================================================================
 
-  @Cron('*/10 * * * * *') // Every 10 seconds
+  private async recoverMissedSchedules(currentTime: string) {
+    try {
+      const now = new Date();
+      const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
+      
+      const activeSchedules = await this.getActiveSchedules();
+      
+      for (const schedule of activeSchedules) {
+        for (const scheduledOrder of schedule.schedules) {
+          const scheduleTime = this.parseTimeToDate(scheduledOrder.time);
+          
+          if (scheduleTime > fiveMinutesAgo && scheduleTime < now) {
+            const cacheKey = `${schedule.id}:${scheduledOrder.time}`;
+            
+            if (this.processedToday.has(cacheKey)) {
+              continue; // Sudah diproses
+            }
+            
+            const alreadyExecuted = await this.checkAlreadyExecutedToday(
+              schedule.id,
+              scheduledOrder.time
+            );
+            
+            if (!alreadyExecuted) {
+              this.logger.warn(
+                `⚠️ Recovering missed schedule: ${schedule.id.slice(-8)} ` +
+                `at ${scheduledOrder.time} (${scheduledOrder.trend})`
+              );
+              
+              await this.executeOrder(schedule, scheduledOrder.trend, scheduledOrder.time);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      this.logger.error(`❌ Error in recoverMissedSchedules: ${error.message}`);
+    }
+  }
+
+  // ============================================================================
+  // CRON: Check order results setiap 10 detik
+  // ============================================================================
+
+  @Cron('*/10 * * * * *')
   async checkPendingExecutions() {
     if (this.isCheckingResults) {
       return;
@@ -88,9 +156,6 @@ export class OrderScheduleExecutorService {
       const now = new Date();
       const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
 
-      // Get executions yang:
-      // 1. Status = executed (order sudah dibuat)
-      // 2. Created dalam 2 jam terakhir (safety limit)
       const executionsSnapshot = await this.db
         .collection(this.executionsCollection)
         .where('status', '==', 'executed')
@@ -98,14 +163,12 @@ export class OrderScheduleExecutorService {
         .limit(100)
         .get();
 
-      // Filter yang belum punya result
       const pendingExecutions = executionsSnapshot.docs.filter(doc => {
         const data = doc.data();
         return !data.result && data.orderId;
       });
 
       if (pendingExecutions.length === 0) {
-        // Log setiap 1 menit (6x check @ 10s interval)
         if (this.checkResultsRunCount % 6 === 0) {
           this.logger.debug(`⏰ Check results #${this.checkResultsRunCount}: No pending executions`);
         }
@@ -118,7 +181,6 @@ export class OrderScheduleExecutorService {
         `🔍 Checking ${pendingExecutions.length} pending executions for results`
       );
 
-      // Process in parallel dengan batch size
       const batchSize = 10;
       for (let i = 0; i < pendingExecutions.length; i += batchSize) {
         const batch = pendingExecutions.slice(i, i + batchSize);
@@ -131,7 +193,8 @@ export class OrderScheduleExecutorService {
               await this.checkOrderResultWithRetry(
                 execution.scheduleId,
                 execution.orderId!,
-                execution.id
+                execution.id,
+                execution.scheduledTime // ✅ Pass scheduledTime untuk update state yang benar
               );
             } catch (error) {
               this.logger.error(
@@ -152,7 +215,7 @@ export class OrderScheduleExecutorService {
   }
 
   // ============================================================================
-  // Helper Methods
+  // Helper: Get Active Schedules
   // ============================================================================
 
   private async getActiveSchedules(): Promise<OrderSchedule[]> {
@@ -170,28 +233,46 @@ export class OrderScheduleExecutorService {
     }
   }
 
+  // ============================================================================
+  // Process 1 Schedule
+  // ============================================================================
+
   private async processSchedule(schedule: OrderSchedule, currentTime: string) {
     try {
-      this.logger.log(`🔄 Processing schedule ${schedule.id.slice(-8)} for user ${schedule.userEmail}`);
-
       // Check stop loss/profit
       const shouldStop = await this.orderScheduleService.checkStopLossProfit(schedule.id);
       if (shouldStop) {
-        this.logger.log(`🛑 Schedule ${schedule.id.slice(-8)} stopped due to stop loss/profit limit`);
+        this.logger.log(`🛑 Schedule ${schedule.id.slice(-8)} stopped (stop loss/profit)`);
         return;
       }
 
-      // Filter orders untuk waktu sekarang
+      // ✅ Filter orders untuk waktu sekarang
       const scheduledOrders = schedule.schedules.filter(s => s.time === currentTime);
 
       if (scheduledOrders.length === 0) {
         return;
       }
 
-      this.logger.log(`📋 Found ${scheduledOrders.length} orders to execute for schedule ${schedule.id.slice(-8)}`);
+      this.logger.log(
+        `📋 Found ${scheduledOrders.length} orders at ${currentTime} ` +
+        `for schedule ${schedule.id.slice(-8)}`
+      );
 
-      // Execute each scheduled order
+      // ✅ Execute setiap scheduled order
+      // PENTING: Setiap scheduledOrder.time punya martingale state sendiri!
       for (const scheduledOrder of scheduledOrders) {
+        const cacheKey = `${schedule.id}:${scheduledOrder.time}`;
+        
+        // Check in-memory cache
+        if (this.processedToday.has(cacheKey)) {
+          this.logger.debug(
+            `⏭️ Skipping ${scheduledOrder.time} - already processed (cache) ` +
+            `for schedule ${schedule.id.slice(-8)}`
+          );
+          continue;
+        }
+
+        // Check database
         const alreadyExecuted = await this.checkAlreadyExecutedToday(
           schedule.id,
           scheduledOrder.time
@@ -199,12 +280,18 @@ export class OrderScheduleExecutorService {
 
         if (alreadyExecuted) {
           this.logger.log(
-            `⏭️ Skipping ${scheduledOrder.time} - already executed today for schedule ${schedule.id.slice(-8)}`
+            `⏭️ Skipping ${scheduledOrder.time} - already executed today ` +
+            `for schedule ${schedule.id.slice(-8)}`
           );
+          this.processedToday.add(cacheKey);
           continue;
         }
 
+        // ✅ Execute order dengan scheduledTime
         await this.executeOrder(schedule, scheduledOrder.trend, scheduledOrder.time);
+        
+        // Mark as processed
+        this.processedToday.add(cacheKey);
       }
     } catch (error) {
       this.logger.error(
@@ -214,9 +301,13 @@ export class OrderScheduleExecutorService {
     }
   }
 
+  // ============================================================================
+  // Check if Already Executed Today
+  // ============================================================================
+
   private async checkAlreadyExecutedToday(
     scheduleId: string,
-    time: string
+    scheduledTime: string
   ): Promise<boolean> {
     try {
       const today = new Date();
@@ -225,7 +316,7 @@ export class OrderScheduleExecutorService {
       const snapshot = await this.db
         .collection(this.executionsCollection)
         .where('scheduleId', '==', scheduleId)
-        .where('scheduledTime', '==', time)
+        .where('scheduledTime', '==', scheduledTime) // ✅ Filter by scheduledTime
         .get();
 
       return snapshot.docs.some((doc) => {
@@ -239,111 +330,182 @@ export class OrderScheduleExecutorService {
     }
   }
 
+  // ============================================================================
+  // ✅ EXECUTE ORDER - dengan Martingale per scheduledTime
+  // ============================================================================
+
   private async executeOrder(
     schedule: OrderSchedule,
     trend: TrendType,
-    scheduledTime: string
+    scheduledTime: string // ✅ Key parameter - ini yang menentukan state mana yang dipakai
   ) {
     const executionId = uuidv4();
+    const maxRetries = 3;
+    let lastError: Error | null = null;
 
-    try {
-      this.logger.log(
-        `🚀 Executing order for schedule ${schedule.id.slice(-8)}: ${trend} at ${scheduledTime}`
-      );
+    this.logger.log(
+      `🚀 Executing order for schedule ${schedule.id.slice(-8)} ` +
+      `at ${scheduledTime}, trend: ${trend.toUpperCase()}`
+    );
 
-      // Ambil state martingale untuk order ini (berdasarkan scheduledTime)
-      const orderState = this.orderScheduleService.getOrderMartingaleState(schedule, scheduledTime);
-      
-      this.logger.log(
-        `📊 Order ${scheduledTime} state: Step=${orderState.currentStep}, ` +
-        `ConsecutiveLosses=${orderState.consecutiveLosses}, LastResult=${orderState.lastResult || 'none'}`
-      );
-
-      // Calculate amount berdasarkan state order ini
-      const amount = this.orderScheduleService.calculateMartingaleAmount(
-        schedule.amount,
-        orderState.currentStep,
-        schedule.martingaleSetting.multiplier
-      );
-
-      this.logger.log(
-        `💰 Amount: ${amount} (base: ${schedule.amount}, step: ${orderState.currentStep}, multiplier: ${schedule.martingaleSetting.multiplier})`
-      );
-
-      // Check balance untuk real account
-      if (schedule.accountType === 'real') {
-        const hasBalance = await this.checkUserBalance(schedule.userId, amount);
+    // ✅ Retry mechanism
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        // ✅ CRITICAL: Get martingale state untuk scheduledTime ini
+        // Setiap scheduledTime punya state terpisah!
+        const orderState = this.orderScheduleService.getOrderMartingaleState(
+          schedule, 
+          scheduledTime
+        );
         
-        if (!hasBalance) {
-          this.logger.warn(`⚠️ Insufficient balance for user ${schedule.userId}`);
+        this.logger.log(
+          `📊 Order ${scheduledTime} martingale state:` +
+          ` Step=${orderState.currentStep},` +
+          ` ConsecutiveLosses=${orderState.consecutiveLosses},` +
+          ` LastResult=${orderState.lastResult || 'none'}`
+        );
+        
+        // ✅ Calculate amount berdasarkan step untuk waktu INI
+        const amount = this.orderScheduleService.calculateMartingaleAmount(
+          schedule.amount,
+          orderState.currentStep,
+          schedule.martingaleSetting.multiplier
+        );
+
+        this.logger.log(
+          `💰 Amount calculation for ${scheduledTime}:` +
+          ` Base=${schedule.amount},` +
+          ` Step=${orderState.currentStep},` +
+          ` Multiplier=${schedule.martingaleSetting.multiplier}` +
+          ` → Final=${amount.toLocaleString()}`
+        );
+
+        // Check balance untuk real account
+        if (schedule.accountType === 'real') {
+          const hasBalance = await this.checkUserBalance(schedule.userId, amount);
+          
+          if (!hasBalance) {
+            this.logger.warn(
+              `⚠️ Insufficient balance for ${scheduledTime}: ` +
+              `required ${amount.toLocaleString()}`
+            );
+            
+            await this.recordExecution(
+              executionId,
+              schedule,
+              trend,
+              scheduledTime,
+              amount,
+              orderState.currentStep,
+              'failed',
+              'Insufficient balance'
+            );
+            return;
+          }
+        }
+
+        // ✅ Create order
+        let orderId: string;
+        try {
+          orderId = await this.createBinaryOrderWithVerification(
+            schedule, 
+            trend, 
+            amount, 
+            scheduledTime
+          );
+          
+          this.logger.log(
+            `✅ Order created for ${scheduledTime}: ${orderId.slice(-8)}`
+          );
+        } catch (createError) {
+          this.logger.error(
+            `❌ Failed to create order (attempt ${attempt + 1}/${maxRetries}): ` +
+            `${createError.message}`
+          );
+          
+          if (attempt < maxRetries - 1) {
+            const delay = 2000 * Math.pow(2, attempt);
+            this.logger.log(`⏳ Retrying in ${delay}ms...`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+            continue;
+          }
+          
+          throw createError;
+        }
+
+        // ✅ Record execution dengan scheduledTime
+        try {
           await this.recordExecution(
             executionId,
             schedule,
             trend,
-            scheduledTime,
+            scheduledTime, // ✅ Important: simpan scheduledTime
             amount,
             orderState.currentStep,
-            'failed',
-            'Insufficient balance'
+            'executed',
+            undefined,
+            orderId
           );
-          return;
+          
+          this.logger.log(
+            `✅ Execution recorded for ${scheduledTime}: ${executionId.slice(-8)}`
+          );
+        } catch (recordError) {
+          this.logger.error(`❌ Failed to record execution: ${recordError.message}`);
+          throw recordError;
+        }
+
+        this.logger.log(
+          `✅ Order ${orderId.slice(-8)} executed successfully ` +
+          `for ${scheduledTime} at step ${orderState.currentStep}`
+        );
+        
+        return; // Success
+        
+      } catch (error) {
+        lastError = error;
+        
+        if (attempt < maxRetries - 1) {
+          const delay = 2000 * Math.pow(2, attempt);
+          this.logger.warn(
+            `⚠️ Attempt ${attempt + 1}/${maxRetries} failed: ${error.message}`
+          );
+          this.logger.log(`⏳ Retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
         }
       }
-      
-      // Create binary order
-      let orderId: string;
-      try {
-        orderId = await this.createBinaryOrderWithVerification(schedule, trend, amount, scheduledTime);
-        this.logger.log(`✅ Binary order created: ${orderId.slice(-8)}`);
-      } catch (createError) {
-        this.logger.error(`❌ Failed to create order: ${createError.message}`);
-        throw createError;
-      }
+    }
 
-      // Record execution
-      try {
-        await this.recordExecution(
-          executionId,
-          schedule,
-          trend,
-          scheduledTime,
-          amount,
-          orderState.currentStep,
-          'executed',
-          undefined,
-          orderId
-        );
-        this.logger.log(`✅ Execution recorded: ${executionId.slice(-8)}`);
-      } catch (recordError) {
-        this.logger.error(`❌ Failed to record execution: ${recordError.message}`);
-        throw recordError;
-      }
+    // ✅ All retries failed
+    this.logger.error(
+      `❌ CRITICAL: Failed after ${maxRetries} attempts ` +
+      `for ${scheduledTime}: ${lastError?.message}`
+    );
 
-      this.logger.log(`✅ Order executed successfully: ${orderId.slice(-8)}`);
-      
-    } catch (error) {
-      this.logger.error(
-        `❌ CRITICAL ERROR executing order for schedule ${schedule.id.slice(-8)}: ${error.message}`
+    try {
+      const orderState = this.orderScheduleService.getOrderMartingaleState(
+        schedule, 
+        scheduledTime
       );
-
-      try {
-        const orderState = this.orderScheduleService.getOrderMartingaleState(schedule, scheduledTime);
-        
-        await this.recordExecution(
-          executionId,
-          schedule,
-          trend,
-          scheduledTime,
-          schedule.amount,
-          orderState.currentStep,
-          'failed',
-          error.message
-        );
-      } catch (recordError) {
-        this.logger.error(`❌ Failed to record failed execution: ${recordError.message}`);
-      }
+      
+      await this.recordExecution(
+        executionId,
+        schedule,
+        trend,
+        scheduledTime,
+        schedule.amount,
+        orderState.currentStep,
+        'failed',
+        `Failed after ${maxRetries} retries: ${lastError?.message}`
+      );
+    } catch (recordError) {
+      this.logger.error(`❌ Failed to record failed execution: ${recordError.message}`);
     }
   }
+
+  // ============================================================================
+  // Create Binary Order
+  // ============================================================================
 
   private async getAssetName(assetSymbol: string): Promise<string> {
     try {
@@ -358,7 +520,7 @@ export class OrderScheduleExecutorService {
         return assetData.name || assetSymbol;
       }
     } catch (error) {
-      this.logger.warn(`⚠️ Error fetching asset name for ${assetSymbol}: ${error.message}`);
+      this.logger.warn(`⚠️ Error fetching asset name: ${error.message}`);
     }
     
     return assetSymbol;
@@ -379,7 +541,6 @@ export class OrderScheduleExecutorService {
     let assetId: string | null = null;
     let assetData: any = null;
 
-    // Fetch asset data and price
     try {
       const assetSnapshot = await this.db
         .collection(this.assetsCollection)
@@ -392,27 +553,40 @@ export class OrderScheduleExecutorService {
         assetId = assetSnapshot.docs[0].id;
         
         try {
-          const priceData = await this.priceFetcherService.getCurrentPriceRealtime(assetData, true);
+          const priceData = await this.priceFetcherService.getCurrentPriceRealtime(
+            assetData, 
+            true
+          );
+          
           if (priceData && priceData.price) {
             entryPrice = priceData.price;
-            this.logger.log(`💰 Entry price fetched: ${entryPrice} for ${schedule.assetSymbol}`);
+            this.logger.log(
+              `💰 Entry price for ${scheduledTime}: ${entryPrice}`
+            );
           }
         } catch (priceError) {
           this.logger.warn(`⚠️ Could not fetch realtime price: ${priceError.message}`);
-          entryPrice = assetData.simulatorSettings?.initialPrice || assetData.initialPrice || 0;
+          entryPrice = assetData.simulatorSettings?.initialPrice || 
+                       assetData.initialPrice || 0;
         }
       } else {
-        this.logger.warn(`⚠️ Asset ${schedule.assetSymbol} not found in database`);
+        throw new Error(`Asset ${schedule.assetSymbol} not found`);
       }
     } catch (error) {
-      this.logger.warn(`⚠️ Could not fetch asset info: ${error.message}`);
+      this.logger.error(`❌ Failed to fetch asset info: ${error.message}`);
+      throw error;
     }
 
     const durationInMinutes = schedule.duration / 60;
     const direction = trend === 'buy' ? 'CALL' : 'PUT';
     const expiryTime = new Date(now.getTime() + schedule.duration * 1000);
 
-    // Create order object
+    // Get current step untuk metadata
+    const orderState = this.orderScheduleService.getOrderMartingaleState(
+      schedule, 
+      scheduledTime
+    );
+
     const order = {
       id: orderId,
       user_id: schedule.userId,
@@ -438,7 +612,7 @@ export class OrderScheduleExecutorService {
       
       is_scheduled: true,
       schedule_id: schedule.id,
-      scheduled_time: scheduledTime,
+      scheduled_time: scheduledTime, // ✅ Save scheduledTime
       
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
@@ -451,8 +625,8 @@ export class OrderScheduleExecutorService {
       metadata: {
         isScheduled: true,
         scheduledAt: now.toISOString(),
-        scheduledTime: scheduledTime,
-        martingaleStep: this.orderScheduleService.getOrderMartingaleState(schedule, scheduledTime).currentStep,
+        scheduledTime: scheduledTime, // ✅ Important untuk identify state
+        martingaleStep: orderState.currentStep,
         originalTrend: trend,
       }
     };
@@ -465,24 +639,28 @@ export class OrderScheduleExecutorService {
       const verifyDoc = await this.db.collection(this.ordersCollection).doc(orderId).get();
       
       if (!verifyDoc.exists) {
-        throw new Error('Failed to write order to Firestore - verification failed');
+        throw new Error('Order verification failed');
       }
       
-      this.logger.log(`✅ Verified order ${orderId.slice(-8)} exists in Firestore`);
+      this.logger.log(`✅ Order ${orderId.slice(-8)} verified in Firestore`);
       
       return orderId;
       
     } catch (error) {
-      this.logger.error(`❌ Firestore operation failed for order ${orderId.slice(-8)}: ${error.message}`);
+      this.logger.error(`❌ Firestore error: ${error.message}`);
       throw error;
     }
   }
+
+  // ============================================================================
+  // Record Execution
+  // ============================================================================
 
   private async recordExecution(
     executionId: string,
     schedule: OrderSchedule,
     trend: TrendType,
-    scheduledTime: string,
+    scheduledTime: string, // ✅ Critical parameter
     amount: number,
     martingaleStep: number,
     status: 'pending' | 'executed' | 'failed' | 'skipped',
@@ -494,7 +672,7 @@ export class OrderScheduleExecutorService {
       scheduleId: schedule.id,
       userId: schedule.userId,
       executedAt: new Date(),
-      scheduledTime,
+      scheduledTime, // ✅ Simpan scheduledTime untuk tracking
       trend,
       orderId,
       assetSymbol: schedule.assetSymbol,
@@ -511,7 +689,11 @@ export class OrderScheduleExecutorService {
 
     try {
       await this.db.collection(this.executionsCollection).doc(executionId).set(execution);
-      this.logger.debug(`✅ Execution ${executionId.slice(-8)} recorded with status: ${status}, step: ${martingaleStep}`);
+      
+      this.logger.debug(
+        `✅ Execution recorded: ${executionId.slice(-8)} ` +
+        `(${scheduledTime}, step ${martingaleStep}, status: ${status})`
+      );
     } catch (error) {
       this.logger.error(`❌ Failed to record execution: ${error.message}`);
       throw error;
@@ -519,22 +701,22 @@ export class OrderScheduleExecutorService {
   }
 
   // ============================================================================
-  // ✅ FIX: Improved checkOrderResultWithRetry
-  // Versi yang lebih robust dengan handling untuk order yang belum selesai
+  // ✅ CHECK ORDER RESULT - Update state untuk scheduledTime yang tepat
   // ============================================================================
 
   private async checkOrderResultWithRetry(
     scheduleId: string,
     orderId: string,
-    executionId: string
+    executionId: string,
+    scheduledTime: string // ✅ Critical: untuk update state yang benar
   ) {
-    const maxRetries = 6; // Increased from 3
+    const maxRetries = 6;
     let attempt = 0;
     
     while (attempt < maxRetries) {
       try {
         this.logger.debug(
-          `🔍 Checking result for order ${orderId.slice(-8)} ` +
+          `🔍 Checking result for ${scheduledTime} order ${orderId.slice(-8)} ` +
           `(attempt ${attempt + 1}/${maxRetries})`
         );
 
@@ -545,21 +727,15 @@ export class OrderScheduleExecutorService {
 
         if (!orderDoc.exists) {
           if (attempt < maxRetries - 1) {
-            this.logger.warn(
-              `⚠️ Order ${orderId.slice(-8)} not found, retrying in 3s...`
-            );
+            this.logger.warn(`⚠️ Order not found, retrying...`);
             await new Promise(resolve => setTimeout(resolve, 3000));
             attempt++;
             continue;
           }
           
-          this.logger.error(
-            `❌ Order ${orderId.slice(-8)} not found after ${maxRetries} attempts`
-          );
-          
           await this.db.collection(this.executionsCollection).doc(executionId).update({
             status: 'failed',
-            errorMessage: 'Order not found in database',
+            errorMessage: 'Order not found',
             updatedAt: new Date(),
           });
           
@@ -568,16 +744,12 @@ export class OrderScheduleExecutorService {
 
         const order = orderDoc.data();
 
-        // ✅ FIX: Null check untuk order
         if (!order) {
           if (attempt < maxRetries - 1) {
-            this.logger.warn(`⚠️ Order ${orderId.slice(-8)} data is null, retrying...`);
             await new Promise(resolve => setTimeout(resolve, 3000));
             attempt++;
             continue;
           }
-          
-          this.logger.error(`❌ Order ${orderId.slice(-8)} data is null after ${maxRetries} attempts`);
           
           await this.db.collection(this.executionsCollection).doc(executionId).update({
             status: 'failed',
@@ -588,7 +760,7 @@ export class OrderScheduleExecutorService {
           return;
         }
 
-        // ✅ Check if order is still ACTIVE (belum expired)
+        // Check if still ACTIVE
         if (order.status === 'ACTIVE') {
           if (attempt < maxRetries - 1) {
             const exitTime = new Date(order.exit_time);
@@ -596,32 +768,25 @@ export class OrderScheduleExecutorService {
             const remainingMs = exitTime.getTime() - now.getTime();
             
             this.logger.debug(
-              `⏳ Order ${orderId.slice(-8)} still ACTIVE ` +
-              `(expires in ${Math.round(remainingMs / 1000)}s), will retry`
+              `⏳ Order for ${scheduledTime} still ACTIVE ` +
+              `(expires in ${Math.round(remainingMs / 1000)}s)`
             );
             
-            // Wait 5 seconds before retry
             await new Promise(resolve => setTimeout(resolve, 5000));
             attempt++;
             continue;
           }
           
-          this.logger.warn(
-            `⚠️ Order ${orderId.slice(-8)} still ACTIVE after ${maxRetries} attempts`
-          );
+          this.logger.warn(`⚠️ Order still ACTIVE after ${maxRetries} attempts`);
           return;
         }
 
-        // ✅ Order sudah selesai (status = WON, LOST, atau DRAW)
-        const scheduledTime = order.scheduled_time || order.metadata?.scheduledTime;
-        
-        if (!scheduledTime) {
-          this.logger.warn(
-            `⚠️ scheduledTime not found for order ${orderId.slice(-8)}`
-          );
-        }
+        // ✅ Order sudah selesai
+        const orderScheduledTime = order.scheduled_time || 
+                                   order.metadata?.scheduledTime ||
+                                   scheduledTime;
 
-        // Map order status (WON/LOST) ke execution result (win/loss)
+        // Map result
         let mappedResult: 'win' | 'loss' | 'draw';
         if (order.status === 'WON') {
           mappedResult = 'win';
@@ -633,7 +798,7 @@ export class OrderScheduleExecutorService {
 
         const profit = order.profit || 0;
 
-        // ✅ Update execution record dengan result
+        // Update execution
         await this.db.collection(this.executionsCollection).doc(executionId).update({
           result: mappedResult,
           profit: profit,
@@ -642,49 +807,45 @@ export class OrderScheduleExecutorService {
         });
 
         this.logger.log(
-          `✅ Execution ${executionId.slice(-8)} updated with result: ${mappedResult}`
+          `✅ Execution updated: ${executionId.slice(-8)} ` +
+          `(${orderScheduledTime}, result: ${mappedResult})`
         );
 
-        // ✅ UPDATE SCHEDULE STATISTICS (CRITICAL!)
+        // ✅ CRITICAL: Update schedule statistics untuk scheduledTime yang TEPAT
+        // Ini akan update orderMartingaleStates[scheduledTime]
         await this.orderScheduleService.updateAfterExecution(
           scheduleId,
-          scheduledTime || '',
+          orderScheduledTime, // ✅ Update state untuk waktu INI saja
           mappedResult,
           profit
         );
 
         this.logger.log(
-          `✅ Schedule ${scheduleId.slice(-8)} updated: ` +
+          `✅ Schedule ${scheduleId.slice(-8)} updated for ${orderScheduledTime}: ` +
           `Order ${orderId.slice(-8)} ${mappedResult.toUpperCase()} ` +
-          `${profit > 0 ? '+' : ''}${profit.toFixed(0)} ` +
-          `at ${scheduledTime}`
+          `${profit > 0 ? '+' : ''}${profit.toFixed(0)}`
         );
         
         return;
 
       } catch (error) {
         this.logger.error(
-          `❌ Error checking order ${orderId.slice(-8)} ` +
-          `(attempt ${attempt + 1}/${maxRetries}): ${error.message}`
+          `❌ Error checking order (attempt ${attempt + 1}): ${error.message}`
         );
         
         if (attempt < maxRetries - 1) {
-          // Exponential backoff
           const delay = 3000 * Math.pow(1.5, attempt);
           await new Promise(resolve => setTimeout(resolve, delay));
           attempt++;
         } else {
-          // All retries failed
           try {
             await this.db.collection(this.executionsCollection).doc(executionId).update({
               status: 'failed',
-              errorMessage: `Failed to check result after ${maxRetries} retries: ${error.message}`,
+              errorMessage: `Failed after ${maxRetries} retries: ${error.message}`,
               updatedAt: new Date(),
             });
           } catch (updateError) {
-            this.logger.error(
-              `❌ Failed to update execution status: ${updateError.message}`
-            );
+            this.logger.error(`❌ Failed to update status: ${updateError.message}`);
           }
           
           throw error;
@@ -692,6 +853,10 @@ export class OrderScheduleExecutorService {
       }
     }
   }
+
+  // ============================================================================
+  // Helper: Check User Balance
+  // ============================================================================
 
   private async checkUserBalance(userId: string, requiredAmount: number): Promise<boolean> {
     try {
@@ -702,7 +867,7 @@ export class OrderScheduleExecutorService {
         .get();
 
       if (balanceSnapshot.empty) {
-        this.logger.warn(`⚠️ No balance record found for user: ${userId}`);
+        this.logger.warn(`⚠️ No balance record for user: ${userId}`);
         return false;
       }
 
@@ -710,15 +875,19 @@ export class OrderScheduleExecutorService {
       const hasEnough = balance.real_balance >= requiredAmount;
       
       this.logger.debug(
-        `💰 User balance: ${balance.real_balance}, required: ${requiredAmount}, sufficient: ${hasEnough}`
+        `💰 Balance check: ${balance.real_balance} vs ${requiredAmount} = ${hasEnough}`
       );
       
       return hasEnough;
     } catch (error) {
-      this.logger.error(`❌ Error checking user balance: ${error.message}`);
+      this.logger.error(`❌ Error checking balance: ${error.message}`);
       return false;
     }
   }
+
+  // ============================================================================
+  // Helper: Time Functions
+  // ============================================================================
 
   private getCurrentTime(): string {
     const now = new Date();
@@ -727,12 +896,29 @@ export class OrderScheduleExecutorService {
     return `${hours}:${minutes}`;
   }
 
+  private parseTimeToDate(time: string): Date {
+    const [hours, minutes] = time.split(':').map(Number);
+    const date = new Date();
+    date.setHours(hours, minutes, 0, 0);
+    return date;
+  }
+
   // ============================================================================
-  // Manual Trigger Methods (untuk testing/debugging)
+  // Daily Reset
+  // ============================================================================
+
+  @Cron('0 0 * * *')
+  private resetProcessedDaily() {
+    this.logger.log('🔄 Resetting processed cache for new day');
+    this.processedToday.clear();
+  }
+
+  // ============================================================================
+  // Manual Trigger (for testing)
   // ============================================================================
 
   async manualTrigger(scheduleId: string, time: string) {
-    this.logger.log(`🔧 Manual trigger for schedule ${scheduleId.slice(-8)} at ${time}`);
+    this.logger.log(`🔧 Manual trigger: ${scheduleId.slice(-8)} at ${time}`);
 
     try {
       const doc = await this.db.collection(this.schedulesCollection).doc(scheduleId).get();
@@ -744,46 +930,18 @@ export class OrderScheduleExecutorService {
       const schedule = doc.data() as OrderSchedule;
       await this.processSchedule(schedule, time);
 
-      return { message: 'Manual trigger executed successfully' };
+      return { message: 'Manual trigger successful' };
     } catch (error) {
-      this.logger.error(`❌ Error in manual trigger: ${error.message}`);
-      throw error;
-    }
-  }
-
-  async manualCheckOrderResult(orderId: string, executionId: string) {
-    this.logger.log(`🔧 Manual check for order ${orderId.slice(-8)}`);
-
-    try {
-      const executionDoc = await this.db
-        .collection(this.executionsCollection)
-        .doc(executionId)
-        .get();
-
-      if (!executionDoc.exists) {
-        throw new Error('Execution not found');
-      }
-
-      const execution = executionDoc.data() as ScheduleExecution;
-
-      await this.checkOrderResultWithRetry(
-        execution.scheduleId,
-        orderId,
-        executionId
-      );
-
-      return { message: 'Order result checked successfully' };
-    } catch (error) {
-      this.logger.error(`❌ Error in manual check: ${error.message}`);
+      this.logger.error(`❌ Manual trigger error: ${error.message}`);
       throw error;
     }
   }
 
   // ============================================================================
-  // ✅ OPTIONAL: Cleanup Old Executions (jalankan daily)
+  // Cleanup Old Executions
   // ============================================================================
 
-  @Cron('0 3 * * *') // Daily at 3 AM
+  @Cron('0 3 * * *')
   async cleanupOldExecutions() {
     try {
       const thirtyDaysAgo = new Date();
@@ -791,7 +949,6 @@ export class OrderScheduleExecutorService {
 
       this.logger.log('🧹 Cleaning up old executions...');
 
-      // Delete old failed executions
       const failedSnapshot = await this.db
         .collection(this.executionsCollection)
         .where('status', '==', 'failed')
@@ -807,7 +964,6 @@ export class OrderScheduleExecutorService {
         this.logger.log(`🧹 Deleted ${failedSnapshot.size} old failed executions`);
       }
 
-      // Delete old skipped executions
       const skippedSnapshot = await this.db
         .collection(this.executionsCollection)
         .where('status', '==', 'skipped')
@@ -824,7 +980,37 @@ export class OrderScheduleExecutorService {
       }
 
     } catch (error) {
-      this.logger.error(`❌ Error cleaning up executions: ${error.message}`);
+      this.logger.error(`❌ Cleanup error: ${error.message}`);
     }
+  }
+
+  // ============================================================================
+  // Monitoring Stats
+  // ============================================================================
+
+  getExecutorStats() {
+    return {
+      isProcessingSchedules: this.isProcessingSchedules,
+      isCheckingResults: this.isCheckingResults,
+      processSchedulesRunCount: this.processSchedulesRunCount,
+      checkResultsRunCount: this.checkResultsRunCount,
+      processedTodayCount: this.processedToday.size,
+      martingaleMode: 'Independent per scheduled time',
+      features: {
+        checkInterval: '10 seconds',
+        missedScheduleRecovery: true,
+        retryMechanism: true,
+        duplicateProtection: true,
+        perTimeState: true, // ✅ Important feature
+      },
+      example: {
+        description: 'Each scheduled time has its own martingale state',
+        scenario: {
+          '09:00': 'LOSS → step 1 (amount 20k)',
+          '10:00': 'WIN  → step 0 (amount 10k) ← independent!',
+          '14:00': 'LOSS → step 1 (amount 20k) ← independent!',
+        }
+      }
+    };
   }
 }
