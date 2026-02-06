@@ -116,6 +116,18 @@ export class OrderScheduleExecutorService {
       const allCompleted = allScheduledTimes.every(time => completedTimes.has(time));
       
       if (allCompleted) {
+        // ✅ FIX MARTINGALE: Cek apakah ada pending recovery
+        const orderStates = (schedule as any).orderMartingaleStates || [];
+        const hasPendingRecovery = orderStates.some((state: any) => state.currentStep > 0);
+        
+        if (hasPendingRecovery) {
+          this.logger.log(
+            `⏳ Schedule ${schedule.id.slice(-8)} has pending martingale recovery. ` +
+            `NOT deleting - will continue tomorrow.`
+          );
+          return; // Jangan hapus, masih ada recovery pending
+        }
+        
         this.logger.log(
           `✅ Schedule ${schedule.id.slice(-8)} completed! ` +
           `All ${allScheduledTimes.length} orders finished with results. Auto-deleting...`
