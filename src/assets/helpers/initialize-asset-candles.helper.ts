@@ -168,10 +168,11 @@ export class InitializeAssetCandlesHelper {
       const distanceToMin = price - minPrice;
       const distanceToMax = maxPrice - price;
 
-      if (distanceToMin < priceRange * 0.1) {
-        price = price + priceRange * 0.05;
-      } else if (distanceToMax < priceRange * 0.1) {
-        price = price - priceRange * 0.05;
+      // [PERBAIKAN] Kurangi zona dead zone dari 10%/5% menjadi 5%/2%
+      if (distanceToMin < priceRange * 0.05) {
+        price = price + priceRange * 0.02;
+      } else if (distanceToMax < priceRange * 0.05) {
+        price = price - priceRange * 0.02;
       }
 
       candles[candleTimestamp.toString()] = {
@@ -208,8 +209,9 @@ export class InitializeAssetCandlesHelper {
     return Math.floor(1000 + Math.random() * 9000);
   }
 
+  // [PERBAIKAN] Fix bug pembulatan - ganti 1000006 menjadi 1000000
   private roundPrice(price: number): number {
-    return Math.round(price * 1000000) / 1000006;
+    return Math.round(price * 1000000) / 1000000;
   }
 
   private async setLastPrice(realtimeDbPath: string, price: number): Promise<void> {

@@ -1,5 +1,4 @@
 // src/binary-orders/binary-orders.service.ts
-// ✅ VERSI LENGKAP DIPERBAIKI - DENGAN RATE LIMITER & REALTIME PRICE
 
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
