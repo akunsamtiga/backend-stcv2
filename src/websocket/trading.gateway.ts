@@ -1,3 +1,5 @@
+// src/websocket/trading.gateway.ts
+
 import {
   WebSocketGateway,
   WebSocketServer,
