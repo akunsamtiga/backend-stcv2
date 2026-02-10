@@ -1,0 +1,440 @@
+// src/information/information.service.ts
+
+import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import { FirebaseService } from '../firebase/firebase.service';
+import { CreateInformationDto } from './dto/create-information.dto';
+import { UpdateInformationDto } from './dto/update-information.dto';
+import { GetInformationQueryDto } from './dto/get-information-query.dto';
+import { PaginatedResponse } from '../common/interfaces';
+
+const COLLECTIONS = {
+  INFORMATION: 'information',
+  USERS: 'users',
+};
+
+export interface Information {
+  id: string;
+  title: string;
+  subtitle?: string;
+  description: string;
+  type: string;
+  priority: string;
+  imageUrl?: string;
+  linkUrl?: string;
+  linkText?: string;
+  startDate?: string;
+  endDate?: string;
+  publishDate?: string;
+  isActive: boolean;
+  isPinned: boolean;
+  targetUserStatus?: string[];
+  targetUserRoles?: string[];
+  createdBy: string;
+  createdByEmail?: string;
+  updatedBy?: string;
+  updatedByEmail?: string;
+  createdAt: string;
+  updatedAt?: string;
+  viewCount?: number;
+  clickCount?: number;
+}
+
+@Injectable()
+export class InformationService {
+  private readonly logger = new Logger(InformationService.name);
+
+  constructor(private firebaseService: FirebaseService) {}
+
+  /**
+   * Create new information (Admin only)
+   */
+  async createInformation(
+    createDto: CreateInformationDto,
+    adminId: string,
+    adminEmail: string,
+  ): Promise<Information> {
+    try {
+      const db = this.firebaseService.getFirestore();
+      const now = new Date().toISOString();
+
+      const informationData = {
+        title: createDto.title,
+        subtitle: createDto.subtitle || null,
+        description: createDto.description,
+        type: createDto.type,
+        priority: createDto.priority || 'medium',
+        imageUrl: createDto.imageUrl || null,
+        linkUrl: createDto.linkUrl || null,
+        linkText: createDto.linkText || null,
+        startDate: createDto.startDate || null,
+        endDate: createDto.endDate || null,
+        publishDate: createDto.publishDate || now,
+        isActive: createDto.isActive ?? true,
+        isPinned: createDto.isPinned ?? false,
+        targetUserStatus: createDto.targetUserStatus || null,
+        targetUserRoles: createDto.targetUserRoles || null,
+        createdBy: adminId,
+        createdByEmail: adminEmail,
+        createdAt: now,
+        viewCount: 0,
+        clickCount: 0,
+      };
+
+      const docRef = await db.collection(COLLECTIONS.INFORMATION).add(informationData);
+
+      this.logger.log(`✅ Information created: ${docRef.id} by ${adminEmail}`);
+
+      return {
+        id: docRef.id,
+        ...informationData,
+      } as Information;
+    } catch (error) {
+      this.logger.error(`❌ createInformation error: ${error.message}`);
+      throw new BadRequestException('Failed to create information');
+    }
+  }
+
+  /**
+   * Get all information with filters and pagination (Admin only)
+   */
+  async getAllInformation(query: GetInformationQueryDto): Promise<PaginatedResponse<Information>> {
+    try {
+      const db = this.firebaseService.getFirestore();
+      let baseQuery = db.collection(COLLECTIONS.INFORMATION);
+
+      // Apply filters
+      if (query.isActive !== undefined) {
+        baseQuery = baseQuery.where('isActive', '==', query.isActive) as any;
+      }
+
+      if (query.isPinned !== undefined) {
+        baseQuery = baseQuery.where('isPinned', '==', query.isPinned) as any;
+      }
+
+      if (query.type) {
+        baseQuery = baseQuery.where('type', '==', query.type) as any;
+      }
+
+      if (query.priority) {
+        baseQuery = baseQuery.where('priority', '==', query.priority) as any;
+      }
+
+      // Apply sorting
+      const sortField = query.sortBy || 'createdAt';
+      const sortDirection = query.sortOrder === 'asc' ? 'asc' : 'desc';
+      baseQuery = baseQuery.orderBy(sortField, sortDirection) as any;
+
+      // Get all documents first
+      const snapshot = await baseQuery.get();
+      let items: Information[] = [];
+
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        items.push({
+          id: doc.id,
+          ...data,
+        } as Information);
+      });
+
+      // Apply search filter (client-side since Firestore doesn't support full-text search)
+      if (query.search) {
+        const searchLower = query.search.toLowerCase();
+        items = items.filter(item => 
+          item.title.toLowerCase().includes(searchLower) ||
+          item.description.toLowerCase().includes(searchLower) ||
+          (item.subtitle && item.subtitle.toLowerCase().includes(searchLower))
+        );
+      }
+
+      // Apply pagination
+      const total = items.length;
+      const page = query.page || 1;
+      const limit = query.limit || 20;
+      const startIndex = (page - 1) * limit;
+      const endIndex = startIndex + limit;
+      const paginatedItems = items.slice(startIndex, endIndex);
+
+      this.logger.log(`📄 Retrieved ${paginatedItems.length} of ${total} information items`);
+
+      return {
+        items: paginatedItems,
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      };
+    } catch (error) {
+      this.logger.error(`❌ getAllInformation error: ${error.message}`);
+      throw new BadRequestException('Failed to retrieve information');
+    }
+  }
+
+  /**
+   * Get active information for users (with targeting filter)
+   */
+  async getActiveInformation(
+    userStatus: string,
+    userRole: string,
+    page: number = 1,
+    limit: number = 20,
+  ): Promise<PaginatedResponse<Information>> {
+    try {
+      const db = this.firebaseService.getFirestore();
+      const now = new Date().toISOString();
+
+      // Get all active information
+      const snapshot = await db.collection(COLLECTIONS.INFORMATION)
+        .where('isActive', '==', true)
+        .orderBy('isPinned', 'desc')
+        .orderBy('publishDate', 'desc')
+        .get();
+
+      let items: Information[] = [];
+
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        const info = {
+          id: doc.id,
+          ...data,
+        } as Information;
+
+        // Check if information is published
+        if (info.publishDate && info.publishDate > now) {
+          return; // Skip unpublished items
+        }
+
+        // Check if information is expired
+        if (info.endDate && info.endDate < now) {
+          return; // Skip expired items
+        }
+
+        // Check targeting - if no target set, show to all
+        const hasStatusTarget = info.targetUserStatus && info.targetUserStatus.length > 0;
+        const hasRoleTarget = info.targetUserRoles && info.targetUserRoles.length > 0;
+
+        // If targeting is set, check if user matches
+        if (hasStatusTarget || hasRoleTarget) {
+          // Use optional chaining to safely access arrays
+          const matchesStatus = !hasStatusTarget || (info.targetUserStatus?.includes(userStatus) ?? false);
+          const matchesRole = !hasRoleTarget || (info.targetUserRoles?.includes(userRole) ?? false);
+
+          if (!matchesStatus || !matchesRole) {
+            return; // Skip items that don't match targeting
+          }
+        }
+
+        items.push(info);
+      });
+
+      // Apply pagination
+      const total = items.length;
+      const startIndex = (page - 1) * limit;
+      const endIndex = startIndex + limit;
+      const paginatedItems = items.slice(startIndex, endIndex);
+
+      this.logger.log(`📢 Retrieved ${paginatedItems.length} active information for user (${userStatus}/${userRole})`);
+
+      return {
+        items: paginatedItems,
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      };
+    } catch (error) {
+      this.logger.error(`❌ getActiveInformation error: ${error.message}`);
+      throw new BadRequestException('Failed to retrieve active information');
+    }
+  }
+
+  /**
+   * Get information by ID
+   */
+  async getInformationById(id: string): Promise<Information> {
+    try {
+      const db = this.firebaseService.getFirestore();
+      const doc = await db.collection(COLLECTIONS.INFORMATION).doc(id).get();
+
+      if (!doc.exists) {
+        throw new NotFoundException(`Information with ID ${id} not found`);
+      }
+
+      return {
+        id: doc.id,
+        ...doc.data(),
+      } as Information;
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      this.logger.error(`❌ getInformationById error: ${error.message}`);
+      throw new BadRequestException('Failed to retrieve information');
+    }
+  }
+
+  /**
+   * Update information (Admin only)
+   */
+  async updateInformation(
+    id: string,
+    updateDto: UpdateInformationDto,
+    adminId: string,
+    adminEmail: string,
+  ): Promise<Information> {
+    try {
+      const db = this.firebaseService.getFirestore();
+      const docRef = db.collection(COLLECTIONS.INFORMATION).doc(id);
+      const doc = await docRef.get();
+
+      if (!doc.exists) {
+        throw new NotFoundException(`Information with ID ${id} not found`);
+      }
+
+      const updateData: any = {
+        ...updateDto,
+        updatedBy: adminId,
+        updatedByEmail: adminEmail,
+        updatedAt: new Date().toISOString(),
+      };
+
+      // Remove undefined values
+      Object.keys(updateData).forEach(key => {
+        if (updateData[key] === undefined) {
+          delete updateData[key];
+        }
+      });
+
+      await docRef.update(updateData);
+
+      const updatedDoc = await docRef.get();
+
+      this.logger.log(`✅ Information updated: ${id} by ${adminEmail}`);
+
+      return {
+        id: updatedDoc.id,
+        ...updatedDoc.data(),
+      } as Information;
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      this.logger.error(`❌ updateInformation error: ${error.message}`);
+      throw new BadRequestException('Failed to update information');
+    }
+  }
+
+  /**
+   * Delete information (Admin only)
+   */
+  async deleteInformation(id: string, adminEmail: string): Promise<void> {
+    try {
+      const db = this.firebaseService.getFirestore();
+      const docRef = db.collection(COLLECTIONS.INFORMATION).doc(id);
+      const doc = await docRef.get();
+
+      if (!doc.exists) {
+        throw new NotFoundException(`Information with ID ${id} not found`);
+      }
+
+      await docRef.delete();
+
+      this.logger.log(`🗑️ Information deleted: ${id} by ${adminEmail}`);
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      this.logger.error(`❌ deleteInformation error: ${error.message}`);
+      throw new BadRequestException('Failed to delete information');
+    }
+  }
+
+  /**
+   * Increment view count
+   */
+  async incrementViewCount(id: string): Promise<void> {
+    try {
+      const db = this.firebaseService.getFirestore();
+      const docRef = db.collection(COLLECTIONS.INFORMATION).doc(id);
+      
+      await db.runTransaction(async (transaction) => {
+        const doc = await transaction.get(docRef);
+        if (!doc.exists) {
+          return;
+        }
+
+        const currentCount = doc.data()?.viewCount || 0;
+        transaction.update(docRef, { viewCount: currentCount + 1 });
+      });
+
+      this.logger.debug(`👁️ View count incremented for information: ${id}`);
+    } catch (error) {
+      this.logger.error(`❌ incrementViewCount error: ${error.message}`);
+      // Don't throw error, just log it
+    }
+  }
+
+  /**
+   * Increment click count
+   */
+  async incrementClickCount(id: string): Promise<void> {
+    try {
+      const db = this.firebaseService.getFirestore();
+      const docRef = db.collection(COLLECTIONS.INFORMATION).doc(id);
+      
+      await db.runTransaction(async (transaction) => {
+        const doc = await transaction.get(docRef);
+        if (!doc.exists) {
+          return;
+        }
+
+        const currentCount = doc.data()?.clickCount || 0;
+        transaction.update(docRef, { clickCount: currentCount + 1 });
+      });
+
+      this.logger.debug(`🖱️ Click count incremented for information: ${id}`);
+    } catch (error) {
+      this.logger.error(`❌ incrementClickCount error: ${error.message}`);
+      // Don't throw error, just log it
+    }
+  }
+
+  /**
+   * Toggle active status
+   */
+  async toggleActiveStatus(id: string, adminId: string, adminEmail: string): Promise<Information> {
+    try {
+      const db = this.firebaseService.getFirestore();
+      const docRef = db.collection(COLLECTIONS.INFORMATION).doc(id);
+      const doc = await docRef.get();
+
+      if (!doc.exists) {
+        throw new NotFoundException(`Information with ID ${id} not found`);
+      }
+
+      const currentData = doc.data();
+      const newActiveStatus = !currentData?.isActive;
+
+      await docRef.update({
+        isActive: newActiveStatus,
+        updatedBy: adminId,
+        updatedByEmail: adminEmail,
+        updatedAt: new Date().toISOString(),
+      });
+
+      const updatedDoc = await docRef.get();
+
+      this.logger.log(`🔄 Information status toggled: ${id} → ${newActiveStatus ? 'ACTIVE' : 'INACTIVE'} by ${adminEmail}`);
+
+      return {
+        id: updatedDoc.id,
+        ...updatedDoc.data(),
+      } as Information;
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      this.logger.error(`❌ toggleActiveStatus error: ${error.message}`);
+      throw new BadRequestException('Failed to toggle information status');
+    }
+  }
+}

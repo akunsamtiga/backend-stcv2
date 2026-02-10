@@ -324,3 +324,58 @@ export interface VoucherUsage {
   bonusAmount: number;
   usedAt: string;
 }
+
+export enum InformationType {
+  ANNOUNCEMENT = 'announcement',
+  PROMOTION = 'promotion',
+  NEWS = 'news',
+  MAINTENANCE = 'maintenance',
+  UPDATE = 'update',
+  WARNING = 'warning',
+}
+
+export enum InformationPriority {
+  LOW = 'low',
+  MEDIUM = 'medium',
+  HIGH = 'high',
+  URGENT = 'urgent',
+}
+
+export interface Information {
+  id: string;
+  title: string;
+  subtitle?: string;
+  description: string;
+  type: InformationType;
+  priority: InformationPriority;
+  
+  // Display settings
+  imageUrl?: string;
+  linkUrl?: string;
+  linkText?: string;
+  
+  // Scheduling
+  startDate?: string;
+  endDate?: string;
+  publishDate?: string;
+  
+  // Status
+  isActive: boolean;
+  isPinned: boolean;
+  
+  // Targeting
+  targetUserStatus?: ('standard' | 'gold' | 'vip')[];
+  targetUserRoles?: ('user' | 'admin' | 'super_admin')[];
+  
+  // Metadata
+  createdBy: string;
+  createdByEmail?: string;
+  updatedBy?: string;
+  updatedByEmail?: string;
+  createdAt: string;
+  updatedAt?: string;
+  
+  // Analytics
+  viewCount?: number;
+  clickCount?: number;
+}

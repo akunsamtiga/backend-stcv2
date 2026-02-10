@@ -19,6 +19,7 @@ import { PaymentModule } from './payment/payment.module';
 import { VoucherModule } from './voucher/voucher.module'; 
 import { AssetScheduleModule } from './asset-schedule/asset-schedule.module';
 import { OrderScheduleModule } from './order-schedule/order-schedule.module';
+import { InformationModule } from './information/information.module'; 
 
 @Module({
   imports: [
@@ -56,7 +57,8 @@ import { OrderScheduleModule } from './order-schedule/order-schedule.module';
     AdminModule,
     WebSocketModule,
     PaymentModule,
-    VoucherModule, 
+    VoucherModule,
+    InformationModule, 
   ],
   controllers: [HealthController],
   
