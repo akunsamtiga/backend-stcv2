@@ -15,6 +15,16 @@ import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiParam, ApiQuery }
 import { InformationService } from './information.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
+// Request interface for JWT authenticated requests
+interface AuthenticatedRequest {
+  user: {
+    userId: string;
+    email: string;
+    role: string;
+    status: string;
+  };
+}
+
 @ApiTags('information')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
@@ -52,7 +62,7 @@ export class InformationUserController {
   async getActiveInformation(
     @Query('page') page: number = 1,
     @Query('limit') limit: number = 20,
-    @Request() req,
+    @Request() req: AuthenticatedRequest,
   ) {
     const userStatus = req.user.status || 'standard';
     const userRole = req.user.role || 'user';
