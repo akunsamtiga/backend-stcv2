@@ -12,6 +12,10 @@ const COLLECTIONS = {
   USERS: 'users',
 };
 
+const STORAGE_FOLDERS = {
+  INFORMATION: 'information',
+};
+
 export interface Information {
   id: string;
   title: string;
@@ -20,6 +24,8 @@ export interface Information {
   type: string;
   priority: string;
   imageUrl?: string;
+  imagePath?: string; // Storage path for deletion
+  imageSize?: number;
   linkUrl?: string;
   linkText?: string;
   startDate?: string;
@@ -46,6 +52,42 @@ export class InformationService {
   constructor(private firebaseService: FirebaseService) {}
 
   /**
+   * Upload image for information
+   */
+  async uploadImage(
+    file: Express.Multer.File,
+    adminId: string,
+    adminEmail: string,
+  ): Promise<{ url: string; path: string; size: number }> {
+    try {
+      const result = await this.firebaseService.uploadImage(
+        file,
+        STORAGE_FOLDERS.INFORMATION,
+      );
+
+      this.logger.log(`📸 Image uploaded by ${adminEmail}: ${result.path}`);
+
+      return result;
+    } catch (error) {
+      this.logger.error(`❌ uploadImage error: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete image from storage
+   */
+  async deleteImage(imagePath: string, adminEmail: string): Promise<void> {
+    try {
+      await this.firebaseService.deleteImage(imagePath);
+      this.logger.log(`🗑️ Image deleted by ${adminEmail}: ${imagePath}`);
+    } catch (error) {
+      this.logger.error(`❌ deleteImage error: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
    * Create new information (Admin only)
    */
   async createInformation(
@@ -64,6 +106,8 @@ export class InformationService {
         type: createDto.type,
         priority: createDto.priority || 'medium',
         imageUrl: createDto.imageUrl || null,
+        imagePath: createDto.imagePath || null,
+        imageSize: createDto.imageSize || null,
         linkUrl: createDto.linkUrl || null,
         linkText: createDto.linkText || null,
         startDate: createDto.startDate || null,
@@ -214,7 +258,6 @@ export class InformationService {
 
         // If targeting is set, check if user matches
         if (hasStatusTarget || hasRoleTarget) {
-          // Use optional chaining to safely access arrays
           const matchesStatus = !hasStatusTarget || (info.targetUserStatus?.includes(userStatus) ?? false);
           const matchesRole = !hasRoleTarget || (info.targetUserRoles?.includes(userRole) ?? false);
 
@@ -290,6 +333,18 @@ export class InformationService {
         throw new NotFoundException(`Information with ID ${id} not found`);
       }
 
+      const currentData = doc.data();
+
+      // If updating image URL, delete old image if exists
+      if (updateDto.imageUrl && currentData?.imagePath && currentData.imagePath !== updateDto.imagePath) {
+        try {
+          await this.firebaseService.deleteImage(currentData.imagePath);
+          this.logger.log(`🗑️ Old image deleted: ${currentData.imagePath}`);
+        } catch (error) {
+          this.logger.warn(`Failed to delete old image: ${error.message}`);
+        }
+      }
+
       const updateData: any = {
         ...updateDto,
         updatedBy: adminId,
@@ -334,6 +389,18 @@ export class InformationService {
 
       if (!doc.exists) {
         throw new NotFoundException(`Information with ID ${id} not found`);
+      }
+
+      const data = doc.data();
+
+      // Delete associated image if exists
+      if (data?.imagePath) {
+        try {
+          await this.firebaseService.deleteImage(data.imagePath);
+          this.logger.log(`🗑️ Image deleted: ${data.imagePath}`);
+        } catch (error) {
+          this.logger.warn(`Failed to delete image: ${error.message}`);
+        }
       }
 
       await docRef.delete();

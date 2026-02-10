@@ -14,8 +14,12 @@ import {
   HttpCode,
   HttpStatus,
   Patch,
+  UseInterceptors,
+  UploadedFile,
+  BadRequestException,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiParam } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiParam, ApiConsumes, ApiBody } from '@nestjs/swagger';
 import { InformationService } from './information.service';
 import { CreateInformationDto } from './dto/create-information.dto';
 import { UpdateInformationDto } from './dto/update-information.dto';
@@ -41,6 +45,122 @@ interface AuthenticatedRequest {
 @Controller('admin/information')
 export class InformationAdminController {
   constructor(private readonly informationService: InformationService) {}
+
+  @Post('upload-image')
+  @HttpCode(HttpStatus.OK)
+  @UseInterceptors(FileInterceptor('image'))
+  @ApiOperation({ 
+    summary: 'Upload image for information',
+    description: 'Upload gambar untuk information (max 5MB, format: JPEG, PNG, GIF, WebP)'
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        image: {
+          type: 'string',
+          format: 'binary',
+          description: 'Image file (JPEG, PNG, GIF, WebP, max 5MB)'
+        },
+      },
+    },
+  })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Image uploaded successfully',
+    schema: {
+      example: {
+        success: true,
+        message: 'Image uploaded successfully',
+        data: {
+          url: 'https://storage.googleapis.com/bucket/information/1234567890_abc123.jpg',
+          path: 'information/1234567890_abc123.jpg',
+          size: 524288
+        }
+      }
+    }
+  })
+  @ApiResponse({ 
+    status: 400, 
+    description: 'Invalid file type or size' 
+  })
+  @ApiResponse({ 
+    status: 401, 
+    description: 'Unauthorized' 
+  })
+  @ApiResponse({ 
+    status: 403, 
+    description: 'Forbidden - Admin only' 
+  })
+  async uploadImage(
+    @UploadedFile() file: Express.Multer.File,
+    @Request() req: AuthenticatedRequest,
+  ) {
+    if (!file) {
+      throw new BadRequestException('No image file provided');
+    }
+
+    const adminId = req.user.userId;
+    const adminEmail = req.user.email;
+
+    const result = await this.informationService.uploadImage(file, adminId, adminEmail);
+
+    return {
+      success: true,
+      message: 'Image uploaded successfully',
+      data: result,
+    };
+  }
+
+  @Delete('delete-image')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ 
+    summary: 'Delete image from storage',
+    description: 'Hapus gambar dari Firebase Storage berdasarkan path'
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        imagePath: {
+          type: 'string',
+          example: 'information/1234567890_abc123.jpg',
+          description: 'Storage path dari gambar yang akan dihapus'
+        },
+      },
+      required: ['imagePath']
+    },
+  })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Image deleted successfully' 
+  })
+  @ApiResponse({ 
+    status: 400, 
+    description: 'Invalid image path' 
+  })
+  @ApiResponse({ 
+    status: 401, 
+    description: 'Unauthorized' 
+  })
+  async deleteImage(
+    @Body('imagePath') imagePath: string,
+    @Request() req: AuthenticatedRequest,
+  ) {
+    if (!imagePath) {
+      throw new BadRequestException('Image path is required');
+    }
+
+    const adminEmail = req.user.email;
+
+    await this.informationService.deleteImage(imagePath, adminEmail);
+
+    return {
+      success: true,
+      message: 'Image deleted successfully',
+    };
+  }
 
   @Post()
   @HttpCode(HttpStatus.CREATED)

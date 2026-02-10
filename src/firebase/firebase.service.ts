@@ -1,5 +1,5 @@
 // src/firebase/firebase.service.ts
-import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
+import { Injectable, OnModuleInit, Logger, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as admin from 'firebase-admin';
 import * as dns from 'dns';
@@ -23,6 +23,9 @@ export class FirebaseService implements OnModuleInit {
   private db: admin.firestore.Firestore;
   private realtimeDbAdmin: admin.database.Database | null = null;
   private realtimeDbRest: AxiosInstance | null = null;
+  
+  // ✅ NEW: Storage instance
+  private storage: admin.storage.Storage | null = null;
   
   private isConnected = false;
   
@@ -91,6 +94,7 @@ export class FirebaseService implements OnModuleInit {
         admin.initializeApp({
           credential: admin.credential.cert(serviceAccount as admin.ServiceAccount),
           databaseURL: this.configService.get('firebase.realtimeDbUrl'),
+          storageBucket: `${serviceAccount.projectId}.firebasestorage.app`, // ✅ NEW: Add storage bucket
         });
       }
 
@@ -111,6 +115,14 @@ export class FirebaseService implements OnModuleInit {
         this.logger.warn(`⚠️ Firestore test failed: ${error.message}`);
       }
 
+      // ✅ NEW: Initialize Storage
+      try {
+        this.storage = admin.storage();
+        this.logger.log('✅ Firebase Storage initialized');
+      } catch (error) {
+        this.logger.warn(`⚠️ Storage initialization warning: ${error.message}`);
+      }
+
       await this.initializeRealtimeDbWithPool();
       
       this.isConnected = this.useRestForRealtimeDb || this.realtimeDbAdmin !== null;
@@ -124,6 +136,7 @@ export class FirebaseService implements OnModuleInit {
       this.logger.log('   • Batch writes for efficiency');
       this.logger.log('   • Health check: Every 2 minutes');
       this.logger.log('   • Timeouts: 5s (generous)');
+      this.logger.log('   • Storage: Ready for image uploads'); // ✅ NEW
       
       this.startBackgroundTasks();
       
@@ -167,7 +180,7 @@ export class FirebaseService implements OnModuleInit {
       for (let i = 0; i < this.POOL_SIZE; i++) {
         const instance = axios.create({
           baseURL,
-          timeout: 5000, // ✅ FIX: Increased from 3s to 5s
+          timeout: 5000,
           family: 4,
           headers: {
             'Content-Type': 'application/json',
@@ -186,7 +199,6 @@ export class FirebaseService implements OnModuleInit {
         });
       }
       
-      // ✅ FIX: Test with longer timeout
       await Promise.race([
         this.restConnectionPool[0].get('/.json?shallow=true'),
         new Promise((_, reject) => 
@@ -228,7 +240,6 @@ export class FirebaseService implements OnModuleInit {
     let bestScore = -Infinity;
     let hasHealthyConnection = false;
     
-    // Find the healthiest connection
     for (let i = 0; i < this.restConnectionPool.length; i++) {
       const health = this.connectionHealth.restConnections.get(i);
       if (!health) continue;
@@ -242,22 +253,16 @@ export class FirebaseService implements OnModuleInit {
         bestScore = score;
       }
       
-      // ✅ FIX: More generous healthy threshold
-      // Healthy if: last success within 5 minutes AND less than 5 failures
       if (age < 300000 && health.failures < 5) {
         hasHealthyConnection = true;
       }
     }
     
-    // ✅ FIX: Only warn if NO healthy connections, but DON'T block
     if (!hasHealthyConnection) {
-      // Only log every 10th unhealthy check to reduce spam
       if (this.operationCount % 10 === 0) {
         this.logger.warn(`⚠️ No optimal connections (using best available: ${bestIndex}, score: ${bestScore})`);
       }
       
-      // DON'T trigger reconnect here - let health check handle it
-      // Just reset some failures to give connections a chance
       for (let i = 0; i < this.restConnectionPool.length; i++) {
         const health = this.connectionHealth.restConnections.get(i);
         if (health && health.failures > 0) {
@@ -376,72 +381,69 @@ export class FirebaseService implements OnModuleInit {
   }
 
   async setRealtimeDbValue(path: string, data: any, critical = false): Promise<void> {
-  if (!this.isConnected) {
-    this.logger.error('❌ Cannot write: Firebase not connected');
-    this.writeStats.failed++;
-    throw new Error('Firebase not connected'); // ✅ Throw error instead of silent return
-  }
+    if (!this.isConnected) {
+      this.logger.error('❌ Cannot write: Firebase not connected');
+      this.writeStats.failed++;
+      throw new Error('Firebase not connected');
+    }
 
-  const writeOperation = async () => {
-    let lastError: Error | null = null;
-    
-    for (let attempt = 0; attempt < this.MAX_RETRIES; attempt++) {
-      try {
-        if (this.useRestForRealtimeDb && this.restConnectionPool.length > 0) {
-          const conn = this.getNextConnection();
-          
-          // ✅ Add timeout untuk write operation
-          const writePromise = conn.put(`${path}.json`, data);
-          const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Write timeout after 5s')), 5000)
-          );
-          
-          await Promise.race([writePromise, timeoutPromise]);
-          
-          this.logger.debug(`✅ REST write success: ${path}`);
-          
-        } else if (this.realtimeDbAdmin) {
-          await this.realtimeDbAdmin.ref(path).set(data);
-          this.logger.debug(`✅ SDK write success: ${path}`);
-          
-        } else {
-          throw new Error('Realtime Database not available');
-        }
+    const writeOperation = async () => {
+      let lastError: Error | null = null;
+      
+      for (let attempt = 0; attempt < this.MAX_RETRIES; attempt++) {
+        try {
+          if (this.useRestForRealtimeDb && this.restConnectionPool.length > 0) {
+            const conn = this.getNextConnection();
+            
+            const writePromise = conn.put(`${path}.json`, data);
+            const timeoutPromise = new Promise((_, reject) => 
+              setTimeout(() => reject(new Error('Write timeout after 5s')), 5000)
+            );
+            
+            await Promise.race([writePromise, timeoutPromise]);
+            
+            this.logger.debug(`✅ REST write success: ${path}`);
+            
+          } else if (this.realtimeDbAdmin) {
+            await this.realtimeDbAdmin.ref(path).set(data);
+            this.logger.debug(`✅ SDK write success: ${path}`);
+            
+          } else {
+            throw new Error('Realtime Database not available');
+          }
 
-        this.writeStats.success++;
-        this.realtimeWriteCount++;
-        this.writeStats.lastSuccessTime = Date.now();
-        this.consecutiveErrors = 0;
-        this.queryCache.delete(path); // Clear cache untuk path ini
-        return;
+          this.writeStats.success++;
+          this.realtimeWriteCount++;
+          this.writeStats.lastSuccessTime = Date.now();
+          this.consecutiveErrors = 0;
+          this.queryCache.delete(path);
+          return;
 
-      } catch (error) {
-        lastError = error;
-        this.logger.warn(`⚠️ Write attempt ${attempt + 1}/${this.MAX_RETRIES} failed: ${error.message}`);
-        
-        if (attempt < this.MAX_RETRIES - 1) {
-          const delay = this.RETRY_DELAY_MS * (attempt + 1);
-          await new Promise(resolve => setTimeout(resolve, delay));
+        } catch (error) {
+          lastError = error;
+          this.logger.warn(`⚠️ Write attempt ${attempt + 1}/${this.MAX_RETRIES} failed: ${error.message}`);
+          
+          if (attempt < this.MAX_RETRIES - 1) {
+            const delay = this.RETRY_DELAY_MS * (attempt + 1);
+            await new Promise(resolve => setTimeout(resolve, delay));
+          }
         }
       }
+      
+      this.writeStats.failed++;
+      this.consecutiveErrors++;
+      this.logger.error(`❌ Write failed after ${this.MAX_RETRIES} retries: ${path}`);
+      throw lastError || new Error('Write operation failed');
+    };
+
+    if (critical) {
+      await writeOperation();
+    } else {
+      this.writeStats.queued++;
+      this.writeQueue.push(writeOperation);
+      this.processWriteQueue();
     }
-    
-    // ✅ All retries failed
-    this.writeStats.failed++;
-    this.consecutiveErrors++;
-    this.logger.error(`❌ Write failed after ${this.MAX_RETRIES} retries: ${path}`);
-    throw lastError || new Error('Write operation failed');
-  };
-
-  if (critical) {
-    await writeOperation(); // ✅ Wait for critical writes
-  } else {
-    this.writeStats.queued++;
-    this.writeQueue.push(writeOperation);
-    this.processWriteQueue();
   }
-}
-
 
   async setRealtimeDbValueAsync(path: string, data: any): Promise<void> {
     this.writeStats.queued++;
@@ -550,7 +552,6 @@ export class FirebaseService implements OnModuleInit {
 
   private startBackgroundTasks() {
     setInterval(() => this.cleanupCache(), 60000);
-    // ✅ FIX: Health check every 2 minutes instead of 1 minute
     setInterval(() => this.healthCheckConnections(), 120000);
     setInterval(() => this.processWriteQueue(), 200);
     setInterval(() => this.resetDailyStats(), 86400000);
@@ -577,7 +578,6 @@ export class FirebaseService implements OnModuleInit {
 
     try {
       const conn = this.restConnectionPool[0];
-      // ✅ FIX: Increase timeout to 5s for health check
       await Promise.race([
         conn.get('/.json?shallow=true'),
         new Promise((_, reject) => 
@@ -585,11 +585,9 @@ export class FirebaseService implements OnModuleInit {
         ),
       ]);
       
-      // Success - reset ALL health metrics
       this.connectionHealth.consecutiveFailures = 0;
       this.connectionHealth.lastSuccessfulFetch = Date.now();
       
-      // Mark all connections as healthy
       for (const [index, health] of this.connectionHealth.restConnections) {
         health.lastSuccess = Date.now();
         health.failures = Math.max(0, health.failures - 1);
@@ -598,7 +596,6 @@ export class FirebaseService implements OnModuleInit {
     } catch (error) {
       this.connectionHealth.consecutiveFailures++;
       
-      // ✅ FIX: Only warn, don't reconnect yet
       if (this.connectionHealth.consecutiveFailures <= 5) {
         this.logger.debug(
           `⏳ Health check attempt ${this.connectionHealth.consecutiveFailures}/5 waiting...`
@@ -610,13 +607,11 @@ export class FirebaseService implements OnModuleInit {
         `❌ Health check failed ${this.connectionHealth.consecutiveFailures} times: ${error.message}`
       );
       
-      // ✅ FIX: More relaxed threshold - check if REALLY all unhealthy
       let allUnhealthy = true;
       let healthyCount = 0;
       
       for (const [index, health] of this.connectionHealth.restConnections) {
         const age = Date.now() - health.lastSuccess;
-        // More generous: 5 minutes instead of 1 minute
         if (age < 300000 && health.failures < 10) {
           allUnhealthy = false;
           healthyCount++;
@@ -625,7 +620,6 @@ export class FirebaseService implements OnModuleInit {
       
       this.logger.warn(`⚠️ Healthy connections: ${healthyCount}/${this.POOL_SIZE}`);
       
-      // Only reconnect if REALLY all connections are dead
       if (allUnhealthy && this.connectionHealth.consecutiveFailures >= 10) {
         this.logger.error('❌ All connections truly unhealthy - triggering reconnect');
         this.connectionHealth.consecutiveFailures = 0;
@@ -641,14 +635,11 @@ export class FirebaseService implements OnModuleInit {
     this.logger.log('🔄 Reconnecting Realtime DB...');
     
     try {
-      // Clear existing pools
       this.restConnectionPool = [];
       this.connectionHealth.restConnections.clear();
       
-      // Recreate connection pool
       await this.initializeRealtimeDbWithPool();
       
-      // Test connection
       if (this.restConnectionPool.length > 0) {
         try {
           await Promise.race([
@@ -674,7 +665,6 @@ export class FirebaseService implements OnModuleInit {
       this.logger.error(`❌ Reconnection failed: ${error.message}`);
       this.isConnected = false;
       
-      // Schedule retry after delay
       setTimeout(() => {
         this.logger.warn('🔄 Retrying reconnection...');
         this.reconnectRealtimeDb();
@@ -727,6 +717,142 @@ export class FirebaseService implements OnModuleInit {
     }
     return this.realtimeDbAdmin;
   }
+
+  // ============================================================================
+  // ✅ NEW: FIREBASE STORAGE METHODS
+  // ============================================================================
+
+  /**
+   * Get Firebase Storage instance
+   */
+  getStorage(): admin.storage.Storage {
+    if (!this.storage) {
+      throw new Error('Firebase Storage not initialized');
+    }
+    return this.storage;
+  }
+
+  /**
+   * Upload image file to Firebase Storage
+   * @param file - File buffer and metadata from multer
+   * @param folder - Storage folder path (e.g., 'information', 'profiles')
+   * @param fileName - Optional custom filename
+   * @returns Object containing public URL, storage path, and file size
+   */
+  async uploadImage(
+    file: Express.Multer.File,
+    folder: string,
+    fileName?: string,
+  ): Promise<{ url: string; path: string; size: number }> {
+    try {
+      // Validate file type
+      const allowedMimeTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
+      if (!allowedMimeTypes.includes(file.mimetype)) {
+        throw new BadRequestException(
+          'Invalid file type. Only JPEG, PNG, GIF, and WebP images are allowed.',
+        );
+      }
+
+      // Validate file size (max 5MB)
+      const maxSize = 5 * 1024 * 1024; // 5MB
+      if (file.size > maxSize) {
+        throw new BadRequestException('File size must be less than 5MB');
+      }
+
+      const bucket = this.getStorage().bucket();
+      
+      // Generate unique filename if not provided
+      const timestamp = Date.now();
+      const randomString = Math.random().toString(36).substring(7);
+      const extension = file.originalname.split('.').pop();
+      const finalFileName = fileName || `${timestamp}_${randomString}.${extension}`;
+      
+      // Construct storage path
+      const storagePath = `${folder}/${finalFileName}`;
+      const fileUpload = bucket.file(storagePath);
+
+      // Upload file with metadata
+      await fileUpload.save(file.buffer, {
+        metadata: {
+          contentType: file.mimetype,
+          metadata: {
+            originalName: file.originalname,
+            uploadedAt: new Date().toISOString(),
+          },
+        },
+        public: true, // Make file publicly accessible
+        validation: 'md5',
+      });
+
+      // Make file public
+      await fileUpload.makePublic();
+
+      // Get public URL
+      const publicUrl = `https://storage.googleapis.com/${bucket.name}/${storagePath}`;
+
+      this.logger.log(`✅ Image uploaded successfully: ${storagePath}`);
+
+      return {
+        url: publicUrl,
+        path: storagePath,
+        size: file.size,
+      };
+    } catch (error) {
+      this.logger.error(`❌ Image upload failed: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete image from Firebase Storage
+   * @param path - Storage path of the file (e.g., 'information/123456_abc.jpg')
+   */
+  async deleteImage(path: string): Promise<void> {
+    try {
+      const bucket = this.getStorage().bucket();
+      const file = bucket.file(path);
+
+      // Check if file exists
+      const [exists] = await file.exists();
+      if (!exists) {
+        this.logger.warn(`⚠️ File not found (skipping delete): ${path}`);
+        return;
+      }
+
+      // Delete file
+      await file.delete();
+
+      this.logger.log(`🗑️ Image deleted successfully: ${path}`);
+    } catch (error) {
+      this.logger.error(`❌ Image deletion failed: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Extract storage path from public URL
+   * @param url - Public URL of the file
+   * @returns Storage path or null if extraction fails
+   */
+  extractStoragePathFromUrl(url: string): string | null {
+    try {
+      const bucket = this.getStorage().bucket();
+      const bucketName = bucket.name;
+      
+      // Pattern: https://storage.googleapis.com/{bucket}/{path}
+      const pattern = new RegExp(`https://storage\\.googleapis\\.com/${bucketName}/(.+)`);
+      const match = url.match(pattern);
+      
+      return match ? match[1] : null;
+    } catch (error) {
+      this.logger.error(`Failed to extract storage path: ${error.message}`);
+      return null;
+    }
+  }
+
+  // ============================================================================
+  // END OF STORAGE METHODS
+  // ============================================================================
 
   async generateId(collection: string): Promise<string> {
     return this.getFirestore().collection(collection).doc().id;
@@ -790,70 +916,63 @@ export class FirebaseService implements OnModuleInit {
   }
 
   async batchDeleteRealtimeDb(paths: string[]): Promise<void> {
-  if (!this.isConnected) {
-    throw new Error('Firebase not connected');
-  }
-
-  if (paths.length === 0) return;
-
-  try {
-    // Gunakan update dengan null values untuk batch delete
-    const updates: any = {};
-    paths.forEach(path => {
-      updates[path] = null;
-    });
-
-    if (this.useRestForRealtimeDb) {
-      await this.getNextConnection().patch('/.json', updates);
-    } else if (this.realtimeDbAdmin) {
-      await this.realtimeDbAdmin.ref().update(updates);
-    }
-    
-    this.writeStats.success += paths.length;
-  } catch (error) {
-    this.writeStats.failed += paths.length;
-    throw error;
-  }
-}
-
-/**
- * ✅ NEW: Cek apakah Admin SDK untuk RTDB tersedia
- */
-isRealtimeDbAdminAvailable(): boolean {
-  return this.realtimeDbAdmin !== null && !this.useRestForRealtimeDb;
-}
-
-async batchDeleteRealtimeDbRelative(
-  basePath: string,
-  keys: string[]
-): Promise<number> {
-  if (!this.isConnected || keys.length === 0) {
-    return 0;
-  }
-
-  try {
-    const updates: Record<string, null> = {};
-    keys.forEach(key => {
-      updates[key] = null;
-    });
-
-    if (this.useRestForRealtimeDb) {
-      // REST API: use PATCH to basePath
-      await this.getNextConnection().patch(`${basePath}.json`, updates);
-    } else if (this.realtimeDbAdmin) {
-      // Admin SDK: use ref().update()
-      await this.realtimeDbAdmin.ref(basePath).update(updates);
+    if (!this.isConnected) {
+      throw new Error('Firebase not connected');
     }
 
-    this.writeStats.success += keys.length;
-    return keys.length;
-  } catch (error) {
-    this.writeStats.failed += keys.length;
-    this.logger.error(`Batch delete failed at ${basePath}: ${error.message}`);
-    return 0;
-  }
-}
+    if (paths.length === 0) return;
 
+    try {
+      const updates: any = {};
+      paths.forEach(path => {
+        updates[path] = null;
+      });
+
+      if (this.useRestForRealtimeDb) {
+        await this.getNextConnection().patch('/.json', updates);
+      } else if (this.realtimeDbAdmin) {
+        await this.realtimeDbAdmin.ref().update(updates);
+      }
+      
+      this.writeStats.success += paths.length;
+    } catch (error) {
+      this.writeStats.failed += paths.length;
+      throw error;
+    }
+  }
+
+  isRealtimeDbAdminAvailable(): boolean {
+    return this.realtimeDbAdmin !== null && !this.useRestForRealtimeDb;
+  }
+
+  async batchDeleteRealtimeDbRelative(
+    basePath: string,
+    keys: string[]
+  ): Promise<number> {
+    if (!this.isConnected || keys.length === 0) {
+      return 0;
+    }
+
+    try {
+      const updates: Record<string, null> = {};
+      keys.forEach(key => {
+        updates[key] = null;
+      });
+
+      if (this.useRestForRealtimeDb) {
+        await this.getNextConnection().patch(`${basePath}.json`, updates);
+      } else if (this.realtimeDbAdmin) {
+        await this.realtimeDbAdmin.ref(basePath).update(updates);
+      }
+
+      this.writeStats.success += keys.length;
+      return keys.length;
+    } catch (error) {
+      this.writeStats.failed += keys.length;
+      this.logger.error(`Batch delete failed at ${basePath}: ${error.message}`);
+      return 0;
+    }
+  }
 
   async runTransaction<T>(
     updateFunction: (transaction: admin.firestore.Transaction) => Promise<T>,
@@ -875,6 +994,7 @@ async batchDeleteRealtimeDbRelative(
       connectionPoolSize: this.restConnectionPool.length,
       writeQueueSize: this.writeQueue.length,
       usingREST: this.useRestForRealtimeDb,
+      storageEnabled: this.storage !== null, // ✅ NEW
       dailyStats: {
         reads: this.firestoreReadCount,
         writes: this.writeStats.success,

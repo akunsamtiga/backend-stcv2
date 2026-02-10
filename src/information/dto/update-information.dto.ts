@@ -1,6 +1,6 @@
 // src/information/dto/update-information.dto.ts
 
-import { IsString, IsEnum, IsOptional, IsBoolean, IsArray, IsUrl, MinLength, MaxLength } from 'class-validator';
+import { IsString, IsEnum, IsOptional, IsBoolean, IsArray, IsUrl, MinLength, MaxLength, IsNumber } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { InformationType, InformationPriority } from './create-information.dto';
 
@@ -56,12 +56,28 @@ export class UpdateInformationDto {
   priority?: InformationPriority;
 
   @ApiPropertyOptional({ 
-    example: 'https://example.com/promo-banner.jpg',
+    example: 'https://storage.googleapis.com/bucket/information/image.jpg',
     description: 'URL gambar banner'
   })
   @IsOptional()
   @IsUrl({}, { message: 'Format URL gambar tidak valid' })
   imageUrl?: string;
+
+  @ApiPropertyOptional({ 
+    example: 'information/1234567890_abc123.jpg',
+    description: 'Storage path gambar'
+  })
+  @IsOptional()
+  @IsString()
+  imagePath?: string;
+
+  @ApiPropertyOptional({ 
+    example: 524288,
+    description: 'Ukuran file gambar dalam bytes'
+  })
+  @IsOptional()
+  @IsNumber()
+  imageSize?: number;
 
   @ApiPropertyOptional({ 
     example: 'https://example.com/promo-details',
