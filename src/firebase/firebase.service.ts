@@ -94,7 +94,7 @@ export class FirebaseService implements OnModuleInit {
         admin.initializeApp({
           credential: admin.credential.cert(serviceAccount as admin.ServiceAccount),
           databaseURL: this.configService.get('firebase.realtimeDbUrl'),
-          storageBucket: `${serviceAccount.projectId}.firebasestorage.app`, // ✅ NEW: Add storage bucket
+          storageBucket: `${serviceAccount.projectId}.appspot.com`, 
         });
       }
 

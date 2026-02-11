@@ -17,6 +17,7 @@ import {
   UseInterceptors,
   UploadedFile,
   BadRequestException,
+  Logger,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiParam, ApiConsumes, ApiBody } from '@nestjs/swagger';
@@ -44,6 +45,8 @@ interface AuthenticatedRequest {
 @Roles('admin', 'super_admin')
 @Controller('admin/information')
 export class InformationAdminController {
+  private readonly logger = new Logger(InformationAdminController.name);
+
   constructor(private readonly informationService: InformationService) {}
 
   @Post('upload-image')
@@ -97,20 +100,38 @@ export class InformationAdminController {
     @UploadedFile() file: Express.Multer.File,
     @Request() req: AuthenticatedRequest,
   ) {
-    if (!file) {
-      throw new BadRequestException('No image file provided');
+    try {
+      if (!file) {
+        throw new BadRequestException('No image file provided');
+      }
+
+      const adminId = req.user.userId;
+      const adminEmail = req.user.email;
+
+      this.logger.log(`📤 Uploading image: ${file.originalname} by ${adminEmail}`);
+
+      const result = await this.informationService.uploadImage(file, adminId, adminEmail);
+
+      this.logger.log(`✅ Image upload completed: ${result.path}`);
+
+      // ✅ FIX: Explicitly construct response object to ensure proper serialization
+      const responseData = {
+        url: String(result.url),
+        path: String(result.path),
+        size: Number(result.size),
+      };
+
+      return {
+        success: true,
+        message: 'Image uploaded successfully',
+        data: responseData,
+      };
+    } catch (error) {
+      this.logger.error(`❌ Image upload failed: ${error.message}`, error.stack);
+      
+      // Re-throw the error to let the global exception filter handle it
+      throw error;
     }
-
-    const adminId = req.user.userId;
-    const adminEmail = req.user.email;
-
-    const result = await this.informationService.uploadImage(file, adminId, adminEmail);
-
-    return {
-      success: true,
-      message: 'Image uploaded successfully',
-      data: result,
-    };
   }
 
   @Delete('delete-image')
@@ -148,18 +169,23 @@ export class InformationAdminController {
     @Body('imagePath') imagePath: string,
     @Request() req: AuthenticatedRequest,
   ) {
-    if (!imagePath) {
-      throw new BadRequestException('Image path is required');
+    try {
+      if (!imagePath) {
+        throw new BadRequestException('Image path is required');
+      }
+
+      const adminEmail = req.user.email;
+
+      await this.informationService.deleteImage(imagePath, adminEmail);
+
+      return {
+        success: true,
+        message: 'Image deleted successfully',
+      };
+    } catch (error) {
+      this.logger.error(`❌ Image deletion failed: ${error.message}`, error.stack);
+      throw error;
     }
-
-    const adminEmail = req.user.email;
-
-    await this.informationService.deleteImage(imagePath, adminEmail);
-
-    return {
-      success: true,
-      message: 'Image deleted successfully',
-    };
   }
 
   @Post()
