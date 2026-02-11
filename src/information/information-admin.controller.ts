@@ -17,6 +17,7 @@ import {
   UseInterceptors,
   UploadedFile,
   BadRequestException,
+  Logger, // ✅ FIX: Import Logger
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiParam, ApiConsumes, ApiBody } from '@nestjs/swagger';
@@ -44,6 +45,9 @@ interface AuthenticatedRequest {
 @Roles('admin', 'super_admin')
 @Controller('admin/information')
 export class InformationAdminController {
+  // ✅ FIX: Add logger instance sebagai property class
+  private readonly logger = new Logger(InformationAdminController.name);
+
   constructor(private readonly informationService: InformationService) {}
 
   @Post('upload-image')
@@ -97,7 +101,7 @@ export class InformationAdminController {
     @UploadedFile() file: Express.Multer.File,
     @Request() req: AuthenticatedRequest,
   ) {
-    // ✅ FIX: Validate file exists
+    // Validate file exists
     if (!file) {
       throw new BadRequestException('No image file provided');
     }
@@ -110,18 +114,24 @@ export class InformationAdminController {
 
       const result = await this.informationService.uploadImage(file, adminId, adminEmail);
 
-      // ✅ FIX: Validate result
+      // Validate result
       if (!result || !result.url || !result.path) {
         throw new BadRequestException('Upload completed but response data is incomplete');
       }
 
       this.logger.log(`✅ Upload completed for ${adminEmail}: ${result.path}`);
 
-      return {
+      // ✅ FIX: Pastikan return object sesuai format yang diharapkan frontend
+      const response = {
         success: true,
         message: 'Image uploaded successfully',
         data: result,
       };
+
+      this.logger.debug(`Response object: ${JSON.stringify(response)}`);
+
+      return response;
+
     } catch (error) {
       this.logger.error(`❌ Upload failed for ${adminEmail}: ${error.message}`);
       
@@ -446,7 +456,4 @@ export class InformationAdminController {
       throw error;
     }
   }
-
-  // ✅ FIX: Add logger instance
-  private readonly logger = new (require('@nestjs/common').Logger)(InformationAdminController.name);
 }
