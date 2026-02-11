@@ -733,7 +733,7 @@ export class FirebaseService implements OnModuleInit {
   }
 
 
-  async uploadImage(
+async uploadImage(
   file: Express.Multer.File,
   folder: string,
   fileName?: string,
@@ -748,7 +748,7 @@ export class FirebaseService implements OnModuleInit {
     }
 
     // Validate file size (max 5MB)
-    const maxSize = 5 * 1024 * 1024;
+    const maxSize = 5 * 1024 * 1024; // 5MB
     if (file.size > maxSize) {
       throw new BadRequestException('File size must be less than 5MB');
     }
@@ -759,64 +759,101 @@ export class FirebaseService implements OnModuleInit {
       throw new BadRequestException('Storage bucket not initialized');
     }
 
+    // ✅ FIX: Get bucket name safely
+    let bucketName: string;
+    try {
+      // Try to get from bucket object directly first
+      bucketName = bucket.name || '';
+      
+      // If still empty, try from metadata
+      if (!bucketName) {
+        const [metadata] = await bucket.getMetadata();
+        bucketName = metadata.name || '';
+      }
+      
+      // Final fallback using project ID
+      if (!bucketName) {
+        const projectId = this.configService.get<string>('firebase.projectId');
+        bucketName = `${projectId}.firebasestorage.app`;
+      }
+    } catch (error) {
+      // Fallback to project-based name
+      const projectId = this.configService.get<string>('firebase.projectId');
+      bucketName = `${projectId}.firebasestorage.app`;
+      this.logger.warn(`Could not get bucket metadata, using fallback: ${bucketName}`);
+    }
+
     // Generate unique filename
     const timestamp = Date.now();
     const randomString = Math.random().toString(36).substring(2, 15);
     const extension = file.originalname.split('.').pop()?.toLowerCase() || 'jpg';
     const finalFileName = fileName || `${timestamp}_${randomString}.${extension}`;
     
+    // Construct storage path
     const storagePath = `${folder}/${finalFileName}`;
     const fileUpload = bucket.file(storagePath);
 
-    // Upload with metadata
+    this.logger.log(`📤 Uploading to ${bucketName}/${storagePath}`);
+
+    // ✅ FIX: Use streaming upload instead of save()
     const blobStream = fileUpload.createWriteStream({
       metadata: {
         contentType: file.mimetype,
         metadata: {
           originalName: file.originalname,
           uploadedAt: new Date().toISOString(),
-          uploadedBy: 'admin',
         },
       },
-      resumable: false, // Disable resumable for small files
+      resumable: false, // Disable resumable for small files (< 10MB)
     });
 
     return new Promise((resolve, reject) => {
       blobStream.on('error', (error) => {
-        this.logger.error(`Upload stream error: ${error.message}`);
+        this.logger.error(`❌ Upload stream error: ${error.message}`);
         reject(new BadRequestException(`Upload failed: ${error.message}`));
       });
 
       blobStream.on('finish', async () => {
         try {
-          // Make file public
-          await fileUpload.makePublic();
+          // ✅ FIX: Try to make public, but don't fail if already public
+          try {
+            await fileUpload.makePublic();
+            this.logger.debug(`✅ File made public: ${storagePath}`);
+          } catch (makePublicError: any) {
+            // File might already be public or bucket has uniform access
+            this.logger.warn(`⚠️ makePublic warning (non-critical): ${makePublicError.message}`);
+            // Continue anyway - file might already be accessible
+          }
+
+          // ✅ FIX: Construct URL with guaranteed bucket name
+          const publicUrl = `https://storage.googleapis.com/${bucketName}/${storagePath}`;
           
-          // Get public URL
-          const publicUrl = `https://storage.googleapis.com/${bucket.name}/${storagePath}`;
-          
-          this.logger.log(`✅ Image uploaded: ${storagePath} -> ${publicUrl}`);
-          
+          this.logger.log(`✅ Image uploaded successfully: ${publicUrl}`);
+
           resolve({
             url: publicUrl,
             path: storagePath,
             size: file.size,
           });
-        } catch (error) {
-          reject(new BadRequestException(`Failed to make file public: ${error.message}`));
+        } catch (error: any) {
+          this.logger.error(`❌ Post-upload error: ${error.message}`);
+          reject(new BadRequestException(`Failed to finalize upload: ${error.message}`));
         }
       });
 
+      // Write file buffer
       blobStream.end(file.buffer);
     });
 
   } catch (error) {
     this.logger.error(`❌ uploadImage error: ${error.message}`);
     
+    // Re-throw known errors
     if (error instanceof BadRequestException) {
       throw error;
     }
     
+    // Wrap unknown errors
     throw new BadRequestException(`Upload failed: ${error.message}`);
   }
 }

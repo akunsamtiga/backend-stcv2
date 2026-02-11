@@ -55,51 +55,56 @@ export class InformationService {
    * Upload image for information
    * ✅ NO RESTRICTIONS - Semua format dan ukuran file diterima
    */
-  async uploadImage(
-    file: Express.Multer.File,
-    adminId: string,
-    adminEmail: string,
-  ): Promise<{ url: string; path: string; size: number }> {
-    try {
-      // ✅ Validate file exists
-      if (!file) {
-        throw new BadRequestException('No file provided');
-      }
-
-      if (!file.buffer || file.buffer.length === 0) {
-        throw new BadRequestException('File is empty or corrupted');
-      }
-
-      // ✅ NO MIME TYPE VALIDATION - Semua format file diterima
-      // ✅ NO FILE SIZE VALIDATION - Semua ukuran file diterima
-
-      this.logger.log(`📤 Starting image upload for ${adminEmail}, size: ${file.size} bytes, type: ${file.mimetype}`);
-
-      const result = await this.firebaseService.uploadImage(
-        file,
-        STORAGE_FOLDERS.INFORMATION,
-      );
-
-      // ✅ Validate result
-      if (!result || !result.url || !result.path) {
-        throw new BadRequestException('Upload succeeded but response is incomplete');
-      }
-
-      this.logger.log(`📸 Image uploaded by ${adminEmail}: ${result.path} (${result.size} bytes)`);
-
-      return result;
-    } catch (error) {
-      this.logger.error(`❌ uploadImage error: ${error.message}`);
-      
-      // Re-throw if already a BadRequestException
-      if (error instanceof BadRequestException) {
-        throw error;
-      }
-      
-      // Wrap other errors
-      throw new BadRequestException(`Failed to upload image: ${error.message}`);
+async uploadImage(
+  file: Express.Multer.File,
+  adminId: string,
+  adminEmail: string,
+): Promise<{ url: string; path: string; size: number }> {
+  try {
+    // ✅ Validate file exists
+    if (!file) {
+      throw new BadRequestException('No file provided');
     }
+
+    if (!file.buffer || file.buffer.length === 0) {
+      throw new BadRequestException('File is empty or corrupted');
+    }
+
+    // ✅ Validate file mimetype
+    const validMimeTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
+    if (!validMimeTypes.includes(file.mimetype)) {
+      throw new BadRequestException(
+        `Invalid file type: ${file.mimetype}. Allowed: JPEG, PNG, GIF, WebP`
+      );
+    }
+
+    this.logger.log(`📤 Starting image upload for ${adminEmail}, size: ${file.size} bytes, type: ${file.mimetype}`);
+
+    const result = await this.firebaseService.uploadImage(
+      file,
+      STORAGE_FOLDERS.INFORMATION,
+    );
+
+    // ✅ Validate result
+    if (!result || !result.url || !result.path) {
+      throw new BadRequestException('Upload succeeded but response is incomplete');
+    }
+
+    this.logger.log(`📸 Image uploaded by ${adminEmail}: ${result.path}`);
+
+    return result;
+  } catch (error) {
+    this.logger.error(`❌ uploadImage error: ${error.message}`);
+    
+    // Re-throw if already a BadRequestException
+    if (error instanceof BadRequestException) {
+      throw error;
+    }
+    
+    // Wrap other errors
+    throw new BadRequestException(`Failed to upload image: ${error.message}`);
   }
+}
 
   /**
    * Delete image from storage

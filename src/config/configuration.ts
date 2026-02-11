@@ -7,11 +7,12 @@ export default () => ({
   timezone: process.env.TIMEZONE || 'Asia/Jakarta',
   
   firebase: {
-    projectId: process.env.FIREBASE_PROJECT_ID,
-    privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-    realtimeDbUrl: process.env.FIREBASE_REALTIME_DB_URL,
-  },
+  projectId: process.env.FIREBASE_PROJECT_ID,
+  privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+  clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+  realtimeDbUrl: process.env.FIREBASE_REALTIME_DB_URL,
+  storageBucket: process.env.FIREBASE_STORAGE_BUCKET || `${process.env.FIREBASE_PROJECT_ID}.firebasestorage.app`,
+},
   
   jwt: {
     secret: process.env.JWT_SECRET,
