@@ -17,7 +17,7 @@ import {
   UseInterceptors,
   UploadedFile,
   BadRequestException,
-  Logger, // ✅ FIX: Import Logger
+  Logger,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiParam, ApiConsumes, ApiBody } from '@nestjs/swagger';
@@ -45,7 +45,6 @@ interface AuthenticatedRequest {
 @Roles('admin', 'super_admin')
 @Controller('admin/information')
 export class InformationAdminController {
-  // ✅ FIX: Add logger instance sebagai property class
   private readonly logger = new Logger(InformationAdminController.name);
 
   constructor(private readonly informationService: InformationService) {}
@@ -76,12 +75,13 @@ export class InformationAdminController {
     schema: {
       example: {
         success: true,
-        message: 'Image uploaded successfully',
         data: {
           url: 'https://storage.googleapis.com/bucket/information/1234567890_abc123.jpg',
           path: 'information/1234567890_abc123.jpg',
           size: 524288
-        }
+        },
+        timestamp: '2026-02-11T09:18:02.000Z',
+        path: '/api/v1/admin/information/upload-image'
       }
     }
   })
@@ -109,45 +109,15 @@ export class InformationAdminController {
     const adminId = req.user.userId;
     const adminEmail = req.user.email;
 
-    try {
-      this.logger.log(`📤 Processing upload request from ${adminEmail}, file: ${file.originalname}, size: ${file.size}`);
+    this.logger.log(`📤 Processing upload request from ${adminEmail}, file: ${file.originalname}, size: ${file.size}`);
 
-      const result = await this.informationService.uploadImage(file, adminId, adminEmail);
+    // Upload image - return data saja, ResponseInterceptor akan wrap
+    const result = await this.informationService.uploadImage(file, adminId, adminEmail);
 
-      // Validate result
-      if (!result || !result.url || !result.path) {
-        throw new BadRequestException('Upload completed but response data is incomplete');
-      }
+    this.logger.log(`✅ Upload completed for ${adminEmail}: ${result.path}`);
 
-      this.logger.log(`✅ Upload completed for ${adminEmail}: ${result.path}`);
-
-      // ✅ FIX: Pastikan return object sesuai format yang diharapkan frontend
-      const response = {
-        success: true,
-        message: 'Image uploaded successfully',
-        data: result,
-      };
-
-      this.logger.debug(`Response object: ${JSON.stringify(response)}`);
-
-      return response;
-
-    } catch (error) {
-      this.logger.error(`❌ Upload failed for ${adminEmail}: ${error.message}`);
-      
-      // Re-throw NestJS exceptions as-is
-      if (error instanceof BadRequestException) {
-        throw error;
-      }
-      
-      // Log detailed error for debugging
-      console.error('Full upload error:', error);
-      
-      // Return user-friendly error
-      throw new BadRequestException(
-        error.message || 'Failed to upload image. Please try again.'
-      );
-    }
+    // ✅ Return data saja (tanpa wrap success/data), biar ResponseInterceptor yang handle
+    return result;
   }
 
   @Delete('delete-image')
@@ -191,22 +161,10 @@ export class InformationAdminController {
 
     const adminEmail = req.user.email;
 
-    try {
-      await this.informationService.deleteImage(imagePath, adminEmail);
+    await this.informationService.deleteImage(imagePath, adminEmail);
 
-      return {
-        success: true,
-        message: 'Image deleted successfully',
-      };
-    } catch (error) {
-      this.logger.error(`❌ Delete image failed: ${error.message}`);
-      
-      if (error instanceof BadRequestException) {
-        throw error;
-      }
-      
-      throw new BadRequestException('Failed to delete image');
-    }
+    // ✅ Return plain object dengan message, ResponseInterceptor akan wrap ke data
+    return { message: 'Image deleted successfully' };
   }
 
   @Post()
@@ -238,22 +196,16 @@ export class InformationAdminController {
     const adminId = req.user.userId;
     const adminEmail = req.user.email;
 
-    try {
-      const information = await this.informationService.createInformation(
-        createDto,
-        adminId,
-        adminEmail,
-      );
+    const information = await this.informationService.createInformation(
+      createDto,
+      adminId,
+      adminEmail,
+    );
 
-      return {
-        success: true,
-        message: 'Information created successfully',
-        data: information,
-      };
-    } catch (error) {
-      this.logger.error(`❌ Create information failed: ${error.message}`);
-      throw error;
-    }
+    this.logger.log(`✅ Information created: ${information.id} by ${adminEmail}`);
+
+    // ✅ Return data saja
+    return information;
   }
 
   @Get()
@@ -274,24 +226,16 @@ export class InformationAdminController {
     description: 'Forbidden - Admin only' 
   })
   async getAllInformation(@Query() query: GetInformationQueryDto) {
-    try {
-      const result = await this.informationService.getAllInformation(query);
+    const result = await this.informationService.getAllInformation(query);
 
-      return {
-        success: true,
-        message: 'Information list retrieved successfully',
-        data: result.items,
-        pagination: {
-          total: result.total,
-          page: result.page,
-          limit: result.limit,
-          totalPages: result.totalPages,
-        },
-      };
-    } catch (error) {
-      this.logger.error(`❌ Get all information failed: ${error.message}`);
-      throw error;
-    }
+    // ✅ Return data saja (dengan pagination info)
+    return {
+      items: result.items,
+      total: result.total,
+      page: result.page,
+      limit: result.limit,
+      totalPages: result.totalPages,
+    };
   }
 
   @Get(':id')
@@ -313,18 +257,10 @@ export class InformationAdminController {
     description: 'Information not found' 
   })
   async getInformationById(@Param('id') id: string) {
-    try {
-      const information = await this.informationService.getInformationById(id);
+    const information = await this.informationService.getInformationById(id);
 
-      return {
-        success: true,
-        message: 'Information retrieved successfully',
-        data: information,
-      };
-    } catch (error) {
-      this.logger.error(`❌ Get information by ID failed: ${error.message}`);
-      throw error;
-    }
+    // ✅ Return data saja
+    return information;
   }
 
   @Put(':id')
@@ -357,23 +293,17 @@ export class InformationAdminController {
     const adminId = req.user.userId;
     const adminEmail = req.user.email;
 
-    try {
-      const information = await this.informationService.updateInformation(
-        id,
-        updateDto,
-        adminId,
-        adminEmail,
-      );
+    const information = await this.informationService.updateInformation(
+      id,
+      updateDto,
+      adminId,
+      adminEmail,
+    );
 
-      return {
-        success: true,
-        message: 'Information updated successfully',
-        data: information,
-      };
-    } catch (error) {
-      this.logger.error(`❌ Update information failed: ${error.message}`);
-      throw error;
-    }
+    this.logger.log(`✅ Information updated: ${id} by ${adminEmail}`);
+
+    // ✅ Return data saja
+    return information;
   }
 
   @Patch(':id/toggle-active')
@@ -401,22 +331,14 @@ export class InformationAdminController {
     const adminId = req.user.userId;
     const adminEmail = req.user.email;
 
-    try {
-      const information = await this.informationService.toggleActiveStatus(
-        id,
-        adminId,
-        adminEmail,
-      );
+    const information = await this.informationService.toggleActiveStatus(
+      id,
+      adminId,
+      adminEmail,
+    );
 
-      return {
-        success: true,
-        message: `Information ${information.isActive ? 'activated' : 'deactivated'} successfully`,
-        data: information,
-      };
-    } catch (error) {
-      this.logger.error(`❌ Toggle active status failed: ${error.message}`);
-      throw error;
-    }
+    // ✅ Return data saja
+    return information;
   }
 
   @Delete(':id')
@@ -444,16 +366,11 @@ export class InformationAdminController {
   ) {
     const adminEmail = req.user.email;
 
-    try {
-      await this.informationService.deleteInformation(id, adminEmail);
+    await this.informationService.deleteInformation(id, adminEmail);
 
-      return {
-        success: true,
-        message: 'Information deleted successfully',
-      };
-    } catch (error) {
-      this.logger.error(`❌ Delete information failed: ${error.message}`);
-      throw error;
-    }
+    this.logger.log(`🗑️ Information deleted: ${id} by ${adminEmail}`);
+
+    // ✅ Return plain object dengan message
+    return { message: 'Information deleted successfully' };
   }
 }
