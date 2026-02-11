@@ -87,6 +87,60 @@ export class InformationUserController {
     };
   }
 
+  // ✅ NEW: Endpoint khusus untuk pinned information
+  @Get('pinned')
+  @ApiOperation({ 
+    summary: 'Get pinned information',
+    description: 'Get single pinned information banner for display'
+  })
+  @ApiResponse({ 
+    status: 200, 
+    description: 'Pinned information retrieved successfully',
+    schema: {
+      example: {
+        success: true,
+        message: 'Pinned information retrieved successfully',
+        data: {
+          id: 'abc123',
+          title: 'Welcome Bonus 100%',
+          isPinned: true,
+          isActive: true,
+          // ...
+        }
+      }
+    }
+  })
+  @ApiResponse({ 
+    status: 401, 
+    description: 'Unauthorized - Invalid or missing token' 
+  })
+  async getPinnedInformation(@Request() req: AuthenticatedRequest) {
+    const userStatus = req.user.status || 'standard';
+    const userRole = req.user.role || 'user';
+
+    const pinnedItem = await this.informationService.getPinnedInformation(
+      userStatus,
+      userRole,
+    );
+
+    if (!pinnedItem) {
+      return {
+        success: true,
+        message: 'No pinned information found',
+        data: null,
+      };
+    }
+
+    // Increment view count in background (fire and forget)
+    this.informationService.incrementViewCount(pinnedItem.id).catch(() => {});
+
+    return {
+      success: true,
+      message: 'Pinned information retrieved successfully',
+      data: pinnedItem,
+    };
+  }
+
   @Get(':id')
   @ApiOperation({ 
     summary: 'Get information detail by ID',

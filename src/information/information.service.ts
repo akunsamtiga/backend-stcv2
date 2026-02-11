@@ -24,7 +24,7 @@ export interface Information {
   type: string;
   priority: string;
   imageUrl?: string;
-  imagePath?: string; // Storage path for deletion
+  imagePath?: string;
   imageSize?: number;
   linkUrl?: string;
   linkText?: string;
@@ -53,58 +53,52 @@ export class InformationService {
 
   /**
    * Upload image for information
-   * ✅ NO RESTRICTIONS - Semua format dan ukuran file diterima
    */
-async uploadImage(
-  file: Express.Multer.File,
-  adminId: string,
-  adminEmail: string,
-): Promise<{ url: string; path: string; size: number }> {
-  try {
-    // ✅ Validate file exists
-    if (!file) {
-      throw new BadRequestException('No file provided');
-    }
+  async uploadImage(
+    file: Express.Multer.File,
+    adminId: string,
+    adminEmail: string,
+  ): Promise<{ url: string; path: string; size: number }> {
+    try {
+      if (!file) {
+        throw new BadRequestException('No file provided');
+      }
 
-    if (!file.buffer || file.buffer.length === 0) {
-      throw new BadRequestException('File is empty or corrupted');
-    }
+      if (!file.buffer || file.buffer.length === 0) {
+        throw new BadRequestException('File is empty or corrupted');
+      }
 
-    // ✅ Validate file mimetype
-    const validMimeTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
-    if (!validMimeTypes.includes(file.mimetype)) {
-      throw new BadRequestException(
-        `Invalid file type: ${file.mimetype}. Allowed: JPEG, PNG, GIF, WebP`
+      const validMimeTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
+      if (!validMimeTypes.includes(file.mimetype)) {
+        throw new BadRequestException(
+          `Invalid file type: ${file.mimetype}. Allowed: JPEG, PNG, GIF, WebP`
+        );
+      }
+
+      this.logger.log(`📤 Starting image upload for ${adminEmail}, size: ${file.size} bytes, type: ${file.mimetype}`);
+
+      const result = await this.firebaseService.uploadImage(
+        file,
+        STORAGE_FOLDERS.INFORMATION,
       );
+
+      if (!result || !result.url || !result.path) {
+        throw new BadRequestException('Upload succeeded but response is incomplete');
+      }
+
+      this.logger.log(`📸 Image uploaded by ${adminEmail}: ${result.path}`);
+
+      return result;
+    } catch (error) {
+      this.logger.error(`❌ uploadImage error: ${error.message}`);
+      
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+      
+      throw new BadRequestException(`Failed to upload image: ${error.message}`);
     }
-
-    this.logger.log(`📤 Starting image upload for ${adminEmail}, size: ${file.size} bytes, type: ${file.mimetype}`);
-
-    const result = await this.firebaseService.uploadImage(
-      file,
-      STORAGE_FOLDERS.INFORMATION,
-    );
-
-    // ✅ Validate result
-    if (!result || !result.url || !result.path) {
-      throw new BadRequestException('Upload succeeded but response is incomplete');
-    }
-
-    this.logger.log(`📸 Image uploaded by ${adminEmail}: ${result.path}`);
-
-    return result;
-  } catch (error) {
-    this.logger.error(`❌ uploadImage error: ${error.message}`);
-    
-    // Re-throw if already a BadRequestException
-    if (error instanceof BadRequestException) {
-      throw error;
-    }
-    
-    // Wrap other errors
-    throw new BadRequestException(`Failed to upload image: ${error.message}`);
   }
-}
 
   /**
    * Delete image from storage
@@ -128,8 +122,6 @@ async uploadImage(
     }
   }
 
-  // ... (method lainnya tetap sama: createInformation, getAllInformation, dll)
-  
   /**
    * Create new information (Admin only)
    */
@@ -329,6 +321,67 @@ async uploadImage(
     } catch (error) {
       this.logger.error(`❌ getActiveInformation error: ${error.message}`);
       throw new BadRequestException('Failed to retrieve active information');
+    }
+  }
+
+  // ✅ NEW: Get pinned information specifically
+  async getPinnedInformation(userStatus: string, userRole: string): Promise<Information | null> {
+    try {
+      const db = this.firebaseService.getFirestore();
+      const now = new Date().toISOString();
+
+      this.logger.log(`🔍 Searching for pinned information for user (${userStatus}/${userRole})`);
+
+      // Query for pinned and active information
+      const snapshot = await db
+        .collection(COLLECTIONS.INFORMATION)
+        .where('isActive', '==', true)
+        .where('isPinned', '==', true)
+        .limit(1)
+        .get();
+
+      if (snapshot.empty) {
+        this.logger.log('ℹ️ No pinned information found in database');
+        return null;
+      }
+
+      const doc = snapshot.docs[0];
+      const info = {
+        id: doc.id,
+        ...doc.data(),
+      } as Information;
+
+      // Check date constraints
+      if (info.startDate && info.startDate > now) {
+        this.logger.log(`⏳ Pinned information not yet started (startDate: ${info.startDate})`);
+        return null;
+      }
+
+      if (info.endDate && info.endDate < now) {
+        this.logger.log(`⌛ Pinned information already expired (endDate: ${info.endDate})`);
+        return null;
+      }
+
+      // Check targeting
+      const hasStatusTarget = info.targetUserStatus && info.targetUserStatus.length > 0;
+      const hasRoleTarget = info.targetUserRoles && info.targetUserRoles.length > 0;
+
+      if (hasStatusTarget || hasRoleTarget) {
+        const matchesStatus = !hasStatusTarget || info.targetUserStatus?.includes(userStatus);
+        const matchesRole = !hasRoleTarget || info.targetUserRoles?.includes(userRole);
+
+        if (!matchesStatus || !matchesRole) {
+          this.logger.log(`🚫 User does not match targeting criteria`);
+          return null;
+        }
+      }
+
+      this.logger.log(`✅ Found pinned information: ${info.title}`);
+      return info;
+
+    } catch (error) {
+      this.logger.error(`❌ getPinnedInformation error: ${error.message}`);
+      return null;
     }
   }
 
