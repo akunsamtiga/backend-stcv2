@@ -54,7 +54,7 @@ export class InformationAdminController {
   @UseInterceptors(FileInterceptor('image'))
   @ApiOperation({ 
     summary: 'Upload image for information',
-    description: 'Upload gambar untuk information (max 5MB, format: JPEG, PNG, GIF, WebP)'
+    description: '✅ Upload gambar untuk information - TIDAK ADA PEMBATASAN format atau ukuran file'
   })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -64,7 +64,7 @@ export class InformationAdminController {
         image: {
           type: 'string',
           format: 'binary',
-          description: 'Image file (JPEG, PNG, GIF, WebP, max 5MB)'
+          description: '✅ File gambar (semua format dan ukuran diterima, tanpa batasan)'
         },
       },
     },
@@ -87,7 +87,7 @@ export class InformationAdminController {
   })
   @ApiResponse({ 
     status: 400, 
-    description: 'Invalid file type or size' 
+    description: 'Bad request - No file provided or file is empty' 
   })
   @ApiResponse({ 
     status: 401, 

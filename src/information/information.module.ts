@@ -23,9 +23,7 @@ import { AuthModule } from '../auth/auth.module';
       }),
     }),
     MulterModule.register({
-      limits: {
-        fileSize: 5 * 1024 * 1024, // 5MB
-      },
+      // ✅ NO LIMITS - Lebih fleksibel, tidak ada pembatasan ukuran file
     }),
   ],
   controllers: [InformationAdminController, InformationUserController],

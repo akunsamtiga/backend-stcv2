@@ -53,6 +53,7 @@ export class InformationService {
 
   /**
    * Upload image for information
+   * ✅ NO RESTRICTIONS - Semua format dan ukuran file diterima
    */
   async uploadImage(
     file: Express.Multer.File,
@@ -60,7 +61,7 @@ export class InformationService {
     adminEmail: string,
   ): Promise<{ url: string; path: string; size: number }> {
     try {
-      // ✅ FIX: Validate file exists
+      // ✅ Validate file exists
       if (!file) {
         throw new BadRequestException('No file provided');
       }
@@ -69,22 +70,17 @@ export class InformationService {
         throw new BadRequestException('File is empty or corrupted');
       }
 
-      // ✅ FIX: Validate file mimetype
-      const validMimeTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
-      if (!validMimeTypes.includes(file.mimetype)) {
-        throw new BadRequestException(
-          `Invalid file type: ${file.mimetype}. Allowed: JPEG, PNG, GIF, WebP`
-        );
-      }
+      // ✅ NO MIME TYPE VALIDATION - Semua format file diterima
+      // ✅ NO FILE SIZE VALIDATION - Semua ukuran file diterima
 
-      this.logger.log(`📤 Starting image upload for ${adminEmail}, size: ${file.size} bytes`);
+      this.logger.log(`📤 Starting image upload for ${adminEmail}, size: ${file.size} bytes, type: ${file.mimetype}`);
 
       const result = await this.firebaseService.uploadImage(
         file,
         STORAGE_FOLDERS.INFORMATION,
       );
 
-      // ✅ FIX: Validate result
+      // ✅ Validate result
       if (!result || !result.url || !result.path) {
         throw new BadRequestException('Upload succeeded but response is incomplete');
       }
@@ -256,7 +252,7 @@ export class InformationService {
   }
 
   /**
-   * Get active information for users (with targeting filter)
+   * Get active information for user (with targeting)
    */
   async getActiveInformation(
     userStatus: string,
@@ -268,33 +264,32 @@ export class InformationService {
       const db = this.firebaseService.getFirestore();
       const now = new Date().toISOString();
 
-      // Get all active information
-      const snapshot = await db.collection(COLLECTIONS.INFORMATION)
+      // Get active information
+      const snapshot = await db
+        .collection(COLLECTIONS.INFORMATION)
         .where('isActive', '==', true)
         .orderBy('isPinned', 'desc')
         .orderBy('publishDate', 'desc')
         .get();
 
-      let items: Information[] = [];
+      const items: Information[] = [];
 
       snapshot.forEach(doc => {
-        const data = doc.data();
         const info = {
           id: doc.id,
-          ...data,
+          ...doc.data(),
         } as Information;
 
-        // Check if information is published
-        if (info.publishDate && info.publishDate > now) {
-          return; // Skip unpublished items
+        // Check if information is within display period
+        if (info.startDate && info.startDate > now) {
+          return; // Not yet started
         }
 
-        // Check if information is expired
         if (info.endDate && info.endDate < now) {
-          return; // Skip expired items
+          return; // Already ended
         }
 
-        // Check targeting - if no target set, show to all
+        // Check targeting
         const hasStatusTarget = info.targetUserStatus && info.targetUserStatus.length > 0;
         const hasRoleTarget = info.targetUserRoles && info.targetUserRoles.length > 0;
 
