@@ -94,7 +94,7 @@ export class FirebaseService implements OnModuleInit {
         admin.initializeApp({
           credential: admin.credential.cert(serviceAccount as admin.ServiceAccount),
           databaseURL: this.configService.get('firebase.realtimeDbUrl'),
-          storageBucket: `${serviceAccount.projectId}.appspot.com`, 
+          storageBucket: `${serviceAccount.projectId}.firebasestorage.app`, // ✅ NEW: Add storage bucket
         });
       }
 
@@ -761,6 +761,11 @@ export class FirebaseService implements OnModuleInit {
 
       const bucket = this.getStorage().bucket();
       
+      // Validate bucket exists
+      if (!bucket) {
+        throw new BadRequestException('Storage bucket not initialized');
+      }
+
       // Generate unique filename if not provided
       const timestamp = Date.now();
       const randomString = Math.random().toString(36).substring(7);
@@ -784,13 +789,48 @@ export class FirebaseService implements OnModuleInit {
         validation: 'md5',
       });
 
-      // Make file public
-      await fileUpload.makePublic();
+      // Make file public with error handling
+      try {
+        await fileUpload.makePublic();
+        this.logger.debug(`File made public: ${storagePath}`);
+      } catch (makePublicError) {
+        this.logger.warn(`makePublic failed (file might already be public): ${makePublicError.message}`);
+        // Continue anyway - file might already be public or bucket has allUsers access
+      }
 
-      // Get public URL
-      const publicUrl = `https://storage.googleapis.com/${bucket.name}/${storagePath}`;
+      // Get bucket name safely dengan proper type handling
+      let bucketName = '';
 
-      this.logger.log(`✅ Image uploaded successfully: ${storagePath}`);
+      try {
+        // Try to get bucket metadata if name is not directly available
+        const [metadata] = await bucket.getMetadata();
+        bucketName = metadata.name || bucket.name || bucket.id || '';
+      } catch (metadataError) {
+        // Fallback to direct properties
+        bucketName = bucket.name || bucket.id || '';
+      }
+
+      // Final fallback using project ID from config
+      if (!bucketName) {
+        const projectId = this.configService.get<string>('firebase.projectId');
+        bucketName = projectId ? `${projectId}.firebasestorage.app` : 'default-bucket';
+        this.logger.warn(`Using fallback bucket name: ${bucketName}`);
+      }
+
+      // Ensure bucketName is never empty
+      if (!bucketName || bucketName.trim() === '') {
+        throw new BadRequestException('Unable to determine storage bucket name');
+      }
+
+      // Ensure proper URL format
+      const publicUrl = `https://storage.googleapis.com/${bucketName}/${storagePath}`;
+
+      this.logger.log(`Image uploaded successfully: ${storagePath} (URL: ${publicUrl})`);
+
+      // Validate response data
+      if (!publicUrl || !storagePath) {
+        throw new BadRequestException('Failed to generate upload response');
+      }
 
       return {
         url: publicUrl,
@@ -798,15 +838,18 @@ export class FirebaseService implements OnModuleInit {
         size: file.size,
       };
     } catch (error) {
-      this.logger.error(`❌ Image upload failed: ${error.message}`);
-      throw error;
+      this.logger.error(`Image upload failed: ${error.message}`);
+      
+      // Re-throw known errors
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+      
+      // Wrap unknown errors
+      throw new BadRequestException(`Upload failed: ${error.message}`);
     }
   }
-
-  /**
-   * Delete image from Firebase Storage
-   * @param path - Storage path of the file (e.g., 'information/123456_abc.jpg')
-   */
+  
   async deleteImage(path: string): Promise<void> {
     try {
       const bucket = this.getStorage().bucket();

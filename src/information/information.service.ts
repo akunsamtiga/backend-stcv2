@@ -60,17 +60,48 @@ export class InformationService {
     adminEmail: string,
   ): Promise<{ url: string; path: string; size: number }> {
     try {
+      // ✅ FIX: Validate file exists
+      if (!file) {
+        throw new BadRequestException('No file provided');
+      }
+
+      if (!file.buffer || file.buffer.length === 0) {
+        throw new BadRequestException('File is empty or corrupted');
+      }
+
+      // ✅ FIX: Validate file mimetype
+      const validMimeTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
+      if (!validMimeTypes.includes(file.mimetype)) {
+        throw new BadRequestException(
+          `Invalid file type: ${file.mimetype}. Allowed: JPEG, PNG, GIF, WebP`
+        );
+      }
+
+      this.logger.log(`📤 Starting image upload for ${adminEmail}, size: ${file.size} bytes`);
+
       const result = await this.firebaseService.uploadImage(
         file,
         STORAGE_FOLDERS.INFORMATION,
       );
 
-      this.logger.log(`📸 Image uploaded by ${adminEmail}: ${result.path}`);
+      // ✅ FIX: Validate result
+      if (!result || !result.url || !result.path) {
+        throw new BadRequestException('Upload succeeded but response is incomplete');
+      }
+
+      this.logger.log(`📸 Image uploaded by ${adminEmail}: ${result.path} (${result.size} bytes)`);
 
       return result;
     } catch (error) {
       this.logger.error(`❌ uploadImage error: ${error.message}`);
-      throw error;
+      
+      // Re-throw if already a BadRequestException
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+      
+      // Wrap other errors
+      throw new BadRequestException(`Failed to upload image: ${error.message}`);
     }
   }
 
@@ -79,14 +110,25 @@ export class InformationService {
    */
   async deleteImage(imagePath: string, adminEmail: string): Promise<void> {
     try {
+      if (!imagePath) {
+        throw new BadRequestException('Image path is required');
+      }
+
       await this.firebaseService.deleteImage(imagePath);
       this.logger.log(`🗑️ Image deleted by ${adminEmail}: ${imagePath}`);
     } catch (error) {
       this.logger.error(`❌ deleteImage error: ${error.message}`);
-      throw error;
+      
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+      
+      throw new BadRequestException(`Failed to delete image: ${error.message}`);
     }
   }
 
+  // ... (method lainnya tetap sama: createInformation, getAllInformation, dll)
+  
   /**
    * Create new information (Admin only)
    */
