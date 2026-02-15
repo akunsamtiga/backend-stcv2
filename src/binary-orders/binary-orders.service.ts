@@ -640,11 +640,19 @@ export class BinaryOrdersService {
     return snapshot.docs.map(doc => doc.data() as BinaryOrder);
   }
 
-  async getOrders(userId: string, queryDto: QueryBinaryOrderDto) {
+    async getOrders(userId: string, queryDto: QueryBinaryOrderDto) {
     const startTime = Date.now();
     
     try {
       const { status, page = 1, limit = 20, accountType } = queryDto;
+
+      // Normalise: status bisa undefined, string[], atau string (fallback)
+      const statusArray: string[] | undefined = status
+        ? Array.isArray(status)
+          ? status
+          : [status]
+        : undefined;
+
       const db = this.firebaseService.getFirestore();
       
       try {
@@ -654,8 +662,14 @@ export class BinaryOrdersService {
           query = query.where('accountType', '==', accountType) as any;
         }
 
-        if (status) {
-          query = query.where('status', '==', status) as any;
+        if (statusArray && statusArray.length > 0) {
+          if (statusArray.length === 1) {
+            // Single status — pakai == supaya index yang ada tetap kepake
+            query = query.where('status', '==', statusArray[0]) as any;
+          } else {
+            // Multiple status — pakai 'in' (Firestore max 10 values)
+            query = query.where('status', 'in', statusArray.slice(0, 10)) as any;
+          }
         }
 
         const snapshot = await query
@@ -688,7 +702,7 @@ export class BinaryOrdersService {
           },
           filter: {
             accountType: accountType || 'all',
-            status: status || 'all',
+            status: statusArray ? statusArray.join(',') : 'all',
           },
           currentTime: TimezoneUtil.formatDateTime(),
           timezone: 'Asia/Jakarta (WIB)',
@@ -712,8 +726,8 @@ export class BinaryOrdersService {
           allOrders = allOrders.filter(o => o.accountType === accountType);
         }
 
-        if (status) {
-          allOrders = allOrders.filter(o => o.status === status);
+        if (statusArray && statusArray.length > 0) {
+          allOrders = allOrders.filter(o => statusArray.includes(o.status));
         }
 
         allOrders.sort((a, b) => {
@@ -739,7 +753,7 @@ export class BinaryOrdersService {
           },
           filter: {
             accountType: accountType || 'all',
-            status: status || 'all',
+            status: statusArray ? statusArray.join(',') : 'all',
           },
           currentTime: TimezoneUtil.formatDateTime(),
           timezone: 'Asia/Jakarta (WIB)',
@@ -768,6 +782,7 @@ export class BinaryOrdersService {
       };
     }
   }
+
 
   async getOrderById(userId: string, orderId: string) {
     const db = this.firebaseService.getFirestore();

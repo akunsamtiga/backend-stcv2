@@ -12,8 +12,8 @@ export class CreateDepositDto {
   amount: number;
 
   @ApiPropertyOptional({ 
-    example: 'Deposit for trading',
-    description: 'Deposit description (optional)'
+    example: 'Pembayaran premium',
+    description: 'Deskripsi pembayaran (optional)'
   })
   @IsOptional()
   @IsString()

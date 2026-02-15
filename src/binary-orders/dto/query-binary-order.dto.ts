@@ -1,18 +1,31 @@
 // src/binary-orders/dto/query-binary-order.dto.ts
 
-import { IsOptional, IsEnum, IsInt, Min, Max } from 'class-validator';
-import { Type } from 'class-transformer';
+import { IsOptional, IsEnum, IsInt, Min, Max, IsArray } from 'class-validator';
+import { Type, Transform } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { ORDER_STATUS, BALANCE_ACCOUNT_TYPE } from '../../common/constants';
 
 export class QueryBinaryOrderDto {
   @ApiPropertyOptional({ 
     enum: ORDER_STATUS,
-    description: 'Filter by order status'
+    description: 'Filter by order status. Bisa single (PENDING) atau multiple dipisah koma (PENDING,WON,LOST)',
+    example: 'PENDING,WON,LOST'
   })
   @IsOptional()
-  @IsEnum(ORDER_STATUS)
-  status?: string;
+  @Transform(({ value }) => {
+    if (!value) return undefined;
+    // Kalau sudah array, langsung return
+    if (Array.isArray(value)) return value.map((s: string) => s.trim());
+    // Kalau string dengan koma, split jadi array
+    if (typeof value === 'string' && value.includes(',')) {
+      return value.split(',').map((s) => s.trim());
+    }
+    // Single value, bungkus jadi array supaya konsisten
+    return [value.trim()];
+  })
+  @IsArray()
+  @IsEnum(ORDER_STATUS, { each: true })
+  status?: string[];
 
   @ApiPropertyOptional({ 
     enum: BALANCE_ACCOUNT_TYPE,

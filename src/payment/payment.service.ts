@@ -123,7 +123,7 @@ export class PaymentService {
         order_id: orderId,
         amount: createDepositDto.amount,
         status: 'pending',
-        description: createDepositDto.description || 'Deposit to real account',
+        description: createDepositDto.description || 'Pembayaran',
         userEmail: user.email,
         userName: user.profile?.fullName,
         createdAt: new Date().toISOString(),
@@ -148,10 +148,10 @@ export class PaymentService {
         },
         item_details: [
           {
-            id: 'REAL_DEPOSIT',
+            id: `PAY-${timestamp}`,
             price: createDepositDto.amount,
             quantity: 1,
-            name: 'Real Account Deposit',
+            name: 'Pembayaran',
           },
         ],
         callbacks: {
@@ -294,7 +294,7 @@ export class PaymentService {
           accountType: BALANCE_ACCOUNT_TYPE.REAL,
           type: BALANCE_TYPES.DEPOSIT,
           amount: deposit.amount,
-          description: `Deposit via ${notificationData.payment_type} - ${deposit.order_id}`,
+          description: `Pembayaran via ${notificationData.payment_type} - ${deposit.order_id}`,
         },
         true,
         true
@@ -339,7 +339,7 @@ export class PaymentService {
                   accountType: BALANCE_ACCOUNT_TYPE.REAL,
                   type: BALANCE_TYPES.VOUCHER_BONUS,
                   amount: bonusAmount,
-                  description: `Voucher bonus ${deposit.voucherCode} for deposit ${deposit.order_id}`,
+                  description: `Voucher bonus ${deposit.voucherCode} untuk pembayaran ${deposit.order_id}`,
                 },
                 true,
                 true
