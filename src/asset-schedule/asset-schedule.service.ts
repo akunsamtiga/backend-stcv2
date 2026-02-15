@@ -279,17 +279,30 @@ export class AssetScheduleService implements OnModuleInit {
     };
   }
 
+  // ============================================================
+  // [FIX] CRON: Hanya eksekusi schedule yang TEPAT pada menit ini
+  // Tidak lagi mengeksekusi semua schedule yang pernah terlewat
+  // sekaligus, untuk menghindari overwrite di RTDB.
+  // ============================================================
   @Cron(CronExpression.EVERY_MINUTE)
   async executePendingSchedules() {
     try {
       const now = new Date();
       const nowTimestamp = Timestamp.fromDate(now);
 
+      // [FIX] Batasi window eksekusi hanya 2 menit ke belakang
+      // agar schedule lama yang tertumpuk tidak dieksekusi sekaligus.
+      // Ini mencegah 300 schedule dieksekusi dalam 1 cron tick.
+      const twoMinutesAgo = new Date(now.getTime() - 2 * 60 * 1000);
+      const windowStart = Timestamp.fromDate(twoMinutesAgo);
+
       const schedulesSnapshot = await this.firestore
         .collection(this.COLLECTION_NAME)
         .where('status', '==', 'pending')
         .where('isActive', '==', true)
+        .where('scheduledTime', '>=', windowStart)   // [FIX] tambah batas bawah
         .where('scheduledTime', '<=', nowTimestamp)
+        .orderBy('scheduledTime', 'asc')             // [FIX] eksekusi urut dari terlama
         .get();
 
       if (schedulesSnapshot.empty) {
@@ -298,6 +311,8 @@ export class AssetScheduleService implements OnModuleInit {
 
       this.logger.log(`Found ${schedulesSnapshot.size} schedules to execute`);
 
+      // [FIX] Eksekusi satu per satu secara berurutan, BUKAN paralel,
+      // agar tidak ada race condition penulisan ke RTDB path yang sama.
       for (const scheduleDoc of schedulesSnapshot.docs) {
         const scheduleData = scheduleDoc.data();
         await this.executeSchedule(scheduleDoc.id, scheduleData);
@@ -326,12 +341,18 @@ export class AssetScheduleService implements OnModuleInit {
       const assetData = assetDoc.data();
       const currentPrice = assetData.currentPrice || 0;
 
+      // [FIX] Pass scheduledTime agar startTime di RTDB akurat
+      const scheduledTime: Date = scheduleData.scheduledTime?.toDate
+        ? scheduleData.scheduledTime.toDate()
+        : new Date(scheduleData.scheduledTime);
+
       await this.pushScheduledTrendToRTDB(
         scheduleData.assetSymbol,
         scheduleData.trend,
         scheduleData.timeframe,
         scheduleId,
-        currentPrice
+        currentPrice,
+        scheduledTime,   // [FIX] parameter baru
       );
 
       await this.firestore.collection('assets').doc(assetDoc.id).update({
@@ -366,22 +387,36 @@ export class AssetScheduleService implements OnModuleInit {
     }
   }
 
+  // ============================================================
+  // [FIX] pushScheduledTrendToRTDB
+  //
+  // PERUBAHAN UTAMA:
+  // 1. Path RTDB sekarang menggunakan scheduleId sebagai sub-key:
+  //    SEBELUM: _scheduled_trends/{symbol}           (1 slot, saling overwrite)
+  //    SESUDAH: _scheduled_trends/{symbol}/{scheduleId} (slot unik per schedule)
+  //
+  // 2. startTime menggunakan scheduledTime (waktu yang dijadwalkan),
+  //    bukan Date.now() (waktu eksekusi cron).
+  //    Ini memastikan trend aktif tepat sesuai waktu yang diinginkan.
+  // ============================================================
   private async pushScheduledTrendToRTDB(
     assetSymbol: string,
     trend: string,
     timeframe: string,
     scheduleId: string,
     startPrice?: number,
+    scheduledTime?: Date,   // [FIX] parameter baru
   ): Promise<void> {
     try {
-      const now = Date.now();
+      // [FIX] Gunakan scheduledTime sebagai startTime, fallback ke Date.now()
+      const startTime = scheduledTime ? scheduledTime.getTime() : Date.now();
       const duration = this.getTimeframeDurationInMs(timeframe);
-      const endTime = now + duration;
+      const endTime = startTime + duration;
 
       const trendData = {
         trend: trend,
         timeframe: timeframe,
-        startTime: now,
+        startTime: startTime,   // [FIX] waktu jadwal, bukan waktu eksekusi
         endTime: endTime,
         duration: duration,
         scheduleId: scheduleId,
@@ -391,7 +426,9 @@ export class AssetScheduleService implements OnModuleInit {
       };
 
       const normalizedSymbol = assetSymbol.toLowerCase().replace(/[^a-z0-9]/g, '_');
-      const path = `_scheduled_trends/${normalizedSymbol}`;
+
+      // [FIX] Path unik per scheduleId agar tidak saling overwrite
+      const path = `_scheduled_trends/${normalizedSymbol}/${scheduleId}`;
 
       this.logger.log(`Writing trend to ${path} (original: ${assetSymbol})`);
 
@@ -409,7 +446,7 @@ export class AssetScheduleService implements OnModuleInit {
 
           if (verified && verified.scheduleId === scheduleId) {
             writeSuccess = true;
-            this.logger.log(`Trend verified on attempt ${attempt}: ${normalizedSymbol}`);
+            this.logger.log(`Trend verified on attempt ${attempt}: ${normalizedSymbol}/${scheduleId}`);
             break;
           } else {
             this.logger.warn(`Verification failed on attempt ${attempt}/${maxWriteAttempts}`);
@@ -441,8 +478,8 @@ Please check:
 - Firebase service status`);
       }
 
-      this.logger.log(`Successfully pushed trend: ${assetSymbol} → ${trend}`);
-      this.logger.log(`Active for ${duration/1000}s (until ${new Date(endTime).toLocaleTimeString()})`);
+      this.logger.log(`Successfully pushed trend: ${assetSymbol}/${scheduleId} → ${trend}`);
+      this.logger.log(`Active from ${new Date(startTime).toLocaleTimeString()} to ${new Date(endTime).toLocaleTimeString()} (${duration / 1000}s)`);
 
     } catch (error) {
       this.logger.error(`Failed to push trend for ${assetSymbol}: ${error.message}`);
