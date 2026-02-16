@@ -114,7 +114,26 @@ export class PaymentService {
       }
 
       const timestamp = Date.now();
-      const orderId = `DEPOSIT-${userId.substring(0, 6)}-${timestamp}`;
+      
+      // ✅ FIXED: Menghilangkan kata "DEPOSIT" dari Order ID
+      // Pilih salah satu format berikut:
+      
+      // OPSI 1: Hanya UserID + Timestamp (RECOMMENDED - Paling clean)
+      const orderId = `${userId.substring(0, 6).toUpperCase()}-${timestamp}`;
+      // Hasil: YP8HTG-1771236302959
+      
+      // OPSI 2: Random String + Timestamp (Lebih aman/unik)
+      // const randomStr = Math.random().toString(36).substring(2, 8).toUpperCase();
+      // const orderId = `${randomStr}-${timestamp}`;
+      // Hasil: AB3XY2-1771236302959
+      
+      // OPSI 3: P prefix (Payment - lebih pendek)
+      // const orderId = `P-${userId.substring(0, 6).toUpperCase()}-${timestamp}`;
+      // Hasil: P-YP8HTG-1771236302959
+      
+      // OPSI 4: TRX prefix (Transaction)
+      // const orderId = `TRX-${userId.substring(0, 6).toUpperCase()}-${timestamp}`;
+      // Hasil: TRX-YP8HTG-1771236302959
 
       const depositId = await this.firebaseService.generateId('deposit_transactions');
       const depositTransaction: DepositTransaction = {
