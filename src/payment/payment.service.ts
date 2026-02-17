@@ -471,6 +471,11 @@ export class PaymentService {
           } : null,
           createdAt: data.createdAt,
           completedAt: data.completedAt,
+          // Include snap info for pending deposits so frontend can resume payment
+          ...(data.status === 'pending' && {
+            snap_token: data.snap_token,
+            snap_redirect_url: data.snap_redirect_url,
+          }),
         };
       });
 
