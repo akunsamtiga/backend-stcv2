@@ -132,14 +132,13 @@ export class PaymentService {
 
       await db.collection('deposit_transactions').doc(depositId).set(depositTransaction);
 
-      // ✅ FIX: Lengkapi customer_details dengan billing_address
-      // untuk mengurangi risk score di production Midtrans
-      const customerName = user.profile?.fullName || user.email.split('@')[0];
+      const customerName = user.profile?.fullName || user.email.split("@")[0];
       const customerPhone = user.profile?.phoneNumber || '081234567890';
-      const profileAny = user.profile as any;
-      const customerAddress = profileAny?.address || 'Indonesia';
-      const customerCity = profileAny?.city || 'Jakarta';
-      const customerPostalCode = profileAny?.postalCode || '10000';
+      // ✅ FIX: Ambil string dari nested address object
+      const addressObj = user.profile?.address;
+      const customerAddress = addressObj?.street || 'Indonesia';
+      const customerCity = addressObj?.city || 'Jakarta';
+      const customerPostalCode = addressObj?.postalCode || '10000';
 
       const parameter = {
         transaction_details: {
