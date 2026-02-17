@@ -97,12 +97,11 @@ export class PaymentService {
       let voucherBonusAmount: number = 0;
       let voucherCode: string | null = null;
       
-      // ✅ FIXED: Pass 3 separate arguments to validateVoucher
       if (createDepositDto.voucherCode) {
         const voucherResult = await this.voucherService.validateVoucher(
-          createDepositDto.voucherCode,  // code: string
-          createDepositDto.amount,       // depositAmount: number
-          { ...user, id: userId }        // user: any (with id property)
+          createDepositDto.voucherCode,
+          createDepositDto.amount,
+          { ...user, id: userId }
         );
 
         if (!voucherResult.valid) {
@@ -114,26 +113,7 @@ export class PaymentService {
       }
 
       const timestamp = Date.now();
-      
-      // ✅ FIXED: Menghilangkan kata "DEPOSIT" dari Order ID
-      // Pilih salah satu format berikut:
-      
-      // OPSI 1: Hanya UserID + Timestamp (RECOMMENDED - Paling clean)
       const orderId = `${userId.substring(0, 6).toUpperCase()}-${timestamp}`;
-      // Hasil: YP8HTG-1771236302959
-      
-      // OPSI 2: Random String + Timestamp (Lebih aman/unik)
-      // const randomStr = Math.random().toString(36).substring(2, 8).toUpperCase();
-      // const orderId = `${randomStr}-${timestamp}`;
-      // Hasil: AB3XY2-1771236302959
-      
-      // OPSI 3: P prefix (Payment - lebih pendek)
-      // const orderId = `P-${userId.substring(0, 6).toUpperCase()}-${timestamp}`;
-      // Hasil: P-YP8HTG-1771236302959
-      
-      // OPSI 4: TRX prefix (Transaction)
-      // const orderId = `TRX-${userId.substring(0, 6).toUpperCase()}-${timestamp}`;
-      // Hasil: TRX-YP8HTG-1771236302959
 
       const depositId = await this.firebaseService.generateId('deposit_transactions');
       const depositTransaction: DepositTransaction = {
@@ -152,9 +132,15 @@ export class PaymentService {
 
       await db.collection('deposit_transactions').doc(depositId).set(depositTransaction);
 
+      // ✅ FIX: Lengkapi customer_details dengan billing_address
+      // untuk mengurangi risk score di production Midtrans
       const customerName = user.profile?.fullName || user.email.split('@')[0];
       const customerPhone = user.profile?.phoneNumber || '081234567890';
-      
+      const profileAny = user.profile as any;
+      const customerAddress = profileAny?.address || 'Indonesia';
+      const customerCity = profileAny?.city || 'Jakarta';
+      const customerPostalCode = profileAny?.postalCode || '10000';
+
       const parameter = {
         transaction_details: {
           order_id: orderId,
@@ -164,6 +150,17 @@ export class PaymentService {
           first_name: customerName,
           email: user.email,
           phone: customerPhone,
+          // ✅ TAMBAHAN: billing_address wajib diisi di production
+          // agar tidak ditolak risk engine Midtrans
+          billing_address: {
+            first_name: customerName,
+            email: user.email,
+            phone: customerPhone,
+            address: customerAddress,
+            city: customerCity,
+            postal_code: customerPostalCode,
+            country_code: 'IDN',
+          },
         },
         item_details: [
           {
@@ -319,17 +316,14 @@ export class PaymentService {
         true
       );
 
-      // ✅ FIXED: Use recordVoucherUsage instead of applyVoucher
       const bonusAmount = deposit.voucherBonusAmount ?? 0;
       if (deposit.voucherCode && bonusAmount > 0) {
-        // Get user data
         const userDoc = await db.collection(COLLECTIONS.USERS).doc(deposit.user_id).get();
         if (!userDoc.exists) {
           this.logger.error(`User not found for voucher usage: ${deposit.user_id}`);
         } else {
           const user = userDoc.data() as User;
           
-          // Get voucher ID
           const voucherSnapshot = await db.collection('vouchers')
             .where('code', '==', deposit.voucherCode.toUpperCase())
             .limit(1)
@@ -339,19 +333,17 @@ export class PaymentService {
             const voucherDoc = voucherSnapshot.docs[0];
             const voucherId = voucherDoc.id;
             
-            // Record voucher usage
             const voucherApply = await this.voucherService.recordVoucherUsage(
-              voucherId,              // voucherId: string
-              deposit.voucherCode,    // voucherCode: string
-              deposit.user_id,        // userId: string
-              user.email,             // userEmail: string
-              deposit.id,             // depositId: string
-              deposit.amount,         // depositAmount: number
-              bonusAmount             // bonusAmount: number
+              voucherId,
+              deposit.voucherCode,
+              deposit.user_id,
+              user.email,
+              deposit.id,
+              deposit.amount,
+              bonusAmount
             );
 
             if (voucherApply.success) {
-              // Add voucher bonus to balance
               await this.balanceService.createBalanceEntry(
                 deposit.user_id,
                 {
@@ -471,7 +463,6 @@ export class PaymentService {
           } : null,
           createdAt: data.createdAt,
           completedAt: data.completedAt,
-          // Include snap info for pending deposits so frontend can resume payment
           ...(data.status === 'pending' && {
             snap_token: data.snap_token,
             snap_redirect_url: data.snap_redirect_url,
