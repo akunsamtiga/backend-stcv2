@@ -1,5 +1,4 @@
 // src/voucher/voucher.service.ts
-// ✅ FINAL VERSION - Fixed Firebase initialization with OnModuleInit
 
 import { Injectable, NotFoundException, BadRequestException, ConflictException, OnModuleInit } from '@nestjs/common';
 import { CreateVoucherDto } from './dto/create-voucher.dto';

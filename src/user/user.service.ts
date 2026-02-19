@@ -1,9 +1,8 @@
-// ============================================
-// FILE: src/user/user.service.ts - FIXED VERSION
-// ============================================
+// src/user/user.service.ts
 
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
+import * as admin from 'firebase-admin'; // ✅ Tambahkan import ini
 import { FirebaseService } from '../firebase/firebase.service';
 import { BalanceService } from '../balance/balance.service';
 import { UserStatusService } from './user-status.service';
@@ -25,7 +24,7 @@ export class UserService {
   ) {}
 
   // ============================================
-  // PROFILE UPDATE - FIXED
+  // PROFILE UPDATE
   // ============================================
 
   async updateProfile(userId: string, updateProfileDto: UpdateProfileDto) {
@@ -41,32 +40,47 @@ export class UserService {
       const currentProfile = user.profile || {};
       const timestamp = new Date().toISOString();
 
-      // ✅ FIXED: Properly handle identityDocument with photos
       let updatedIdentityDocument = currentProfile.identityDocument;
       
       if (updateProfileDto.identityDocument) {
+        const newNumber = updateProfileDto.identityDocument.number;
+        const numberChanged = newNumber && newNumber !== currentProfile.identityDocument?.number;
+
         updatedIdentityDocument = {
           ...currentProfile.identityDocument,
           type: (updateProfileDto.identityDocument.type as 'ktp' | 'passport' | 'sim') || currentProfile.identityDocument?.type,
-          number: updateProfileDto.identityDocument.number || currentProfile.identityDocument?.number,
+          number: newNumber || currentProfile.identityDocument?.number,
           issuedDate: updateProfileDto.identityDocument.issuedDate || currentProfile.identityDocument?.issuedDate,
           expiryDate: updateProfileDto.identityDocument.expiryDate || currentProfile.identityDocument?.expiryDate,
-          isVerified: currentProfile.identityDocument?.isVerified,
-          verifiedAt: currentProfile.identityDocument?.verifiedAt,
-          // ✅ FIXED: Add uploadedAt if photoFront is provided
+          // ✅ Reset verifikasi jika nomor identitas diubah
+          isVerified: numberChanged ? false : currentProfile.identityDocument?.isVerified,
+          verifiedAt: numberChanged ? undefined : currentProfile.identityDocument?.verifiedAt,
           photoFront: updateProfileDto.identityDocument.photoFront ? {
             url: updateProfileDto.identityDocument.photoFront.url,
             uploadedAt: timestamp,
             fileSize: updateProfileDto.identityDocument.photoFront.fileSize,
             mimeType: updateProfileDto.identityDocument.photoFront.mimeType,
           } : currentProfile.identityDocument?.photoFront,
-          // ✅ FIXED: Add uploadedAt if photoBack is provided
           photoBack: updateProfileDto.identityDocument.photoBack ? {
             url: updateProfileDto.identityDocument.photoBack.url,
             uploadedAt: timestamp,
             fileSize: updateProfileDto.identityDocument.photoBack.fileSize,
             mimeType: updateProfileDto.identityDocument.photoBack.mimeType,
           } : currentProfile.identityDocument?.photoBack,
+        };
+      }
+
+      // ✅ Reset verifikasi bank jika nomor rekening diubah
+      let updatedBankAccount = currentProfile.bankAccount;
+      if (updateProfileDto.bankAccount) {
+        const newAccountNumber = updateProfileDto.bankAccount.accountNumber;
+        const accountNumberChanged = newAccountNumber && newAccountNumber !== currentProfile.bankAccount?.accountNumber;
+
+        updatedBankAccount = {
+          ...currentProfile.bankAccount,
+          ...updateProfileDto.bankAccount,
+          isVerified: accountNumberChanged ? false : currentProfile.bankAccount?.isVerified,
+          verifiedAt: accountNumberChanged ? undefined : currentProfile.bankAccount?.verifiedAt,
         };
       }
 
@@ -83,10 +97,7 @@ export class UserService {
           : currentProfile.address,
         
         identityDocument: updatedIdentityDocument,
-        
-        bankAccount: updateProfileDto.bankAccount
-          ? { ...currentProfile.bankAccount, ...updateProfileDto.bankAccount }
-          : currentProfile.bankAccount,
+        bankAccount: updatedBankAccount,
         
         settings: updateProfileDto.settings
           ? { ...currentProfile.settings, ...updateProfileDto.settings }
@@ -121,185 +132,177 @@ export class UserService {
   // ============================================
 
   async uploadAvatar(userId: string, uploadAvatarDto: UploadAvatarDto) {
-  try {
-    // ✅ UPDATE: 4MB limit
-    this.validatePhotoUpload(uploadAvatarDto, 4194304, 'Avatar'); // 4MB
+    try {
+      this.validatePhotoUpload(uploadAvatarDto, 4194304, 'Avatar');
 
-    const db = this.firebaseService.getFirestore();
-    const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
-    
-    if (!userDoc.exists) {
-      throw new NotFoundException('User not found');
+      const db = this.firebaseService.getFirestore();
+      const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
+      
+      if (!userDoc.exists) {
+        throw new NotFoundException('User not found');
+      }
+
+      const user = userDoc.data() as User;
+      const currentProfile = user.profile || {};
+      const timestamp = new Date().toISOString();
+
+      const updatedProfile: UserProfile = {
+        ...currentProfile,
+        avatar: {
+          url: uploadAvatarDto.url,
+          uploadedAt: timestamp,
+          fileSize: uploadAvatarDto.fileSize,
+          mimeType: uploadAvatarDto.mimeType,
+        },
+      };
+
+      await db.collection(COLLECTIONS.USERS).doc(userId).update({
+        profile: updatedProfile,
+        updatedAt: timestamp,
+      });
+
+      this.logger.log(`✅ Avatar uploaded and validated for user ${userId}`);
+
+      return {
+        message: 'Avatar uploaded successfully',
+        avatar: updatedProfile.avatar,
+        profileCompletion: this.calculateProfileCompletion(updatedProfile),
+      };
+
+    } catch (error) {
+      this.logger.error(`uploadAvatar error: ${error.message}`, error.stack);
+      throw error;
     }
-
-    const user = userDoc.data() as User;
-    const currentProfile = user.profile || {};
-    const timestamp = new Date().toISOString();
-
-    const updatedProfile: UserProfile = {
-      ...currentProfile,
-      avatar: {
-        url: uploadAvatarDto.url,
-        uploadedAt: timestamp,
-        fileSize: uploadAvatarDto.fileSize,
-        mimeType: uploadAvatarDto.mimeType,
-      },
-    };
-
-    await db.collection(COLLECTIONS.USERS).doc(userId).update({
-      profile: updatedProfile,
-      updatedAt: timestamp,
-    });
-
-    this.logger.log(`✅ Avatar uploaded and validated for user ${userId}`);
-
-    return {
-      message: 'Avatar uploaded successfully',
-      avatar: updatedProfile.avatar,
-      profileCompletion: this.calculateProfileCompletion(updatedProfile),
-    };
-
-  } catch (error) {
-    this.logger.error(`uploadAvatar error: ${error.message}`, error.stack);
-    throw error;
   }
-}
-
 
   async uploadKTPPhotos(userId: string, uploadKTPDto: UploadKTPDto) {
-  try {
-    // ✅ UPDATE: 4MB limit for both photos
-    this.validatePhotoUpload(uploadKTPDto.photoFront, 4194304, 'KTP Front'); // 4MB
-    
-    if (uploadKTPDto.photoBack) {
-      this.validatePhotoUpload(uploadKTPDto.photoBack, 4194304, 'KTP Back'); // 4MB
-    }
+    try {
+      this.validatePhotoUpload(uploadKTPDto.photoFront, 4194304, 'KTP Front');
+      
+      if (uploadKTPDto.photoBack) {
+        this.validatePhotoUpload(uploadKTPDto.photoBack, 4194304, 'KTP Back');
+      }
 
-    const db = this.firebaseService.getFirestore();
-    const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
-    
-    if (!userDoc.exists) {
-      throw new NotFoundException('User not found');
-    }
+      const db = this.firebaseService.getFirestore();
+      const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
+      
+      if (!userDoc.exists) {
+        throw new NotFoundException('User not found');
+      }
 
-    const user = userDoc.data() as User;
-    const currentProfile = user.profile || {};
-    const timestamp = new Date().toISOString();
+      const user = userDoc.data() as User;
+      const currentProfile = user.profile || {};
+      const timestamp = new Date().toISOString();
 
-    const updatedProfile: UserProfile = {
-      ...currentProfile,
-      identityDocument: {
-        ...currentProfile.identityDocument,
-        type: currentProfile.identityDocument?.type || 'ktp',
-        number: currentProfile.identityDocument?.number,
-        issuedDate: currentProfile.identityDocument?.issuedDate,
-        expiryDate: currentProfile.identityDocument?.expiryDate,
-        photoFront: {
-          url: uploadKTPDto.photoFront.url,
-          uploadedAt: timestamp,
-          fileSize: uploadKTPDto.photoFront.fileSize,
-          mimeType: uploadKTPDto.photoFront.mimeType,
+      const updatedProfile: UserProfile = {
+        ...currentProfile,
+        identityDocument: {
+          ...currentProfile.identityDocument,
+          type: currentProfile.identityDocument?.type || 'ktp',
+          number: currentProfile.identityDocument?.number,
+          issuedDate: currentProfile.identityDocument?.issuedDate,
+          expiryDate: currentProfile.identityDocument?.expiryDate,
+          photoFront: {
+            url: uploadKTPDto.photoFront.url,
+            uploadedAt: timestamp,
+            fileSize: uploadKTPDto.photoFront.fileSize,
+            mimeType: uploadKTPDto.photoFront.mimeType,
+          },
+          photoBack: uploadKTPDto.photoBack ? {
+            url: uploadKTPDto.photoBack.url,
+            uploadedAt: timestamp,
+            fileSize: uploadKTPDto.photoBack.fileSize,
+            mimeType: uploadKTPDto.photoBack.mimeType,
+          } : currentProfile.identityDocument?.photoBack,
+          isVerified: false,
+          verifiedAt: undefined,
         },
-        photoBack: uploadKTPDto.photoBack ? {
-          url: uploadKTPDto.photoBack.url,
-          uploadedAt: timestamp,
-          fileSize: uploadKTPDto.photoBack.fileSize,
-          mimeType: uploadKTPDto.photoBack.mimeType,
-        } : currentProfile.identityDocument?.photoBack,
-        isVerified: false,
-        verifiedAt: undefined,
-      },
-      verification: {
-        ...currentProfile.verification,
-        identityVerified: false,
-        verificationLevel: this.calculateVerificationLevel({
+        verification: {
           ...currentProfile.verification,
           identityVerified: false,
-        }),
-      },
-    };
+          verificationLevel: this.calculateVerificationLevel({
+            ...currentProfile.verification,
+            identityVerified: false,
+          }),
+        },
+      };
 
-    await db.collection(COLLECTIONS.USERS).doc(userId).update({
-      profile: updatedProfile,
-      updatedAt: timestamp,
-    });
+      await db.collection(COLLECTIONS.USERS).doc(userId).update({
+        profile: updatedProfile,
+        updatedAt: timestamp,
+      });
 
-    this.logger.log(`✅ KTP photos uploaded for user ${userId} - pending verification`);
+      this.logger.log(`✅ KTP photos uploaded for user ${userId} - pending verification`);
 
-    return {
-      message: 'KTP photos uploaded successfully. Waiting for admin verification.',
-      identityDocument: updatedProfile.identityDocument,
-      verificationLevel: updatedProfile.verification?.verificationLevel,
-      profileCompletion: this.calculateProfileCompletion(updatedProfile),
-      note: 'Your identity document will be reviewed by our team. Verification usually takes 1-2 business days.',
-    };
+      return {
+        message: 'KTP photos uploaded successfully. Waiting for admin verification.',
+        identityDocument: updatedProfile.identityDocument,
+        verificationLevel: updatedProfile.verification?.verificationLevel,
+        profileCompletion: this.calculateProfileCompletion(updatedProfile),
+        note: 'Your identity document will be reviewed by our team. Verification usually takes 1-2 business days.',
+      };
 
-  } catch (error) {
-    this.logger.error(`uploadKTPPhotos error: ${error.message}`, error.stack);
-    throw error;
+    } catch (error) {
+      this.logger.error(`uploadKTPPhotos error: ${error.message}`, error.stack);
+      throw error;
+    }
   }
-}
-
-
 
   async uploadSelfie(userId: string, uploadSelfieDto: UploadSelfieDto) {
-  try {
-    // ✅ UPDATE: 4MB limit
-    this.validatePhotoUpload(uploadSelfieDto, 4194304, 'Selfie'); // 4MB
+    try {
+      this.validatePhotoUpload(uploadSelfieDto, 4194304, 'Selfie');
 
-    const db = this.firebaseService.getFirestore();
-    const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
-    
-    if (!userDoc.exists) {
-      throw new NotFoundException('User not found');
-    }
+      const db = this.firebaseService.getFirestore();
+      const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
+      
+      if (!userDoc.exists) {
+        throw new NotFoundException('User not found');
+      }
 
-    const user = userDoc.data() as User;
-    const currentProfile = user.profile || {};
-    const timestamp = new Date().toISOString();
+      const user = userDoc.data() as User;
+      const currentProfile = user.profile || {};
+      const timestamp = new Date().toISOString();
 
-    const updatedProfile: UserProfile = {
-      ...currentProfile,
-      selfieVerification: {
-        photoUrl: uploadSelfieDto.url,
-        uploadedAt: timestamp,
-        isVerified: false,
-        verifiedAt: undefined,
-        fileSize: uploadSelfieDto.fileSize,
-        mimeType: uploadSelfieDto.mimeType,
-      },
-      verification: {
-        ...currentProfile.verification,
-        selfieVerified: false,
-        verificationLevel: this.calculateVerificationLevel({
+      const updatedProfile: UserProfile = {
+        ...currentProfile,
+        selfieVerification: {
+          photoUrl: uploadSelfieDto.url,
+          uploadedAt: timestamp,
+          isVerified: false,
+          verifiedAt: undefined,
+          fileSize: uploadSelfieDto.fileSize,
+          mimeType: uploadSelfieDto.mimeType,
+        },
+        verification: {
           ...currentProfile.verification,
           selfieVerified: false,
-        }),
-      },
-    };
+          verificationLevel: this.calculateVerificationLevel({
+            ...currentProfile.verification,
+            selfieVerified: false,
+          }),
+        },
+      };
 
-    await db.collection(COLLECTIONS.USERS).doc(userId).update({
-      profile: updatedProfile,
-      updatedAt: timestamp,
-    });
+      await db.collection(COLLECTIONS.USERS).doc(userId).update({
+        profile: updatedProfile,
+        updatedAt: timestamp,
+      });
 
-    this.logger.log(`✅ Selfie uploaded for user ${userId} - pending verification`);
+      this.logger.log(`✅ Selfie uploaded for user ${userId} - pending verification`);
 
-    return {
-      message: 'Selfie uploaded successfully. Waiting for admin verification.',
-      selfieVerification: updatedProfile.selfieVerification,
-      verificationLevel: updatedProfile.verification?.verificationLevel,
-      profileCompletion: this.calculateProfileCompletion(updatedProfile),
-      note: 'Your selfie will be reviewed by our team. Verification usually takes 1-2 business days.',
-    };
+      return {
+        message: 'Selfie uploaded successfully. Waiting for admin verification.',
+        selfieVerification: updatedProfile.selfieVerification,
+        verificationLevel: updatedProfile.verification?.verificationLevel,
+        profileCompletion: this.calculateProfileCompletion(updatedProfile),
+        note: 'Your selfie will be reviewed by our team. Verification usually takes 1-2 business days.',
+      };
 
-  } catch (error) {
-    this.logger.error(`uploadSelfie error: ${error.message}`, error.stack);
-    throw error;
+    } catch (error) {
+      this.logger.error(`uploadSelfie error: ${error.message}`, error.stack);
+      throw error;
+    }
   }
-}
-
-
 
   async getVerificationStatus(userId: string) {
     try {
@@ -491,7 +494,7 @@ export class UserService {
           bankAccount: user.profile?.bankAccount
             ? {
                 bankName: user.profile.bankAccount.bankName,
-                accountNumber: this.maskBankAccount(user.profile.bankAccount.accountNumber),
+                accountNumber: this.maskSensitiveData(user.profile.bankAccount.accountNumber),
                 accountHolderName: user.profile.bankAccount.accountHolderName,
                 isVerified: user.profile.bankAccount.isVerified || false,
                 verifiedAt: user.profile.bankAccount.verifiedAt || null,
@@ -764,24 +767,65 @@ export class UserService {
     }
   }
 
+  // ✅ FIXED: verifyPhone menggunakan Firebase Admin SDK
+  // Tidak lagi menerima phoneNumber + verificationCode yang tidak pernah divalidasi.
+  // Sekarang menerima Firebase ID Token yang diverifikasi secara kriptografis.
   async verifyPhone(userId: string, verifyPhoneDto: VerifyPhoneDto) {
     try {
       const db = this.firebaseService.getFirestore();
+
+      // 1. Pastikan user ada
       const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
-      
       if (!userDoc.exists) {
         throw new NotFoundException('User not found');
       }
 
+      // 2. Verifikasi Firebase ID Token via Admin SDK
+      let decodedToken: admin.auth.DecodedIdToken;
+      try {
+        decodedToken = await admin.auth().verifyIdToken(verifyPhoneDto.idToken);
+      } catch (firebaseError) {
+        this.logger.warn(
+          `verifyPhone: invalid Firebase token for user ${userId} – ${firebaseError.message}`,
+        );
+        throw new BadRequestException(
+          'Token verifikasi tidak valid atau sudah kedaluwarsa. Silakan ulangi proses verifikasi.',
+        );
+      }
+
+      // 3. Pastikan token berasal dari Phone Auth (bukan Google/email/dll)
+      const signInProvider = decodedToken.firebase?.sign_in_provider;
+      if (signInProvider !== 'phone') {
+        throw new BadRequestException(
+          'Token harus berasal dari Firebase Phone Authentication.',
+        );
+      }
+
+      // 4. Ambil nomor telepon dari token (tidak bisa dipalsukan user)
+      const phoneNumber = decodedToken.phone_number;
+      if (!phoneNumber) {
+        throw new BadRequestException(
+          'Nomor telepon tidak ditemukan dalam token. Pastikan proses verifikasi selesai dengan benar.',
+        );
+      }
+
+      // 5. Update profil user
       const user = userDoc.data() as User;
       const currentProfile = user.profile || {};
+      const currentVerification = currentProfile.verification || this.getDefaultVerification();
+
+      const newVerification = {
+        ...currentVerification,
+        phoneVerified: true,
+      };
 
       const updatedProfile: UserProfile = {
         ...currentProfile,
-        phoneNumber: verifyPhoneDto.phoneNumber,
+        phoneNumber,
         verification: {
-          ...currentProfile.verification,
-          phoneVerified: true,
+          ...newVerification,
+          // ✅ Recalculate verificationLevel setelah status berubah
+          verificationLevel: this.calculateVerificationLevel(newVerification),
         },
       };
 
@@ -790,14 +834,21 @@ export class UserService {
         updatedAt: new Date().toISOString(),
       });
 
-      this.logger.log(`✅ Phone verified for user ${userId}`);
+      this.logger.log(`✅ Phone verified for user ${userId} → ${phoneNumber}`);
 
       return {
-        message: 'Phone number verified successfully',
-        phoneNumber: verifyPhoneDto.phoneNumber,
+        message: 'Nomor telepon berhasil diverifikasi.',
+        phoneNumber,
+        verificationLevel: updatedProfile.verification?.verificationLevel,
       };
 
     } catch (error) {
+      if (
+        error instanceof BadRequestException ||
+        error instanceof NotFoundException
+      ) {
+        throw error;
+      }
       this.logger.error(`verifyPhone error: ${error.message}`);
       throw error;
     }
@@ -1039,15 +1090,6 @@ export class UserService {
     return masked + visible;
   }
 
-  private maskBankAccount(accountNumber?: string): string {
-    if (!accountNumber) return '****';
-    if (accountNumber.length <= 4) return '****';
-    
-    const visible = accountNumber.slice(-4);
-    const masked = '*'.repeat(accountNumber.length - 4);
-    return masked + visible;
-  }
-
   private getDefaultSettings() {
     return {
       emailNotifications: true,
@@ -1085,51 +1127,46 @@ export class UserService {
   }
 
   private validatePhotoUpload(photo: any, maxSize: number, photoType: string): void {
-  // ✅ FIXED: Allow both base64 data URLs and HTTPS URLs
-  const isBase64 = photo.url.startsWith('data:image/');
-  const isHttpsUrl = photo.url.startsWith('https://');
-  
-  if (!isBase64 && !isHttpsUrl) {
-    throw new BadRequestException(
-      `${photoType} must be either a base64 data URL or HTTPS URL`
-    );
-  }
-
-  // Validate base64 format if it's a data URL
-  if (isBase64) {
-    const base64Regex = /^data:image\/(jpeg|jpg|png|webp);base64,/i;
-    if (!base64Regex.test(photo.url)) {
+    const isBase64 = photo.url.startsWith('data:image/');
+    const isHttpsUrl = photo.url.startsWith('https://');
+    
+    if (!isBase64 && !isHttpsUrl) {
       throw new BadRequestException(
-        `${photoType} must be a valid base64 image (JPEG, PNG, or WEBP)`
+        `${photoType} must be either a base64 data URL or HTTPS URL`
+      );
+    }
+
+    if (isBase64) {
+      const base64Regex = /^data:image\/(jpeg|jpg|png|webp);base64,/i;
+      if (!base64Regex.test(photo.url)) {
+        throw new BadRequestException(
+          `${photoType} must be a valid base64 image (JPEG, PNG, or WEBP)`
+        );
+      }
+    }
+    
+    if (isHttpsUrl) {
+      try {
+        new URL(photo.url);
+      } catch (error) {
+        throw new BadRequestException(`Invalid ${photoType} URL format`);
+      }
+    }
+
+    if (photo.fileSize && photo.fileSize > maxSize) {
+      const maxSizeMB = maxSize / (1024 * 1024);
+      throw new BadRequestException(
+        `${photoType} file size exceeds limit of ${maxSizeMB}MB`
+      );
+    }
+
+    const validMimeTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+    if (photo.mimeType && !validMimeTypes.includes(photo.mimeType.toLowerCase())) {
+      throw new BadRequestException(
+        `${photoType} must be JPEG, PNG, or WEBP format`
       );
     }
   }
-  
-  // Validate HTTPS URL format if it's a URL
-  if (isHttpsUrl) {
-    try {
-      new URL(photo.url);
-    } catch (error) {
-      throw new BadRequestException(`Invalid ${photoType} URL format`);
-    }
-  }
-
-  // Validate file size
-  if (photo.fileSize && photo.fileSize > maxSize) {
-    const maxSizeMB = maxSize / (1024 * 1024);
-    throw new BadRequestException(
-      `${photoType} file size exceeds limit of ${maxSizeMB}MB`
-    );
-  }
-
-  // Validate MIME type
-  const validMimeTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
-  if (photo.mimeType && !validMimeTypes.includes(photo.mimeType.toLowerCase())) {
-    throw new BadRequestException(
-      `${photoType} must be JPEG, PNG, or WEBP format`
-    );
-  }
-}
 
   private async logProfileUpdate(userId: string, updateData: UpdateProfileDto) {
     try {

@@ -1,3 +1,4 @@
+// src/user/user.controller.ts
 import { 
   Controller, Get, Post, Put, Body, UseGuards, Param 
 } from '@nestjs/common';
@@ -393,28 +394,38 @@ export class UserController {
     return this.userService.changePassword(userId, changePasswordDto);
   }
 
+  // ✅ FIXED: Endpoint verifyPhone sekarang menggunakan Firebase ID Token
+  // Alur: Frontend kirim OTP via Firebase → user konfirmasi → dapat idToken
+  //       → frontend kirim idToken ke sini → backend verifikasi via Firebase Admin SDK
   @Post('verify-phone')
   @ApiOperation({ 
-    summary: 'Verify phone number',
-    description: 'Verify user phone number with verification code sent via SMS'
+    summary: 'Verifikasi nomor telepon via Firebase Phone Auth',
+    description: `Alur verifikasi di frontend:
+1. Kirim OTP: const confirmation = await signInWithPhoneNumber(auth, phoneNumber, recaptchaVerifier)
+2. User input kode OTP, lalu konfirmasi: const cred = await confirmation.confirm(otpCode)
+3. Ambil ID Token: const idToken = await cred.user.getIdToken()
+4. Kirim idToken ke endpoint ini
+
+Backend akan memverifikasi token via Firebase Admin SDK dan menyimpan nomor telepon ke profil user.`,
   })
   @ApiBody({ type: VerifyPhoneDto })
   @ApiResponse({ 
     status: 200, 
-    description: 'Phone number verified successfully',
+    description: 'Nomor telepon berhasil diverifikasi',
     schema: {
       example: {
         success: true,
         data: {
-          message: 'Phone number verified successfully',
-          phoneNumber: '+6281234567890'
+          message: 'Nomor telepon berhasil diverifikasi.',
+          phoneNumber: '+6281234567890',
+          verificationLevel: 'intermediate',
         }
       }
     }
   })
   @ApiResponse({ 
     status: 400, 
-    description: 'Invalid verification code' 
+    description: 'Token tidak valid, sudah kedaluwarsa, atau bukan dari Firebase Phone Auth' 
   })
   verifyPhone(
     @CurrentUser('sub') userId: string,

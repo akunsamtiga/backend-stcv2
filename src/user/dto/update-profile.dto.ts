@@ -1,7 +1,7 @@
 // src/user/dto/update-profile.dto.ts
 import { 
   IsString, IsOptional, IsEnum, IsBoolean, IsDateString, 
-  ValidateNested, Matches, Length, IsUrl, IsNumber, Min, Max 
+  ValidateNested, Matches, Length, IsNumber, Min, Max 
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
@@ -427,25 +427,19 @@ export class UploadSelfieDto {
 // VERIFICATION DTOs
 // ============================================
 
+// ✅ FIXED: Ganti phoneNumber + verificationCode dengan Firebase idToken
+// Alur: Frontend kirim OTP via Firebase Auth → user konfirmasi → dapat idToken
+//       Frontend kirim idToken ke backend → backend verifikasi via admin.auth().verifyIdToken()
 export class VerifyPhoneDto {
-  @ApiProperty({ 
-    example: '+6281234567890',
-    description: 'Phone number in E.164 format'
+  @ApiProperty({
+    example: 'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...',
+    description:
+      'Firebase ID Token yang didapat setelah user berhasil verifikasi OTP ' +
+      'melalui Firebase Phone Authentication (signInWithPhoneNumber). ' +
+      'Diperoleh dengan memanggil firebaseUser.getIdToken() di frontend.',
   })
   @IsString()
-  @Matches(/^\+?[1-9]\d{1,14}$/, {
-    message: 'Phone number must be in valid E.164 format'
-  })
-  phoneNumber: string;
-
-  @ApiProperty({ 
-    example: '123456',
-    description: '6-digit verification code sent via SMS'
-  })
-  @IsString()
-  @Length(6, 6, { message: 'Verification code must be exactly 6 digits' })
-  @Matches(/^[0-9]{6}$/, { message: 'Verification code must contain only numbers' })
-  verificationCode: string;
+  idToken: string;
 }
 
 export class ChangePasswordDto {
