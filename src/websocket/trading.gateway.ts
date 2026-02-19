@@ -352,6 +352,22 @@ export class TradingGateway implements OnGatewayInit, OnGatewayConnection, OnGat
     this.logger.debug(`📡 Price pushed to asset:${assetId} - ${priceData.price}`);
   }
 
+  emitOhlcUpdate(assetId: string, ohlcData: {
+    assetId: string;
+    currentBars: Record<string, any>;
+    completedBars: Record<string, any>;
+    timestamp: number;
+  }) {
+    const payload = {
+      ...ohlcData,
+      serverTime: new Date().toISOString(),
+    };
+
+    this.server.to(`asset:${assetId}`).emit('ohlc:update', payload);
+    this.logger.debug(`📊 OHLC pushed to asset:${assetId} — TFs: ${Object.keys(ohlcData.currentBars).join(',')}`);
+  }
+
+
   @SubscribeMessage('price:subscribe')
   async handlePriceSubscribe(client: AuthenticatedSocket, payload: { assetIds: string[] }) {
     try {
