@@ -14,13 +14,10 @@ export class QueryBinaryOrderDto {
   @IsOptional()
   @Transform(({ value }) => {
     if (!value) return undefined;
-    // Kalau sudah array, langsung return
     if (Array.isArray(value)) return value.map((s: string) => s.trim());
-    // Kalau string dengan koma, split jadi array
     if (typeof value === 'string' && value.includes(',')) {
       return value.split(',').map((s) => s.trim());
     }
-    // Single value, bungkus jadi array supaya konsisten
     return [value.trim()];
   })
   @IsArray()

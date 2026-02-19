@@ -9,8 +9,7 @@ import { AssetScheduleService } from './asset-schedule.service';
 
 @Module({
   imports: [
-    ScheduleModule.forRoot(), 
-    
+    ScheduleModule.forRoot(),
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

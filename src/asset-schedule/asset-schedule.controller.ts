@@ -37,7 +37,6 @@ import { GetAssetSchedulesQueryDto } from './dto/get-asset-schedules-query.dto';
 export class AssetScheduleController {
   constructor(private readonly assetScheduleService: AssetScheduleService) {}
 
-  // CREATE SCHEDULE
   @Post()
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
   @ApiOperation({
@@ -68,26 +67,12 @@ export class AssetScheduleController {
       },
     },
   })
-  @ApiResponse({
-    status: 400,
-    description: 'Bad request - Invalid data or scheduled time in the past',
-  })
-  @ApiResponse({
-    status: 404,
-    description: 'Asset not found or inactive',
-  })
-  async createSchedule(
-    @Body() createDto: CreateAssetScheduleDto,
-    @CurrentUser() user: any,
-  ) {
-    return this.assetScheduleService.createSchedule(
-      createDto,
-      user.uid,
-      user.email,
-    );
+  @ApiResponse({ status: 400, description: 'Bad request - Invalid data or scheduled time in the past' })
+  @ApiResponse({ status: 404, description: 'Asset not found or inactive' })
+  async createSchedule(@Body() createDto: CreateAssetScheduleDto, @CurrentUser() user: any) {
+    return this.assetScheduleService.createSchedule(createDto, user.uid, user.email);
   }
 
-  // GET ALL SCHEDULES
   @Get()
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
   @ApiOperation({
@@ -129,27 +114,6 @@ export class AssetScheduleController {
     return this.assetScheduleService.getSchedules(queryDto);
   }
 
-  // GET SCHEDULE BY ID
-  @Get(':id')
-  @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
-  @ApiOperation({
-    summary: 'Get schedule by ID (Admin/Super Admin only)',
-    description: 'Retrieve specific schedule details',
-  })
-  @ApiParam({ name: 'id', description: 'Schedule ID' })
-  @ApiResponse({
-    status: 200,
-    description: 'Schedule retrieved successfully',
-  })
-  @ApiResponse({
-    status: 404,
-    description: 'Schedule not found',
-  })
-  async getScheduleById(@Param('id') id: string) {
-    return this.assetScheduleService.getScheduleById(id);
-  }
-
-  // GET UPCOMING SCHEDULES
   @Get('upcoming/next-24h')
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
   @ApiOperation({
@@ -180,7 +144,6 @@ export class AssetScheduleController {
     return this.assetScheduleService.getUpcomingSchedules();
   }
 
-  // GET STATISTICS
   @Get('stats/overview')
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
   @ApiOperation({
@@ -208,7 +171,19 @@ export class AssetScheduleController {
     return this.assetScheduleService.getStatistics();
   }
 
-  // UPDATE SCHEDULE
+  @Get(':id')
+  @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
+  @ApiOperation({
+    summary: 'Get schedule by ID (Admin/Super Admin only)',
+    description: 'Retrieve specific schedule details',
+  })
+  @ApiParam({ name: 'id', description: 'Schedule ID' })
+  @ApiResponse({ status: 200, description: 'Schedule retrieved successfully' })
+  @ApiResponse({ status: 404, description: 'Schedule not found' })
+  async getScheduleById(@Param('id') id: string) {
+    return this.assetScheduleService.getScheduleById(id);
+  }
+
   @Put(':id')
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
   @ApiOperation({
@@ -216,18 +191,9 @@ export class AssetScheduleController {
     description: 'Update pending schedule details. Cannot update executed or failed schedules.',
   })
   @ApiParam({ name: 'id', description: 'Schedule ID' })
-  @ApiResponse({
-    status: 200,
-    description: 'Schedule updated successfully',
-  })
-  @ApiResponse({
-    status: 400,
-    description: 'Cannot update executed/failed schedule',
-  })
-  @ApiResponse({
-    status: 404,
-    description: 'Schedule not found',
-  })
+  @ApiResponse({ status: 200, description: 'Schedule updated successfully' })
+  @ApiResponse({ status: 400, description: 'Cannot update executed/failed schedule' })
+  @ApiResponse({ status: 404, description: 'Schedule not found' })
   async updateSchedule(
     @Param('id') id: string,
     @Body() updateDto: UpdateAssetScheduleDto,
@@ -236,7 +202,6 @@ export class AssetScheduleController {
     return this.assetScheduleService.updateSchedule(id, updateDto, user.uid);
   }
 
-  // CANCEL SCHEDULE
   @Put(':id/cancel')
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
   @HttpCode(HttpStatus.OK)
@@ -255,19 +220,12 @@ export class AssetScheduleController {
       },
     },
   })
-  @ApiResponse({
-    status: 400,
-    description: 'Cannot cancel non-pending schedule',
-  })
-  @ApiResponse({
-    status: 404,
-    description: 'Schedule not found',
-  })
+  @ApiResponse({ status: 400, description: 'Cannot cancel non-pending schedule' })
+  @ApiResponse({ status: 404, description: 'Schedule not found' })
   async cancelSchedule(@Param('id') id: string) {
     return this.assetScheduleService.cancelSchedule(id);
   }
 
-  // DELETE SCHEDULE
   @Delete(':id')
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
   @HttpCode(HttpStatus.OK)
@@ -286,10 +244,7 @@ export class AssetScheduleController {
       },
     },
   })
-  @ApiResponse({
-    status: 404,
-    description: 'Schedule not found',
-  })
+  @ApiResponse({ status: 404, description: 'Schedule not found' })
   async deleteSchedule(@Param('id') id: string) {
     return this.assetScheduleService.deleteSchedule(id);
   }

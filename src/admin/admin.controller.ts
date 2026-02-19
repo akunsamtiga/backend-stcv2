@@ -1,10 +1,10 @@
 // src/admin/admin.controller.ts
 
-import { 
-  Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards 
+import {
+  Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards
 } from '@nestjs/common';
-import { 
-  ApiTags, ApiOperation, ApiBearerAuth, ApiParam, ApiQuery, ApiResponse 
+import {
+  ApiTags, ApiOperation, ApiBearerAuth, ApiParam, ApiQuery, ApiResponse
 } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -25,18 +25,14 @@ import { VerifyDocumentDto } from './dto/verify-document.dto';
 export class AdminController {
   constructor(private adminService: AdminService) {}
 
-  // ============================================
-  // VERIFICATION MANAGEMENT (NEW)
-  // ============================================
-
   @Get('verifications/pending')
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
-  @ApiOperation({ 
+  @ApiOperation({
     summary: 'Get all pending verifications (Admin only)',
-    description: 'Get users with pending KTP or Selfie verification'
+    description: 'Get users with pending KTP or Selfie verification',
   })
-  @ApiResponse({ 
-    status: 200, 
+  @ApiResponse({
+    status: 200,
     description: 'Pending verifications retrieved successfully',
     schema: {
       example: {
@@ -51,14 +47,14 @@ export class AdminController {
               documentNumber: '1234567890123456',
               photoFront: {
                 url: 'https://storage.googleapis.com/...',
-                uploadedAt: '2024-01-01T00:00:00.000Z'
+                uploadedAt: '2024-01-01T00:00:00.000Z',
               },
               photoBack: {
                 url: 'https://storage.googleapis.com/...',
-                uploadedAt: '2024-01-01T00:00:00.000Z'
+                uploadedAt: '2024-01-01T00:00:00.000Z',
               },
-              uploadedAt: '2024-01-01T00:00:00.000Z'
-            }
+              uploadedAt: '2024-01-01T00:00:00.000Z',
+            },
           ],
           selfieVerifications: [
             {
@@ -66,17 +62,17 @@ export class AdminController {
               email: 'user2@example.com',
               fullName: 'Jane Smith',
               photoUrl: 'https://storage.googleapis.com/...',
-              uploadedAt: '2024-01-02T00:00:00.000Z'
-            }
+              uploadedAt: '2024-01-02T00:00:00.000Z',
+            },
           ],
           summary: {
             totalPendingKTP: 5,
             totalPendingSelfie: 3,
-            total: 8
-          }
-        }
-      }
-    }
+            total: 8,
+          },
+        },
+      },
+    },
   })
   getPendingVerifications() {
     return this.adminService.getPendingVerifications();
@@ -84,13 +80,13 @@ export class AdminController {
 
   @Post('verifications/:userId/ktp')
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
-  @ApiOperation({ 
+  @ApiOperation({
     summary: 'Verify/Reject user KTP (Admin only)',
-    description: 'Approve or reject KTP verification for a user'
+    description: 'Approve or reject KTP verification for a user',
   })
   @ApiParam({ name: 'userId', description: 'User ID' })
-  @ApiResponse({ 
-    status: 200, 
+  @ApiResponse({
+    status: 200,
     description: 'KTP verification processed successfully',
     schema: {
       example: {
@@ -100,26 +96,20 @@ export class AdminController {
           user: {
             id: 'user_123',
             email: 'user@example.com',
-            fullName: 'John Doe'
+            fullName: 'John Doe',
           },
           verification: {
             type: 'ktp',
             approved: true,
             verifiedBy: 'admin_456',
-            verifiedAt: '2024-01-01T00:00:00.000Z'
-          }
-        }
-      }
-    }
+            verifiedAt: '2024-01-01T00:00:00.000Z',
+          },
+        },
+      },
+    },
   })
-  @ApiResponse({ 
-    status: 400, 
-    description: 'Bad request - rejection reason required or no document found'
-  })
-  @ApiResponse({ 
-    status: 404, 
-    description: 'User not found'
-  })
+  @ApiResponse({ status: 400, description: 'Bad request - rejection reason required or no document found' })
+  @ApiResponse({ status: 404, description: 'User not found' })
   verifyKTP(
     @Param('userId') userId: string,
     @Body() verifyDto: VerifyDocumentDto,
@@ -130,13 +120,13 @@ export class AdminController {
 
   @Post('verifications/:userId/selfie')
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
-  @ApiOperation({ 
+  @ApiOperation({
     summary: 'Verify/Reject user Selfie (Admin only)',
-    description: 'Approve or reject Selfie verification for a user'
+    description: 'Approve or reject Selfie verification for a user',
   })
   @ApiParam({ name: 'userId', description: 'User ID' })
-  @ApiResponse({ 
-    status: 200, 
+  @ApiResponse({
+    status: 200,
     description: 'Selfie verification processed successfully',
     schema: {
       example: {
@@ -146,26 +136,20 @@ export class AdminController {
           user: {
             id: 'user_123',
             email: 'user@example.com',
-            fullName: 'John Doe'
+            fullName: 'John Doe',
           },
           verification: {
             type: 'selfie',
             approved: true,
             verifiedBy: 'admin_456',
-            verifiedAt: '2024-01-01T00:00:00.000Z'
-          }
-        }
-      }
-    }
+            verifiedAt: '2024-01-01T00:00:00.000Z',
+          },
+        },
+      },
+    },
   })
-  @ApiResponse({ 
-    status: 400, 
-    description: 'Bad request - rejection reason required or no selfie found'
-  })
-  @ApiResponse({ 
-    status: 404, 
-    description: 'User not found'
-  })
+  @ApiResponse({ status: 400, description: 'Bad request - rejection reason required or no selfie found' })
+  @ApiResponse({ status: 404, description: 'User not found' })
   verifySelfie(
     @Param('userId') userId: string,
     @Body() verifyDto: VerifyDocumentDto,
@@ -174,24 +158,20 @@ export class AdminController {
     return this.adminService.verifySelfie(userId, verifyDto, adminId);
   }
 
-  // ============================================
-  // WITHDRAWAL MANAGEMENT
-  // ============================================
-
   @Get('withdrawals')
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
-  @ApiOperation({ 
+  @ApiOperation({
     summary: 'Get all withdrawal requests (Admin only)',
-    description: 'Get all withdrawal requests with optional status filter. Returns summary and detailed list.'
+    description: 'Get all withdrawal requests with optional status filter. Returns summary and detailed list.',
   })
-  @ApiQuery({ 
-    name: 'status', 
-    required: false, 
+  @ApiQuery({
+    name: 'status',
+    required: false,
     enum: ['pending', 'approved', 'rejected', 'completed'],
-    description: 'Filter by status (optional)'
+    description: 'Filter by status (optional)',
   })
-  @ApiResponse({ 
-    status: 200, 
+  @ApiResponse({
+    status: 200,
     description: 'Withdrawal requests retrieved successfully',
     schema: {
       example: {
@@ -209,24 +189,24 @@ export class AdminController {
               bankAccount: {
                 bankName: 'Bank Mandiri',
                 accountNumber: '1234567890',
-                accountHolderName: 'John Doe'
+                accountHolderName: 'John Doe',
               },
               ktpVerified: true,
               selfieVerified: true,
               currentBalance: 1000000,
-              createdAt: '2024-01-01T00:00:00.000Z'
-            }
+              createdAt: '2024-01-01T00:00:00.000Z',
+            },
           ],
           summary: {
             total: 10,
             pending: 3,
             approved: 0,
             rejected: 2,
-            completed: 5
-          }
-        }
-      }
-    }
+            completed: 5,
+          },
+        },
+      },
+    },
   })
   getAllWithdrawalRequests(@Query('status') status?: string) {
     return this.adminService.getAllWithdrawalRequests(status);
@@ -234,26 +214,20 @@ export class AdminController {
 
   @Get('withdrawals/:id')
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
-  @ApiOperation({ 
+  @ApiOperation({
     summary: 'Get withdrawal request detail (Admin only)',
-    description: 'Get detailed information about specific withdrawal request including user details'
+    description: 'Get detailed information about specific withdrawal request including user details',
   })
   @ApiParam({ name: 'id', description: 'Withdrawal request ID' })
-  @ApiResponse({ 
-    status: 200, 
-    description: 'Withdrawal request detail retrieved successfully'
-  })
-  @ApiResponse({ 
-    status: 404, 
-    description: 'Withdrawal request not found'
-  })
+  @ApiResponse({ status: 200, description: 'Withdrawal request detail retrieved successfully' })
+  @ApiResponse({ status: 404, description: 'Withdrawal request not found' })
   getWithdrawalRequestById(@Param('id') requestId: string) {
     return this.adminService.getWithdrawalRequestById(requestId);
   }
 
   @Post('withdrawals/:id/approve')
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
-  @ApiOperation({ 
+  @ApiOperation({
     summary: 'Approve or reject withdrawal request (Admin only)',
     description: `Process withdrawal request:
     
@@ -267,11 +241,11 @@ export class AdminController {
     • Requires rejection reason
     • Updates request status to REJECTED
     • User balance remains unchanged
-    • User can submit new request`
+    • User can submit new request`,
   })
   @ApiParam({ name: 'id', description: 'Withdrawal request ID' })
-  @ApiResponse({ 
-    status: 200, 
+  @ApiResponse({
+    status: 200,
     description: 'Withdrawal processed successfully',
     schema: {
       example: {
@@ -284,29 +258,23 @@ export class AdminController {
             status: 'completed',
             user: {
               email: 'user@example.com',
-              name: 'John Doe'
+              name: 'John Doe',
             },
             bankAccount: {
               bankName: 'Bank Mandiri',
               accountNumber: '1234567890',
-              accountHolderName: 'John Doe'
+              accountHolderName: 'John Doe',
             },
             reviewedBy: 'admin_123',
             reviewedAt: '2024-01-01T00:00:00.000Z',
-            newBalance: 500000
-          }
-        }
-      }
-    }
+            newBalance: 500000,
+          },
+        },
+      },
+    },
   })
-  @ApiResponse({ 
-    status: 400, 
-    description: 'Invalid request - already processed, insufficient balance, or missing rejection reason'
-  })
-  @ApiResponse({ 
-    status: 404, 
-    description: 'Withdrawal request not found'
-  })
+  @ApiResponse({ status: 400, description: 'Invalid request - already processed, insufficient balance, or missing rejection reason' })
+  @ApiResponse({ status: 404, description: 'Withdrawal request not found' })
   approveWithdrawal(
     @Param('id') requestId: string,
     @Body() approveDto: ApproveWithdrawalDto,
@@ -314,10 +282,6 @@ export class AdminController {
   ) {
     return this.adminService.approveWithdrawal(requestId, approveDto, adminId);
   }
-
-  // ============================================
-  // USER MANAGEMENT
-  // ============================================
 
   @Post('users')
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
@@ -375,18 +339,14 @@ export class AdminController {
     return this.adminService.deleteUser(userId);
   }
 
-  // ============================================
-  // BALANCE MANAGEMENT
-  // ============================================
-
   @Post('users/:id/balance')
   @Roles(USER_ROLES.SUPER_ADMIN)
-  @ApiOperation({ 
+  @ApiOperation({
     summary: 'Manage user balance - Add or subtract (Super Admin only)',
     description: `Add or subtract balance from user account.
     
     ⚠️ NOTE: For REAL account withdrawals via admin, this bypasses the withdrawal request system.
-    Normal users must use the withdrawal request system.`
+    Normal users must use the withdrawal request system.`,
   })
   @ApiParam({ name: 'id', description: 'User ID' })
   @ApiResponse({ status: 200, description: 'Balance updated successfully' })
@@ -401,9 +361,9 @@ export class AdminController {
 
   @Get('users/:id/balance')
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
-  @ApiOperation({ 
+  @ApiOperation({
     summary: 'Get user balance detail (Admin only)',
-    description: 'Get current balance, summary, and recent transactions'
+    description: 'Get current balance, summary, and recent transactions',
   })
   @ApiParam({ name: 'id', description: 'User ID' })
   @ApiResponse({ status: 200, description: 'Returns user balance details' })
@@ -411,15 +371,11 @@ export class AdminController {
     return this.adminService.getUserBalance(userId);
   }
 
-  // ============================================
-  // USER HISTORY
-  // ============================================
-
   @Get('users/:id/history')
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
-  @ApiOperation({ 
+  @ApiOperation({
     summary: 'Get user complete history (Admin only)',
-    description: 'Get all balance transactions and trading history'
+    description: 'Get all balance transactions and trading history',
   })
   @ApiParam({ name: 'id', description: 'User ID' })
   @ApiResponse({ status: 200, description: 'Returns complete user history' })
@@ -429,9 +385,9 @@ export class AdminController {
 
   @Get('users/:id/trading-stats')
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
-  @ApiOperation({ 
+  @ApiOperation({
     summary: 'Get user trading statistics (Admin only)',
-    description: 'Get detailed trading performance by asset and direction'
+    description: 'Get detailed trading performance by asset and direction',
   })
   @ApiParam({ name: 'id', description: 'User ID' })
   @ApiResponse({ status: 200, description: 'Returns trading statistics' })
@@ -439,18 +395,14 @@ export class AdminController {
     return this.adminService.getUserTradingStats(userId);
   }
 
-  // ============================================
-  // SYSTEM STATISTICS
-  // ============================================
-
   @Get('statistics')
   @Roles(USER_ROLES.SUPER_ADMIN)
-  @ApiOperation({ 
+  @ApiOperation({
     summary: 'Get system-wide statistics (Super Admin only)',
-    description: 'Get overall system statistics including users, trading, financial data, and withdrawal requests'
+    description: 'Get overall system statistics including users, trading, financial data, and withdrawal requests',
   })
-  @ApiResponse({ 
-    status: 200, 
+  @ApiResponse({
+    status: 200,
     description: 'Returns system statistics',
     schema: {
       example: {
@@ -463,8 +415,8 @@ export class AdminController {
             statusDistribution: {
               standard: 70,
               gold: 20,
-              vip: 10
-            }
+              vip: 10,
+            },
           },
           affiliate: {
             totalReferrals: 50,
@@ -472,7 +424,7 @@ export class AdminController {
             pendingReferrals: 20,
             totalCommissionsPaid: 1500000,
             commissionRate: 25000,
-            conversionRate: 60
+            conversionRate: 60,
           },
           withdrawal: {
             totalRequests: 25,
@@ -480,7 +432,7 @@ export class AdminController {
             approved: 0,
             rejected: 3,
             completed: 17,
-            totalAmount: 8500000
+            totalAmount: 8500000,
           },
           realAccount: {
             trading: {
@@ -490,14 +442,14 @@ export class AdminController {
               lostOrders: 210,
               totalVolume: 50000000,
               totalProfit: 5000000,
-              winRate: 57
+              winRate: 57,
             },
             financial: {
               totalDeposits: 100000000,
               totalWithdrawals: 8500000,
               affiliateCommissions: 1500000,
-              netFlow: 90000000
-            }
+              netFlow: 90000000,
+            },
           },
           demoAccount: {
             trading: {
@@ -507,23 +459,23 @@ export class AdminController {
               lostOrders: 525,
               totalVolume: 120000000,
               totalProfit: 10000000,
-              winRate: 55
+              winRate: 55,
             },
             financial: {
               totalDeposits: 1000000000,
               totalWithdrawals: 0,
-              netFlow: 1000000000
-            }
+              netFlow: 1000000000,
+            },
           },
           combined: {
             totalOrders: 1700,
             totalVolume: 170000000,
-            totalProfit: 15000000
+            totalProfit: 15000000,
           },
-          timestamp: '2024-01-01T00:00:00.000Z'
-        }
-      }
-    }
+          timestamp: '2024-01-01T00:00:00.000Z',
+        },
+      },
+    },
   })
   getSystemStatistics() {
     return this.adminService.getSystemStatistics();

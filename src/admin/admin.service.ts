@@ -23,25 +23,18 @@ export class AdminService {
     private userStatusService: UserStatusService,
   ) {}
 
-  // ============================================
-  // VERIFICATION MANAGEMENT (NEW)
-  // ============================================
-
   async getPendingVerifications() {
     const db = this.firebaseService.getFirestore();
 
     try {
-      // Get all users
       const usersSnapshot = await db.collection(COLLECTIONS.USERS).get();
       const users: User[] = usersSnapshot.docs.map(doc => doc.data() as User);
 
-      // Filter users with pending KTP verification
-      const pendingKTP = users.filter(user => 
-        user.profile?.identityDocument?.photoFront?.url && 
+      const pendingKTP = users.filter(user =>
+        user.profile?.identityDocument?.photoFront?.url &&
         !user.profile?.identityDocument?.isVerified
       );
 
-      // Filter users with pending Selfie verification
       const pendingSelfie = users.filter(user =>
         user.profile?.selfieVerification?.photoUrl &&
         !user.profile?.selfieVerification?.isVerified
@@ -69,7 +62,7 @@ export class AdminService {
           totalPendingKTP: pendingKTP.length,
           totalPendingSelfie: pendingSelfie.length,
           total: pendingKTP.length + pendingSelfie.length,
-        }
+        },
       };
     } catch (error) {
       this.logger.error(`❌ getPendingVerifications error: ${error.message}`);
@@ -77,16 +70,11 @@ export class AdminService {
     }
   }
 
-  async verifyKTP(
-    userId: string,
-    verifyDto: VerifyDocumentDto,
-    adminId: string,
-  ) {
+  async verifyKTP(userId: string, verifyDto: VerifyDocumentDto, adminId: string) {
     const db = this.firebaseService.getFirestore();
     const { approve, adminNotes, rejectionReason } = verifyDto;
 
     try {
-      // 1. Get user document
       const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
       if (!userDoc.exists) {
         throw new NotFoundException('User not found');
@@ -94,17 +82,14 @@ export class AdminService {
 
       const user = userDoc.data() as User;
 
-      // 2. Validate KTP document exists
       if (!user.profile?.identityDocument?.photoFront?.url) {
         throw new BadRequestException('No KTP document found for this user');
       }
 
-      // 3. Validate rejection reason if rejecting
       if (!approve && !rejectionReason?.trim()) {
         throw new BadRequestException('Rejection reason is required when rejecting');
       }
 
-      // 4. Prepare update data
       const timestamp = new Date().toISOString();
       const updateData: any = {
         'profile.identityDocument.isVerified': approve,
@@ -112,25 +97,20 @@ export class AdminService {
       };
 
       if (approve) {
-        // APPROVED
         updateData['profile.identityDocument.verifiedAt'] = timestamp;
         updateData['profile.identityDocument.verifiedBy'] = adminId;
       } else {
-        // REJECTED
         updateData['profile.identityDocument.rejectionReason'] = rejectionReason;
         updateData['profile.identityDocument.rejectedAt'] = timestamp;
         updateData['profile.identityDocument.rejectedBy'] = adminId;
       }
 
-      // 5. Update user document
       await db.collection(COLLECTIONS.USERS).doc(userId).update(updateData);
 
-      // 6. Log the action
       this.logger.log(
         `${approve ? '✅ KTP verified' : '❌ KTP rejected'}: ${user.email} by admin ${adminId}`
       );
 
-      // 7. Return response
       return {
         message: approve ? 'KTP verified successfully' : 'KTP verification rejected',
         user: {
@@ -152,16 +132,11 @@ export class AdminService {
     }
   }
 
-  async verifySelfie(
-    userId: string,
-    verifyDto: VerifyDocumentDto,
-    adminId: string,
-  ) {
+  async verifySelfie(userId: string, verifyDto: VerifyDocumentDto, adminId: string) {
     const db = this.firebaseService.getFirestore();
     const { approve, adminNotes, rejectionReason } = verifyDto;
 
     try {
-      // 1. Get user document
       const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
       if (!userDoc.exists) {
         throw new NotFoundException('User not found');
@@ -169,17 +144,14 @@ export class AdminService {
 
       const user = userDoc.data() as User;
 
-      // 2. Validate selfie exists
       if (!user.profile?.selfieVerification?.photoUrl) {
         throw new BadRequestException('No selfie found for this user');
       }
 
-      // 3. Validate rejection reason if rejecting
       if (!approve && !rejectionReason?.trim()) {
         throw new BadRequestException('Rejection reason is required when rejecting');
       }
 
-      // 4. Prepare update data
       const timestamp = new Date().toISOString();
       const updateData: any = {
         'profile.selfieVerification.isVerified': approve,
@@ -187,25 +159,20 @@ export class AdminService {
       };
 
       if (approve) {
-        // APPROVED
         updateData['profile.selfieVerification.verifiedAt'] = timestamp;
         updateData['profile.selfieVerification.verifiedBy'] = adminId;
       } else {
-        // REJECTED
         updateData['profile.selfieVerification.rejectionReason'] = rejectionReason;
         updateData['profile.selfieVerification.rejectedAt'] = timestamp;
         updateData['profile.selfieVerification.rejectedBy'] = adminId;
       }
 
-      // 5. Update user document
       await db.collection(COLLECTIONS.USERS).doc(userId).update(updateData);
 
-      // 6. Log the action
       this.logger.log(
         `${approve ? '✅ Selfie verified' : '❌ Selfie rejected'}: ${user.email} by admin ${adminId}`
       );
 
-      // 7. Return response
       return {
         message: approve ? 'Selfie verified successfully' : 'Selfie verification rejected',
         user: {
@@ -227,16 +194,11 @@ export class AdminService {
     }
   }
 
-  // ============================================
-  // WITHDRAWAL MANAGEMENT
-  // ============================================
-
   async getAllWithdrawalRequests(status?: string) {
     const db = this.firebaseService.getFirestore();
 
     try {
-      let query = db.collection(COLLECTIONS.WITHDRAWAL_REQUESTS)
-        .orderBy('createdAt', 'desc');
+      let query = db.collection(COLLECTIONS.WITHDRAWAL_REQUESTS).orderBy('createdAt', 'desc');
 
       if (status && ['pending', 'approved', 'rejected', 'completed'].includes(status)) {
         query = query.where('status', '==', status) as any;
@@ -266,14 +228,13 @@ export class AdminService {
 
     try {
       const requestDoc = await db.collection(COLLECTIONS.WITHDRAWAL_REQUESTS).doc(requestId).get();
-      
+
       if (!requestDoc.exists) {
         throw new NotFoundException('Withdrawal request not found');
       }
 
       const request = requestDoc.data() as WithdrawalRequest;
 
-      // Get user details
       const userDoc = await db.collection(COLLECTIONS.USERS).doc(request.user_id).get();
       const user = userDoc.exists ? userDoc.data() as User : null;
 
@@ -307,39 +268,28 @@ export class AdminService {
     }
   }
 
-  async approveWithdrawal(
-    requestId: string,
-    approveDto: ApproveWithdrawalDto,
-    adminId: string,
-  ) {
+  async approveWithdrawal(requestId: string, approveDto: ApproveWithdrawalDto, adminId: string) {
     const db = this.firebaseService.getFirestore();
     const { approve, adminNotes, rejectionReason } = approveDto;
 
     try {
-      // 1. Get withdrawal request
       const requestDoc = await db.collection(COLLECTIONS.WITHDRAWAL_REQUESTS).doc(requestId).get();
-      
+
       if (!requestDoc.exists) {
         throw new NotFoundException('Withdrawal request not found');
       }
 
       const request = requestDoc.data() as WithdrawalRequest;
 
-      // 2. Check if already processed
       if (request.status !== WITHDRAWAL_STATUS.PENDING) {
-        throw new BadRequestException(
-          `Withdrawal request already ${request.status}`
-        );
+        throw new BadRequestException(`Withdrawal request already ${request.status}`);
       }
 
       const timestamp = new Date().toISOString();
 
       if (approve) {
-        // 3a. APPROVE - Process withdrawal
-        
-        // Verify balance masih cukup
         const currentBalance = await this.balanceService.getCurrentBalance(
-          request.user_id, 
+          request.user_id,
           BALANCE_ACCOUNT_TYPE.REAL,
           true
         );
@@ -350,9 +300,8 @@ export class AdminService {
           );
         }
 
-        // Create withdrawal balance entry
         const balanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
-        
+
         await db.collection(COLLECTIONS.BALANCE).doc(balanceId).set({
           id: balanceId,
           user_id: request.user_id,
@@ -363,7 +312,6 @@ export class AdminService {
           createdAt: timestamp,
         });
 
-        // Update request status
         await db.collection(COLLECTIONS.WITHDRAWAL_REQUESTS).doc(requestId).update({
           status: WITHDRAWAL_STATUS.COMPLETED,
           reviewedBy: adminId,
@@ -372,7 +320,6 @@ export class AdminService {
           updatedAt: timestamp,
         });
 
-        // Invalidate balance cache
         this.balanceService.clearUserCache(request.user_id);
 
         this.logger.log(
@@ -399,9 +346,7 @@ export class AdminService {
             newBalance: currentBalance - request.amount,
           },
         };
-
       } else {
-        // 3b. REJECT
         if (!rejectionReason || rejectionReason.trim() === '') {
           throw new BadRequestException('Rejection reason is required when rejecting withdrawal');
         }
@@ -435,16 +380,11 @@ export class AdminService {
           },
         };
       }
-
     } catch (error) {
       this.logger.error(`❌ approveWithdrawal error: ${error.message}`);
       throw error;
     }
   }
-
-  // ============================================
-  // USER MANAGEMENT
-  // ============================================
 
   async createUser(createUserDto: CreateUserDto, createdBy: string) {
     const db = this.firebaseService.getFirestore();
@@ -541,11 +481,11 @@ export class AdminService {
     const allUsers = await Promise.all(
       snapshot.docs.map(async (doc) => {
         const { password, ...user } = doc.data() as User;
-        
+
         if (withBalance) {
           const balances = await this.balanceService.getBothBalances(user.id);
           const statusInfo = await this.userStatusService.getUserStatusInfo(user.id);
-          
+
           return {
             ...user,
             status: user.status || USER_STATUS.STANDARD,
@@ -558,7 +498,7 @@ export class AdminService {
             },
           };
         }
-        
+
         return {
           ...user,
           status: user.status || USER_STATUS.STANDARD,
@@ -591,9 +531,9 @@ export class AdminService {
     }
 
     const { password, ...user } = userDoc.data() as User;
-    
+
     const statusInfo = await this.userStatusService.getUserStatusInfo(userId);
-    
+
     return {
       ...user,
       status: user.status || USER_STATUS.STANDARD,
@@ -623,15 +563,7 @@ export class AdminService {
     };
   }
 
-  // ============================================
-  // BALANCE MANAGEMENT
-  // ============================================
-
-  async manageUserBalance(
-    userId: string, 
-    manageBalanceDto: ManageBalanceDto,
-    adminId: string
-  ) {
+  async manageUserBalance(userId: string, manageBalanceDto: ManageBalanceDto, adminId: string) {
     await this.getUserById(userId);
 
     const { accountType } = manageBalanceDto;
@@ -657,7 +589,7 @@ export class AdminService {
 
     if (accountType === BALANCE_ACCOUNT_TYPE.REAL && manageBalanceDto.type === 'deposit') {
       const statusUpdate = await this.userStatusService.updateUserStatus(userId);
-      
+
       if (statusUpdate.changed) {
         this.logger.log(
           `🎉 User ${userId} upgraded by admin: ${statusUpdate.oldStatus.toUpperCase()} → ${statusUpdate.newStatus.toUpperCase()}`
@@ -682,19 +614,15 @@ export class AdminService {
     const user = await this.getUserById(userId);
     const summary = await this.balanceService.getBothBalances(userId);
     const statusInfo = await this.userStatusService.getUserStatusInfo(userId);
-    const history = await this.balanceService.getBalanceHistory(userId, { 
-      page: 1, 
-      limit: 20 
+    const history = await this.balanceService.getBalanceHistory(userId, {
+      page: 1,
+      limit: 20,
     });
 
     const transactions = history.transactions as Balance[];
-    
-    const realTransactions = transactions.filter(
-      t => t.accountType === BALANCE_ACCOUNT_TYPE.REAL
-    );
-    const demoTransactions = transactions.filter(
-      t => t.accountType === BALANCE_ACCOUNT_TYPE.DEMO
-    );
+
+    const realTransactions = transactions.filter(t => t.accountType === BALANCE_ACCOUNT_TYPE.REAL);
+    const demoTransactions = transactions.filter(t => t.accountType === BALANCE_ACCOUNT_TYPE.DEMO);
 
     return {
       user: {
@@ -730,15 +658,15 @@ export class AdminService {
   async getAllUsersWithBalance() {
     const db = this.firebaseService.getFirestore();
     const usersSnapshot = await db.collection(COLLECTIONS.USERS).get();
-    
+
     const usersWithBalance = await Promise.all(
       usersSnapshot.docs.map(async (doc) => {
         const { password, ...user } = doc.data() as User;
-        
+
         try {
           const balances = await this.balanceService.getBothBalances(user.id);
           const statusInfo = await this.userStatusService.getUserStatusInfo(user.id);
-          
+
           return {
             ...user,
             status: user.status || USER_STATUS.STANDARD,
@@ -769,7 +697,7 @@ export class AdminService {
     const totalRealBalance = usersWithBalance.reduce((sum, user) => sum + user.realBalance, 0);
     const totalDemoBalance = usersWithBalance.reduce((sum, user) => sum + user.demoBalance, 0);
     const activeUsers = usersWithBalance.filter(u => u.isActive).length;
-    
+
     const statusCounts = {
       standard: usersWithBalance.filter(u => u.status === USER_STATUS.STANDARD).length,
       gold: usersWithBalance.filter(u => u.status === USER_STATUS.GOLD).length,
@@ -788,10 +716,6 @@ export class AdminService {
       },
     };
   }
-
-  // ============================================
-  // USER HISTORY
-  // ============================================
 
   async getUserHistory(userId: string) {
     const user = await this.getUserById(userId);
@@ -860,7 +784,7 @@ export class AdminService {
 
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-    
+
     const recentRealOrders: BinaryOrder[] = realOrders.filter(
       o => new Date(o.createdAt) >= sevenDaysAgo
     );
@@ -899,10 +823,6 @@ export class AdminService {
       },
     };
   }
-
-  // ============================================
-  // SYSTEM STATISTICS
-  // ============================================
 
   async getSystemStatistics() {
     const db = this.firebaseService.getFirestore();
@@ -956,9 +876,9 @@ export class AdminService {
         .filter(t => t.type === BALANCE_TYPES.WITHDRAWAL)
         .reduce((sum, t) => sum + t.amount, 0),
       affiliateCommissions: realTransactions
-        .filter(t => 
-          t.type === BALANCE_TYPES.DEPOSIT && 
-          t.description && 
+        .filter(t =>
+          t.type === BALANCE_TYPES.DEPOSIT &&
+          t.description &&
           t.description.toLowerCase().includes('affiliate commission')
         )
         .reduce((sum, t) => sum + t.amount, 0),
@@ -979,12 +899,12 @@ export class AdminService {
         .reduce((sum, t) => sum + t.amount, 0),
     };
 
-    const realWinRate = (realStats.wonOrders + realStats.lostOrders) > 0 
-      ? Math.round((realStats.wonOrders / (realStats.wonOrders + realStats.lostOrders)) * 100) 
+    const realWinRate = (realStats.wonOrders + realStats.lostOrders) > 0
+      ? Math.round((realStats.wonOrders / (realStats.wonOrders + realStats.lostOrders)) * 100)
       : 0;
 
-    const demoWinRate = (demoStats.wonOrders + demoStats.lostOrders) > 0 
-      ? Math.round((demoStats.wonOrders / (demoStats.wonOrders + demoStats.lostOrders)) * 100) 
+    const demoWinRate = (demoStats.wonOrders + demoStats.lostOrders) > 0
+      ? Math.round((demoStats.wonOrders / (demoStats.wonOrders + demoStats.lostOrders)) * 100)
       : 0;
 
     return {
@@ -1000,8 +920,8 @@ export class AdminService {
         pendingReferrals: pendingAffiliates.length,
         totalCommissionsPaid: totalAffiliateCommissions,
         commissionRate: 25000,
-        conversionRate: affiliates.length > 0 
-          ? Math.round((completedAffiliates.length / affiliates.length) * 100) 
+        conversionRate: affiliates.length > 0
+          ? Math.round((completedAffiliates.length / affiliates.length) * 100)
           : 0,
       },
       withdrawal: {
@@ -1046,10 +966,6 @@ export class AdminService {
     };
   }
 
-  // ============================================
-  // PRIVATE HELPER METHODS
-  // ============================================
-
   private calculateAccountStats(transactions: Balance[], orders: BinaryOrder[]) {
     const totalDeposits = transactions
       .filter(t => t.type === BALANCE_TYPES.DEPOSIT)
@@ -1068,8 +984,8 @@ export class AdminService {
       .filter(o => o.profit !== null)
       .reduce((sum, o) => sum + (o.profit || 0), 0);
 
-    const winRate = (wonOrders + lostOrders) > 0 
-      ? Math.round((wonOrders / (wonOrders + lostOrders)) * 100) 
+    const winRate = (wonOrders + lostOrders) > 0
+      ? Math.round((wonOrders / (wonOrders + lostOrders)) * 100)
       : 0;
 
     return {
@@ -1101,16 +1017,11 @@ export class AdminService {
 
     const byAsset = orders.reduce((acc, order) => {
       if (!acc[order.asset_name]) {
-        acc[order.asset_name] = {
-          total: 0,
-          won: 0,
-          lost: 0,
-          profit: 0,
-        };
+        acc[order.asset_name] = { total: 0, won: 0, lost: 0, profit: 0 };
       }
-      
+
       acc[order.asset_name].total++;
-      
+
       if (order.status === ORDER_STATUS.WON) {
         acc[order.asset_name].won++;
         acc[order.asset_name].profit += order.profit || 0;
@@ -1118,22 +1029,17 @@ export class AdminService {
         acc[order.asset_name].lost++;
         acc[order.asset_name].profit += order.profit || 0;
       }
-      
+
       return acc;
     }, {} as Record<string, any>);
 
     const byDirection = orders.reduce((acc, order) => {
       if (!acc[order.direction]) {
-        acc[order.direction] = {
-          total: 0,
-          won: 0,
-          lost: 0,
-          profit: 0,
-        };
+        acc[order.direction] = { total: 0, won: 0, lost: 0, profit: 0 };
       }
-      
+
       acc[order.direction].total++;
-      
+
       if (order.status === ORDER_STATUS.WON) {
         acc[order.direction].won++;
         acc[order.direction].profit += order.profit || 0;
@@ -1141,7 +1047,7 @@ export class AdminService {
         acc[order.direction].lost++;
         acc[order.direction].profit += order.profit || 0;
       }
-      
+
       return acc;
     }, {} as Record<string, any>);
 

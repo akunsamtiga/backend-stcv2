@@ -11,30 +11,28 @@ import { Balance, BalanceSummary, Affiliate, User, WithdrawalRequest } from '../
 @Injectable()
 export class BalanceService {
   private readonly logger = new Logger(BalanceService.name);
-  
+
   private realBalanceCache: Map<string, { balance: number; timestamp: number }> = new Map();
   private demoBalanceCache: Map<string, { balance: number; timestamp: number }> = new Map();
   private readonly BALANCE_CACHE_TTL = 500;
-  
+
   private userStatusService: any;
 
   private transactionLocks: Map<string, { promise: Promise<any>; startTime: number }> = new Map();
   private readonly LOCK_TIMEOUT = 30000;
 
-  private writeStats = { 
-    success: 0, 
-    failed: 0, 
+  private writeStats = {
+    success: 0,
+    failed: 0,
     queued: 0,
-    lastSuccessTime: Date.now() 
+    lastSuccessTime: Date.now(),
   };
-  
+
   private readonly MAX_RETRIES = 2;
   private readonly RETRY_DELAY_MS = 200;
   private readonly MAX_CONSECUTIVE_FAILURES = 5;
 
-  constructor(
-    private firebaseService: FirebaseService,
-  ) {
+  constructor(private firebaseService: FirebaseService) {
     setInterval(() => this.cleanupCache(), 30000);
   }
 
@@ -79,7 +77,7 @@ export class BalanceService {
       }
 
       const currentBalance = await this.getCurrentBalance(userId, BALANCE_ACCOUNT_TYPE.REAL, true);
-      
+
       if (currentBalance < amount) {
         throw new BadRequestException(
           `Insufficient balance. Available: Rp ${currentBalance.toLocaleString()}, Requested: Rp ${amount.toLocaleString()}`
@@ -107,7 +105,6 @@ export class BalanceService {
         amount,
         status: WITHDRAWAL_STATUS.PENDING,
         description: description || 'Withdrawal request',
-        
         userEmail: user.email,
         userName: profile.fullName,
         bankAccount: {
@@ -115,11 +112,9 @@ export class BalanceService {
           accountNumber: profile.bankAccount.accountNumber!,
           accountHolderName: profile.bankAccount.accountHolderName!,
         },
-        
         ktpVerified: true,
         selfieVerified: true,
         currentBalance,
-        
         createdAt: timestamp,
       };
 
@@ -150,7 +145,6 @@ export class BalanceService {
           createdAt: timestamp,
         },
       };
-
     } catch (error) {
       this.logger.error(`❌ requestWithdrawal error: ${error.message}`);
       throw error;
@@ -187,7 +181,6 @@ export class BalanceService {
           completed: requests.filter(r => r.status === WITHDRAWAL_STATUS.COMPLETED).length,
         },
       };
-
     } catch (error) {
       this.logger.error(`❌ getMyWithdrawalRequests error: ${error.message}`);
       throw error;
@@ -199,7 +192,7 @@ export class BalanceService {
 
     try {
       const requestDoc = await db.collection(COLLECTIONS.WITHDRAWAL_REQUESTS).doc(requestId).get();
-      
+
       if (!requestDoc.exists) {
         throw new NotFoundException('Withdrawal request not found');
       }
@@ -211,9 +204,7 @@ export class BalanceService {
       }
 
       if (request.status !== WITHDRAWAL_STATUS.PENDING) {
-        throw new BadRequestException(
-          `Cannot cancel request with status: ${request.status}`
-        );
+        throw new BadRequestException(`Cannot cancel request with status: ${request.status}`);
       }
 
       await db.collection(COLLECTIONS.WITHDRAWAL_REQUESTS).doc(requestId).delete();
@@ -223,49 +214,47 @@ export class BalanceService {
       return {
         message: 'Withdrawal request cancelled successfully',
       };
-
     } catch (error) {
       this.logger.error(`❌ cancelWithdrawalRequest error: ${error.message}`);
       throw error;
     }
   }
 
-async createBalanceEntry(
-  userId: string, 
-  createBalanceDto: CreateBalanceDto, 
-  critical = true,
-  fromMidtrans = false, // ✅ ADD THIS
-) {
-  const startTime = Date.now();
-  const { accountType, amount, type } = createBalanceDto;
-  const lockKey = `${userId}_${accountType}`;
-  
-  try {
-    if (accountType !== BALANCE_ACCOUNT_TYPE.REAL && accountType !== BALANCE_ACCOUNT_TYPE.DEMO) {
-      throw new BadRequestException('Invalid account type. Must be "real" or "demo"');
-    }
+  async createBalanceEntry(
+    userId: string,
+    createBalanceDto: CreateBalanceDto,
+    critical = true,
+    fromMidtrans = false,
+  ) {
+    const startTime = Date.now();
+    const { accountType, amount, type } = createBalanceDto;
+    const lockKey = `${userId}_${accountType}`;
 
-    if (type === BALANCE_TYPES.WITHDRAWAL && accountType === BALANCE_ACCOUNT_TYPE.REAL) {
-      throw new BadRequestException(
-        'Direct withdrawal not allowed for real account. Please use withdrawal request endpoint: POST /balance/withdrawal/request'
-      );
-    }
+    try {
+      if (accountType !== BALANCE_ACCOUNT_TYPE.REAL && accountType !== BALANCE_ACCOUNT_TYPE.DEMO) {
+        throw new BadRequestException('Invalid account type. Must be "real" or "demo"');
+      }
 
-    // ✅ CHANGE THIS CHECK - Add && !fromMidtrans
-    if (type === BALANCE_TYPES.DEPOSIT && accountType === BALANCE_ACCOUNT_TYPE.REAL && !fromMidtrans) {
-      throw new BadRequestException(
-        'Direct deposit not allowed for real account. Please use Midtrans payment: POST /payment/deposit'
-      );
-    }
+      if (type === BALANCE_TYPES.WITHDRAWAL && accountType === BALANCE_ACCOUNT_TYPE.REAL) {
+        throw new BadRequestException(
+          'Direct withdrawal not allowed for real account. Please use withdrawal request endpoint: POST /balance/withdrawal/request'
+        );
+      }
 
-    await this.acquireTransactionLock(userId, accountType);
-      
+      if (type === BALANCE_TYPES.DEPOSIT && accountType === BALANCE_ACCOUNT_TYPE.REAL && !fromMidtrans) {
+        throw new BadRequestException(
+          'Direct deposit not allowed for real account. Please use Midtrans payment: POST /payment/deposit'
+        );
+      }
+
+      await this.acquireTransactionLock(userId, accountType);
+
       const operationPromise = (async () => {
         try {
           await this.autoMigrateIfNeeded(userId);
 
           const db = this.firebaseService.getFirestore();
-          
+
           let affiliateInfo: {
             hasPending: boolean;
             affiliateId?: string;
@@ -283,10 +272,10 @@ async createBalanceEntry(
             commissionAmount: 0,
             isFirstDeposit: false,
           };
-          
+
           if (accountType === BALANCE_ACCOUNT_TYPE.REAL && type === BALANCE_TYPES.DEPOSIT) {
             affiliateInfo = await this.hasPendingAffiliateAndCalculateCommission(userId, amount);
-            
+
             if (affiliateInfo.hasPending) {
               this.logger.log(`🎯 REAL DEPOSIT + PENDING AFFILIATE detected!`);
               this.logger.log(`   Current deposits: Rp ${affiliateInfo.currentTotalDeposit.toLocaleString()}`);
@@ -295,7 +284,7 @@ async createBalanceEntry(
               this.logger.log(`   Future status: ${affiliateInfo.futureStatus.toUpperCase()}`);
               this.logger.log(`   Commission: Rp ${affiliateInfo.commissionAmount.toLocaleString()}`);
               this.logger.log(`   Is first deposit: ${affiliateInfo.isFirstDeposit ? 'YES ✅' : 'NO ⚠️'}`);
-              
+
               if (!affiliateInfo.isFirstDeposit) {
                 this.logger.warn(`⚠️ WARNING: Affiliate is PENDING but deposits already exist!`);
                 this.logger.warn(`   This might indicate a data inconsistency`);
@@ -304,7 +293,7 @@ async createBalanceEntry(
               this.logger.log(`ℹ️ No pending affiliate or already completed`);
             }
           }
-          
+
           if (type === BALANCE_TYPES.WITHDRAWAL) {
             await db.runTransaction(async (transaction) => {
               const balanceSnapshot = await transaction.get(
@@ -338,7 +327,6 @@ async createBalanceEntry(
             });
 
             this.logger.log(`✅ Withdrawal completed: ${userId} - ${accountType} - ${amount}`);
-
           } else {
             const balanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
             const balanceData = {
@@ -359,7 +347,7 @@ async createBalanceEntry(
               if (this.userStatusService) {
                 try {
                   const statusUpdate = await this.userStatusService.updateUserStatus(userId);
-                  
+
                   if (statusUpdate.changed) {
                     this.logger.log(
                       `🎉 User status upgraded: ${statusUpdate.oldStatus.toUpperCase()} → ${statusUpdate.newStatus.toUpperCase()}`
@@ -389,7 +377,7 @@ async createBalanceEntry(
           const currentBalance = await this.getCurrentBalance(userId, accountType, true);
 
           const duration = Date.now() - startTime;
-          
+
           this.logger.log(
             `✅ Balance ${type} completed in ${duration}ms: ${userId} - ${accountType} - ${amount} (New: ${currentBalance})`
           );
@@ -408,7 +396,6 @@ async createBalanceEntry(
             affiliateCommission: affiliateInfo.hasPending ? affiliateInfo.commissionAmount : 0,
             executionTime: duration,
           };
-
         } finally {
           this.releaseTransactionLock(userId, accountType);
         }
@@ -417,12 +404,11 @@ async createBalanceEntry(
       this.setTransactionLock(userId, accountType, operationPromise);
 
       return await operationPromise;
-
     } catch (error) {
       this.logger.error(`❌ createBalanceEntry error: ${error.message}`, error.stack);
-      
+
       this.releaseTransactionLock(userId, accountType);
-      
+
       throw error;
     }
   }
@@ -442,21 +428,21 @@ async createBalanceEntry(
   private invalidateAllUserCaches(userId: string): void {
     this.realBalanceCache.delete(userId);
     this.demoBalanceCache.delete(userId);
-    
+
     if (this.userStatusService) {
       this.userStatusService.clearUserCache(userId);
     }
-    
+
     this.logger.debug(`🗑️ Cleared all caches for user ${userId}`);
   }
 
   private async acquireTransactionLock(userId: string, accountType: string): Promise<void> {
     const lockKey = `${userId}_${accountType}`;
-    
+
     const existingLock = this.transactionLocks.get(lockKey);
     if (existingLock) {
       const age = Date.now() - existingLock.startTime;
-      
+
       if (age > this.LOCK_TIMEOUT) {
         this.logger.warn(`⚠️ Removing stale lock for ${lockKey} (age: ${age}ms)`);
         this.transactionLocks.delete(lockKey);
@@ -487,7 +473,7 @@ async createBalanceEntry(
   }
 
   private async hasPendingAffiliateAndCalculateCommission(
-    userId: string, 
+    userId: string,
     depositAmount: number
   ): Promise<{
     hasPending: boolean;
@@ -500,7 +486,7 @@ async createBalanceEntry(
   }> {
     try {
       const db = this.firebaseService.getFirestore();
-      
+
       const affiliateSnapshot = await db.collection(COLLECTIONS.AFFILIATES)
         .where('referee_id', '==', userId)
         .where('status', '==', AFFILIATE_STATUS.PENDING)
@@ -549,7 +535,7 @@ async createBalanceEntry(
       });
 
       const isFirstDeposit = currentTotalDeposit === 0;
-      
+
       if (!isFirstDeposit) {
         this.logger.warn(`⚠️ WARNING: Found PENDING affiliate but user already has deposits!`);
         this.logger.warn(`   Current deposits: Rp ${currentTotalDeposit.toLocaleString()}`);
@@ -561,9 +547,9 @@ async createBalanceEntry(
 
       const totalAfterDeposit = currentTotalDeposit + depositAmount;
       const futureStatus = this.determineFutureStatus(totalAfterDeposit);
-      
+
       this.logger.log(`   Total AFTER deposit: Rp ${totalAfterDeposit.toLocaleString()}`);
-      
+
       let commissionAmount: number;
       switch (futureStatus.toUpperCase()) {
         case USER_STATUS.VIP.toUpperCase():
@@ -591,7 +577,6 @@ async createBalanceEntry(
         commissionAmount,
         isFirstDeposit,
       };
-
     } catch (error) {
       this.logger.error(`❌ hasPendingAffiliateAndCalculateCommission error: ${error.message}`, error.stack);
       return {
@@ -630,14 +615,14 @@ async createBalanceEntry(
       const timestamp = new Date().toISOString();
 
       const affiliateDoc = await db.collection(COLLECTIONS.AFFILIATES).doc(affiliateId).get();
-      
+
       if (!affiliateDoc.exists) {
         this.logger.error(`❌ Affiliate ${affiliateId} not found!`);
         return;
       }
 
       const affiliateData = affiliateDoc.data() as Affiliate;
-      
+
       if (affiliateData.status !== AFFILIATE_STATUS.PENDING) {
         this.logger.warn(`⚠️ Affiliate ${affiliateId} is already ${affiliateData.status}!`);
         this.logger.warn(`   Skipping commission payment to prevent double-pay`);
@@ -658,7 +643,7 @@ async createBalanceEntry(
       this.logger.log(`   📌 This user will NOT trigger commission again!`);
 
       const commissionBalanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
-      
+
       await db.collection(COLLECTIONS.BALANCE).doc(commissionBalanceId).set({
         id: commissionBalanceId,
         user_id: referrerId,
@@ -680,7 +665,6 @@ async createBalanceEntry(
         `   Status: PENDING → COMPLETED ✅\n` +
         `   📌 Future deposits from ${userId} will NOT trigger commission`
       );
-
     } catch (error) {
       this.logger.error(`❌ Affiliate processing error: ${error.message}`, error.stack);
     }
@@ -697,7 +681,7 @@ async createBalanceEntry(
 
       if (balanceQuery.empty) {
         const timestamp = new Date().toISOString();
-        
+
         const realBalanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
         const demoBalanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
 
@@ -744,20 +728,19 @@ async createBalanceEntry(
         await batch.commit();
         this.logger.log(`✅ Migrated ${batchCount} old balance records for user ${userId}`);
       }
-
     } catch (error) {
       this.logger.error(`❌ Auto-migration error for user ${userId}: ${error.message}`, error.stack);
     }
   }
 
   async getCurrentBalance(
-    userId: string, 
+    userId: string,
     accountType: 'real' | 'demo',
     forceRefresh = false
   ): Promise<number> {
     try {
-      const cache = accountType === BALANCE_ACCOUNT_TYPE.REAL 
-        ? this.realBalanceCache 
+      const cache = accountType === BALANCE_ACCOUNT_TYPE.REAL
+        ? this.realBalanceCache
         : this.demoBalanceCache;
 
       if (!forceRefresh) {
@@ -773,7 +756,7 @@ async createBalanceEntry(
       await this.autoMigrateIfNeeded(userId);
 
       const db = this.firebaseService.getFirestore();
-      
+
       const snapshot = await db.collection(COLLECTIONS.BALANCE)
         .where('user_id', '==', userId)
         .where('accountType', '==', accountType)
@@ -781,24 +764,20 @@ async createBalanceEntry(
 
       const transactions = snapshot.docs.map(doc => doc.data() as Balance);
       const balance = CalculationUtil.calculateBalance(transactions);
-      
+
       cache.set(userId, {
         balance,
         timestamp: Date.now(),
       });
 
       return balance;
-
     } catch (error) {
       this.logger.error(`❌ getCurrentBalance error: ${error.message}`, error.stack);
       return 0;
     }
   }
 
-  async getCurrentBalanceStrict(
-    userId: string,
-    accountType: 'real' | 'demo'
-  ): Promise<number> {
+  async getCurrentBalanceStrict(userId: string, accountType: 'real' | 'demo'): Promise<number> {
     return this.getCurrentBalance(userId, accountType, true);
   }
 
@@ -812,7 +791,7 @@ async createBalanceEntry(
       ]);
 
       const db = this.firebaseService.getFirestore();
-      
+
       const snapshot = await db.collection(COLLECTIONS.BALANCE)
         .where('user_id', '==', userId)
         .get();
@@ -827,10 +806,9 @@ async createBalanceEntry(
         realTransactions,
         demoTransactions,
       };
-
     } catch (error) {
       this.logger.error(`❌ getBothBalances error: ${error.message}`, error.stack);
-      
+
       return {
         realBalance: 0,
         demoBalance: 10000000,
@@ -841,7 +819,7 @@ async createBalanceEntry(
   }
 
   async getBalanceHistory(
-    userId: string, 
+    userId: string,
     queryDto: QueryBalanceDto,
     accountType?: 'real' | 'demo'
   ) {
@@ -850,19 +828,18 @@ async createBalanceEntry(
 
       const { page = 1, limit = 20 } = queryDto;
       const db = this.firebaseService.getFirestore();
-      
+
       try {
-        let query = db.collection(COLLECTIONS.BALANCE)
-          .where('user_id', '==', userId);
+        let query = db.collection(COLLECTIONS.BALANCE).where('user_id', '==', userId);
 
         if (accountType) {
           query = query.where('accountType', '==', accountType) as any;
         }
 
         const snapshot = await query.get();
-        
+
         let allTransactions = snapshot.docs.map(doc => doc.data() as Balance);
-        
+
         allTransactions.sort((a, b) => {
           const dateA = new Date(a.createdAt).getTime();
           const dateB = new Date(b.createdAt).getTime();
@@ -874,7 +851,7 @@ async createBalanceEntry(
         const transactions = allTransactions.slice(startIndex, startIndex + limit);
 
         let currentBalances: any = {};
-        
+
         if (accountType) {
           currentBalances[accountType] = await this.getCurrentBalance(userId, accountType);
         } else {
@@ -896,12 +873,11 @@ async createBalanceEntry(
           },
           filter: accountType ? { accountType } : { accountType: 'all' },
         };
-
       } catch (queryError) {
         this.logger.error(`❌ Balance history query error: ${queryError.message}`, queryError.stack);
-        
+
         const summary = await this.getBothBalances(userId);
-        
+
         return {
           currentBalances: {
             real: summary.realBalance,
@@ -918,10 +894,9 @@ async createBalanceEntry(
           error: 'Could not load history, showing current balance only',
         };
       }
-
     } catch (error) {
       this.logger.error(`❌ getBalanceHistory error: ${error.message}`, error.stack);
-      
+
       return {
         currentBalances: {
           real: 0,
@@ -945,7 +920,7 @@ async createBalanceEntry(
       await this.autoMigrateIfNeeded(userId);
 
       const db = this.firebaseService.getFirestore();
-      
+
       const snapshot = await db.collection(COLLECTIONS.BALANCE)
         .where('user_id', '==', userId)
         .get();
@@ -970,9 +945,9 @@ async createBalanceEntry(
           .filter(t => t.type === BALANCE_TYPES.ORDER_PROFIT)
           .reduce((sum, t) => sum + t.amount, 0),
         totalAffiliateCommissions: realTransactions
-          .filter(t => 
-            t.type === BALANCE_TYPES.DEPOSIT && 
-            t.description && 
+          .filter(t =>
+            t.type === BALANCE_TYPES.DEPOSIT &&
+            t.description &&
             t.description.toLowerCase().includes('affiliate commission')
           )
           .reduce((sum, t) => sum + t.amount, 0),
@@ -1004,10 +979,9 @@ async createBalanceEntry(
           combinedBalance: realSummary.currentBalance + demoSummary.currentBalance,
         },
       };
-
     } catch (error) {
       this.logger.error(`❌ getBalanceSummary error: ${error.message}`, error.stack);
-      
+
       return {
         real: {
           currentBalance: 0,
@@ -1037,7 +1011,7 @@ async createBalanceEntry(
   private cleanupCache(): void {
     const now = Date.now();
     const maxAge = this.BALANCE_CACHE_TTL * 10;
-    
+
     for (const [userId, cached] of this.realBalanceCache.entries()) {
       if (now - cached.timestamp > maxAge) {
         this.realBalanceCache.delete(userId);
@@ -1067,7 +1041,7 @@ async createBalanceEntry(
   private maskBankAccount(accountNumber?: string): string {
     if (!accountNumber) return '****';
     if (accountNumber.length <= 4) return '****';
-    
+
     const visible = accountNumber.slice(-4);
     const masked = '*'.repeat(accountNumber.length - 4);
     return masked + visible;

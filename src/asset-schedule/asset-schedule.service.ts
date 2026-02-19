@@ -14,9 +14,7 @@ export class AssetScheduleService implements OnModuleInit {
   private readonly COLLECTION_NAME = 'asset_schedules';
   private firestore: Firestore;
 
-  constructor(
-    private readonly firebaseService: FirebaseService,
-  ) {
+  constructor(private readonly firebaseService: FirebaseService) {
     this.logger.log('AssetScheduleService created, waiting for Firestore...');
   }
 
@@ -31,11 +29,7 @@ export class AssetScheduleService implements OnModuleInit {
     }
   }
 
-  async createSchedule(
-    createDto: CreateAssetScheduleDto,
-    userId: string,
-    userEmail: string,
-  ) {
+  async createSchedule(createDto: CreateAssetScheduleDto, userId: string, userEmail: string) {
     const scheduledTime = new Date(createDto.scheduledTime);
     const now = new Date();
 
@@ -91,33 +85,13 @@ export class AssetScheduleService implements OnModuleInit {
 
     let query = this.firestore.collection(this.COLLECTION_NAME) as any;
 
-    if (assetSymbol) {
-      query = query.where('assetSymbol', '==', assetSymbol);
-    }
-
-    if (trend) {
-      query = query.where('trend', '==', trend);
-    }
-
-    if (timeframe) {
-      query = query.where('timeframe', '==', timeframe);
-    }
-
-    if (status) {
-      query = query.where('status', '==', status);
-    }
-
-    if (isActive !== undefined) {
-      query = query.where('isActive', '==', isActive);
-    }
-
-    if (fromDate) {
-      query = query.where('scheduledTime', '>=', Timestamp.fromDate(new Date(fromDate)));
-    }
-
-    if (toDate) {
-      query = query.where('scheduledTime', '<=', Timestamp.fromDate(new Date(toDate)));
-    }
+    if (assetSymbol) query = query.where('assetSymbol', '==', assetSymbol);
+    if (trend) query = query.where('trend', '==', trend);
+    if (timeframe) query = query.where('timeframe', '==', timeframe);
+    if (status) query = query.where('status', '==', status);
+    if (isActive !== undefined) query = query.where('isActive', '==', isActive);
+    if (fromDate) query = query.where('scheduledTime', '>=', Timestamp.fromDate(new Date(fromDate)));
+    if (toDate) query = query.where('scheduledTime', '<=', Timestamp.fromDate(new Date(toDate)));
 
     query = query.orderBy('scheduledTime', 'desc');
 
@@ -279,20 +253,11 @@ export class AssetScheduleService implements OnModuleInit {
     };
   }
 
-  // ============================================================
-  // [FIX] CRON: Hanya eksekusi schedule yang TEPAT pada menit ini
-  // Tidak lagi mengeksekusi semua schedule yang pernah terlewat
-  // sekaligus, untuk menghindari overwrite di RTDB.
-  // ============================================================
   @Cron(CronExpression.EVERY_MINUTE)
   async executePendingSchedules() {
     try {
       const now = new Date();
       const nowTimestamp = Timestamp.fromDate(now);
-
-      // [FIX] Batasi window eksekusi hanya 2 menit ke belakang
-      // agar schedule lama yang tertumpuk tidak dieksekusi sekaligus.
-      // Ini mencegah 300 schedule dieksekusi dalam 1 cron tick.
       const twoMinutesAgo = new Date(now.getTime() - 2 * 60 * 1000);
       const windowStart = Timestamp.fromDate(twoMinutesAgo);
 
@@ -300,9 +265,9 @@ export class AssetScheduleService implements OnModuleInit {
         .collection(this.COLLECTION_NAME)
         .where('status', '==', 'pending')
         .where('isActive', '==', true)
-        .where('scheduledTime', '>=', windowStart)   // [FIX] tambah batas bawah
+        .where('scheduledTime', '>=', windowStart)
         .where('scheduledTime', '<=', nowTimestamp)
-        .orderBy('scheduledTime', 'asc')             // [FIX] eksekusi urut dari terlama
+        .orderBy('scheduledTime', 'asc')
         .get();
 
       if (schedulesSnapshot.empty) {
@@ -311,8 +276,6 @@ export class AssetScheduleService implements OnModuleInit {
 
       this.logger.log(`Found ${schedulesSnapshot.size} schedules to execute`);
 
-      // [FIX] Eksekusi satu per satu secara berurutan, BUKAN paralel,
-      // agar tidak ada race condition penulisan ke RTDB path yang sama.
       for (const scheduleDoc of schedulesSnapshot.docs) {
         const scheduleData = scheduleDoc.data();
         await this.executeSchedule(scheduleDoc.id, scheduleData);
@@ -341,7 +304,6 @@ export class AssetScheduleService implements OnModuleInit {
       const assetData = assetDoc.data();
       const currentPrice = assetData.currentPrice || 0;
 
-      // [FIX] Pass scheduledTime agar startTime di RTDB akurat
       const scheduledTime: Date = scheduleData.scheduledTime?.toDate
         ? scheduleData.scheduledTime.toDate()
         : new Date(scheduleData.scheduledTime);
@@ -352,7 +314,7 @@ export class AssetScheduleService implements OnModuleInit {
         scheduleData.timeframe,
         scheduleId,
         currentPrice,
-        scheduledTime,   // [FIX] parameter baru
+        scheduledTime,
       );
 
       await this.firestore.collection('assets').doc(assetDoc.id).update({
@@ -387,28 +349,15 @@ export class AssetScheduleService implements OnModuleInit {
     }
   }
 
-  // ============================================================
-  // [FIX] pushScheduledTrendToRTDB
-  //
-  // PERUBAHAN UTAMA:
-  // 1. Path RTDB sekarang menggunakan scheduleId sebagai sub-key:
-  //    SEBELUM: _scheduled_trends/{symbol}           (1 slot, saling overwrite)
-  //    SESUDAH: _scheduled_trends/{symbol}/{scheduleId} (slot unik per schedule)
-  //
-  // 2. startTime menggunakan scheduledTime (waktu yang dijadwalkan),
-  //    bukan Date.now() (waktu eksekusi cron).
-  //    Ini memastikan trend aktif tepat sesuai waktu yang diinginkan.
-  // ============================================================
   private async pushScheduledTrendToRTDB(
     assetSymbol: string,
     trend: string,
     timeframe: string,
     scheduleId: string,
     startPrice?: number,
-    scheduledTime?: Date,   // [FIX] parameter baru
+    scheduledTime?: Date,
   ): Promise<void> {
     try {
-      // [FIX] Gunakan scheduledTime sebagai startTime, fallback ke Date.now()
       const startTime = scheduledTime ? scheduledTime.getTime() : Date.now();
       const duration = this.getTimeframeDurationInMs(timeframe);
       const endTime = startTime + duration;
@@ -416,7 +365,7 @@ export class AssetScheduleService implements OnModuleInit {
       const trendData = {
         trend: trend,
         timeframe: timeframe,
-        startTime: startTime,   // [FIX] waktu jadwal, bukan waktu eksekusi
+        startTime: startTime,
         endTime: endTime,
         duration: duration,
         scheduleId: scheduleId,
@@ -426,8 +375,6 @@ export class AssetScheduleService implements OnModuleInit {
       };
 
       const normalizedSymbol = assetSymbol.toLowerCase().replace(/[^a-z0-9]/g, '_');
-
-      // [FIX] Path unik per scheduleId agar tidak saling overwrite
       const path = `_scheduled_trends/${normalizedSymbol}/${scheduleId}`;
 
       this.logger.log(`Writing trend to ${path} (original: ${assetSymbol})`);
@@ -455,7 +402,6 @@ export class AssetScheduleService implements OnModuleInit {
               await new Promise(resolve => setTimeout(resolve, 500 * attempt));
             }
           }
-
         } catch (writeError) {
           this.logger.error(`Write attempt ${attempt}/${maxWriteAttempts} failed: ${writeError.message}`);
 
@@ -480,7 +426,6 @@ Please check:
 
       this.logger.log(`Successfully pushed trend: ${assetSymbol}/${scheduleId} → ${trend}`);
       this.logger.log(`Active from ${new Date(startTime).toLocaleTimeString()} to ${new Date(endTime).toLocaleTimeString()} (${duration / 1000}s)`);
-
     } catch (error) {
       this.logger.error(`Failed to push trend for ${assetSymbol}: ${error.message}`);
       throw error;
@@ -537,25 +482,11 @@ Please check:
 
     query = query.where('status', 'in', ['executed', 'failed']);
 
-    if (assetSymbol) {
-      query = query.where('assetSymbol', '==', assetSymbol);
-    }
-
-    if (trend) {
-      query = query.where('trend', '==', trend);
-    }
-
-    if (timeframe) {
-      query = query.where('timeframe', '==', timeframe);
-    }
-
-    if (fromDate) {
-      query = query.where('executedAt', '>=', Timestamp.fromDate(new Date(fromDate)));
-    }
-
-    if (toDate) {
-      query = query.where('executedAt', '<=', Timestamp.fromDate(new Date(toDate)));
-    }
+    if (assetSymbol) query = query.where('assetSymbol', '==', assetSymbol);
+    if (trend) query = query.where('trend', '==', trend);
+    if (timeframe) query = query.where('timeframe', '==', timeframe);
+    if (fromDate) query = query.where('executedAt', '>=', Timestamp.fromDate(new Date(fromDate)));
+    if (toDate) query = query.where('executedAt', '<=', Timestamp.fromDate(new Date(toDate)));
 
     query = query.orderBy('executedAt', 'desc');
 

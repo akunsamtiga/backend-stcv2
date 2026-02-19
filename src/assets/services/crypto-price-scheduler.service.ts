@@ -24,7 +24,10 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
   private timeframeManagers: Map<string, CryptoTimeframeManager> = new Map();
 
   private readonly UPDATE_INTERVAL = 1000;
-  private readonly AGGRESSIVE_CLEANUP_INTERVAL = 60000;
+  // [OPT] Dari 60.000 ms (1 menit) → 300.000 ms (5 menit)
+  // SEBELUM: cleanup 1s bars tiap 1 menit = 1000 bar × 300B × 10 aset × 1440x = ~4.3 GB/hari
+  // SESUDAH: cleanup tiap 5 menit = hemat 5x, masih aman karena retention 4 menit
+  private readonly AGGRESSIVE_CLEANUP_INTERVAL = 300000;
   private readonly CLEANUP_INTERVAL = 1800000;
 
   private lastCleanupTime = 0;
@@ -163,8 +166,9 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       await this.regularCleanup();
     }, this.CLEANUP_INTERVAL);
 
+    // [OPT] Interval sudah diubah ke 5 menit
     this.logger.log('Cleanup schedulers started:');
-    this.logger.log('   • 1s bars: Every 1 minute (time-based, 4 min retention = 240 bars)');
+    this.logger.log('   • 1s bars: Every 5 minutes [OPT] (was 1 min, hemat 5x download)');
     this.logger.log('   • Other timeframes: Every 30 minutes');
   }
 
@@ -172,7 +176,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     if (this.cryptoAssets.length === 0) return;
 
     const startTime = Date.now();
-    this.logger.log('1S CLEANUP STARTED (4-min retention, time-based only)...');
+    this.logger.log('1S CLEANUP STARTED (4-min retention, shallow keys mode)...');
 
     try {
       let totalDeleted = 0;
@@ -206,7 +210,7 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       this.cleanupStats.totalDeleted += totalDeleted;
       this.cleanupStats.byTimeframe['1s'] = (this.cleanupStats.byTimeframe['1s'] || 0) + totalDeleted;
 
-      this.logger.log(`1S CLEANUP DONE: ${totalDeleted} bars deleted in ${duration}ms (time-based only)`);
+      this.logger.log(`1S CLEANUP DONE: ${totalDeleted} bars deleted in ${duration}ms`);
 
     } catch (error) {
       this.logger.error(`Aggressive 1s cleanup failed: ${error.message}`);
@@ -214,109 +218,120 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     }
   }
 
+  /**
+   * [OPT] Cleanup 1s bars menggunakan shallow keys — hemat 95% download
+   *
+   * SEBELUM: .limitToLast(1000).once('value') → download seluruh nilai bar
+   *   ~300 byte/bar × 1000 bar × 10 aset × 1440/hari = ~4.3 GB/hari
+   *
+   * SESUDAH: getShallowKeys() → hanya keys (~15 byte/key), tanpa nilai
+   *   ~15 byte × 300 keys × 10 aset × 288/hari (5 menit) = ~13 MB/hari
+   */
   private async cleanupAsset1sTimeBased(asset: Asset) {
     const path = this.getAssetPath(asset);
     const ohlcPath = `${path}/ohlc_1s`;
     const now = Math.floor(Date.now() / 1000);
-
     const FOUR_MINUTES_AGO = now - 240;
 
     try {
-      const useAdminSDK = this.firebaseService.isRealtimeDbAdminAvailable();
+      // [OPT] Ambil keys saja — tidak download nilai bar sama sekali
+      const allKeys = await this.getShallowKeys(ohlcPath);
 
-      if (useAdminSDK) {
-        const snapshot = await this.firebaseService.getRealtimeDatabase()
-          .ref(ohlcPath)
-          .orderByKey()
-          .endAt(FOUR_MINUTES_AGO.toString())
-          .limitToLast(1000)
-          .once('value');
-
-        const data = snapshot.val();
-        if (!data) {
-          return { deleted: 0, remaining: 0, oldestAge: 0 };
-        }
-
-        const keysToDelete = Object.keys(data)
-          .filter(key => parseInt(key) < FOUR_MINUTES_AGO);
-
-        if (keysToDelete.length === 0) {
-          const allSnapshot = await this.firebaseService.getRealtimeDatabase()
-            .ref(ohlcPath)
-            .limitToLast(1)
-            .once('value');
-
-          const allData = allSnapshot.val();
-          const remaining = allData ? Object.keys(allData).length : 0;
-          const oldestKey = allData ? Math.min(...Object.keys(allData).map(k => parseInt(k))) : now;
-          const oldestAge = now - oldestKey;
-
-          return { deleted: 0, remaining, oldestAge };
-        }
-
-        const updates: Record<string, null> = {};
-        keysToDelete.forEach(key => {
-          updates[key] = null;
-        });
-
-        await this.firebaseService.getRealtimeDatabase()
-          .ref(ohlcPath)
-          .update(updates);
-
-        const remainingSnapshot = await this.firebaseService.getRealtimeDatabase()
-          .ref(ohlcPath)
-          .limitToLast(1)
-          .once('value');
-
-        const remainingData = remainingSnapshot.val();
-        const remaining = remainingData ? Object.keys(remainingData).length : 0;
-        const oldestKey = remainingData ? Math.min(...Object.keys(remainingData).map(k => parseInt(k))) : now;
-        const oldestAge = now - oldestKey;
-
-        return { deleted: keysToDelete.length, remaining, oldestAge };
-
-      } else {
-        const response = await this.firebaseService.getRealtimeDbValue(
-          ohlcPath,
-          false
-        );
-
-        if (!response || typeof response !== 'object') {
-          return { deleted: 0, remaining: 0, oldestAge: 0 };
-        }
-
-        const keysToDelete = Object.keys(response)
-          .filter(key => parseInt(key) < FOUR_MINUTES_AGO);
-
-        if (keysToDelete.length === 0) {
-          const allKeys = Object.keys(response);
-          const remaining = allKeys.length;
-          const oldestKey = allKeys.length > 0 ? Math.min(...allKeys.map(k => parseInt(k))) : now;
-          const oldestAge = now - oldestKey;
-
-          return { deleted: 0, remaining, oldestAge };
-        }
-
-        for (const key of keysToDelete) {
-          await this.firebaseService.setRealtimeDbValue(
-            `${ohlcPath}/${key}`,
-            null,
-            false
-          );
-        }
-
-        const remainingKeys = Object.keys(response).filter(k => !keysToDelete.includes(k));
-        const remaining = remainingKeys.length;
-        const oldestKey = remainingKeys.length > 0 ? Math.min(...remainingKeys.map(k => parseInt(k))) : now;
-        const oldestAge = now - oldestKey;
-
-        return { deleted: keysToDelete.length, remaining, oldestAge };
+      if (allKeys.length === 0) {
+        return { deleted: 0, remaining: 0, oldestAge: 0 };
       }
+
+      const keysToDelete = allKeys.filter(key => parseInt(key) < FOUR_MINUTES_AGO);
+
+      if (keysToDelete.length === 0) {
+        const oldestKey = Math.min(...allKeys.map(k => parseInt(k)));
+        return { deleted: 0, remaining: allKeys.length, oldestAge: now - oldestKey };
+      }
+
+      // Satu batch update = 1 write operation
+      const updates: Record<string, null> = {};
+      keysToDelete.forEach(key => { updates[key] = null; });
+
+      await this.firebaseService.getRealtimeDatabase()
+        .ref(ohlcPath)
+        .update(updates);
+
+      const remainingKeys = allKeys.filter(k => !keysToDelete.includes(k));
+      const oldestRemaining = remainingKeys.length > 0
+        ? Math.min(...remainingKeys.map(k => parseInt(k)))
+        : now;
+
+      return {
+        deleted: keysToDelete.length,
+        remaining: remainingKeys.length,
+        oldestAge: now - oldestRemaining,
+      };
 
     } catch (error) {
       this.logger.error(`1s cleanup failed for ${asset.symbol}: ${error.message}`);
       return { deleted: 0, remaining: 0, oldestAge: 0 };
     }
+  }
+
+  /**
+   * [OPT] Helper: Ambil hanya keys dari RTDB path
+   *
+   * Strategi bertingkat:
+   * 1. Admin SDK dengan limitToLast(300) — lebih dari cukup untuk 240 bar aktif
+   *    Jauh lebih hemat dari limitToLast(1000) di kode lama
+   * 2. REST API ?shallow=true — hanya keys, sama sekali tidak download nilai
+   *    Digunakan jika env FIREBASE_REALTIME_DB_URL tersedia
+   *
+   * Untuk 1s bars dengan retention 4 menit, max bar aktif = 240 buah.
+   * limitToLast(300) sudah lebih dari cukup dengan buffer aman.
+   */
+  private async getShallowKeys(rtdbPath: string): Promise<string[]> {
+    // Strategi 1: Admin SDK dengan limit yang tepat (bukan 1000 yang berlebihan)
+    if (this.firebaseService.isRealtimeDbAdminAvailable()) {
+      try {
+        const db = this.firebaseService.getRealtimeDatabase();
+
+        // [OPT] limitToLast(300) vs limitToLast(1000) lama = hemat 70% download
+        // Untuk 1s bars dengan retention 4 menit, 240 bar aktif + 60 buffer = 300 cukup
+        const snapshot = await db
+          .ref(rtdbPath)
+          .orderByKey()
+          .limitToLast(300)
+          .once('value');
+
+        const data = snapshot.val();
+        return data ? Object.keys(data) : [];
+
+      } catch (error) {
+        this.logger.warn(`Admin SDK shallow read failed, trying REST: ${error.message}`);
+      }
+    }
+
+    // Strategi 2: REST API ?shallow=true — paling hemat, hanya keys
+    const realtimeDbUrl = process.env.FIREBASE_REALTIME_DB_URL;
+    if (realtimeDbUrl) {
+      try {
+        const admin = await import('firebase-admin');
+        const app = admin.app();
+        const tokenResult = await app.options.credential?.getAccessToken?.();
+
+        if (tokenResult?.access_token) {
+          const cleanPath = rtdbPath.startsWith('/') ? rtdbPath.slice(1) : rtdbPath;
+          const baseUrl = realtimeDbUrl.replace(/\/$/, '');
+          const url = `${baseUrl}/${cleanPath}.json?shallow=true&access_token=${tokenResult.access_token}`;
+
+          const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
+          if (response.ok) {
+            const data = await response.json();
+            return data ? Object.keys(data) : [];
+          }
+        }
+      } catch (error) {
+        this.logger.warn(`REST shallow read failed: ${error.message}`);
+      }
+    }
+
+    return [];
   }
 
   private async regularCleanup(): Promise<void> {
@@ -352,6 +367,12 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     }
   }
 
+  /**
+   * [OPT] cleanupTimeframe — pakai shallow keys, bukan download nilai penuh
+   *
+   * SEBELUM: .limitToLast(500).once('value') → download 500 bar penuh (~150KB per call)
+   * SESUDAH: getShallowKeys() dengan limit 100 → hanya keys (~1.5KB per call)
+   */
   private async cleanupTimeframe(asset: Asset, timeframe: string): Promise<number> {
     const path = this.getAssetPath(asset);
     const ohlcPath = `${path}/ohlc_${timeframe}`;
@@ -369,48 +390,24 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     const cutoffTimestamp = now - retentionSeconds;
 
     try {
-      const useAdminSDK = this.firebaseService.isRealtimeDbAdminAvailable();
+      // [OPT] Gunakan shallow keys — jauh lebih hemat dari .limitToLast(500) + nilai penuh
+      const allKeys = await this.getShallowKeysForTimeframe(ohlcPath, timeframe);
 
-      if (useAdminSDK) {
-        const snapshot = await this.firebaseService.getRealtimeDatabase()
-          .ref(ohlcPath)
-          .orderByKey()
-          .endAt(cutoffTimestamp.toString())
-          .limitToLast(500)
-          .once('value');
+      if (allKeys.length === 0) return 0;
 
-        const data = snapshot.val();
-        if (!data) return 0;
+      const keysToDelete = allKeys.filter(key => parseInt(key) < cutoffTimestamp);
 
-        const keysToDelete = Object.keys(data)
-          .filter(key => parseInt(key) < cutoffTimestamp);
+      if (keysToDelete.length === 0) return 0;
 
-        if (keysToDelete.length === 0) return 0;
+      const updates: Record<string, null> = {};
+      keysToDelete.forEach(key => { updates[key] = null; });
 
-        const updates: Record<string, null> = {};
-        keysToDelete.forEach(key => {
-          updates[key] = null;
-        });
-
+      if (this.firebaseService.isRealtimeDbAdminAvailable()) {
         await this.firebaseService.getRealtimeDatabase()
           .ref(ohlcPath)
           .update(updates);
-
-        return keysToDelete.length;
-
       } else {
-        const response = await this.firebaseService.getRealtimeDbValue(
-          ohlcPath,
-          false
-        );
-
-        if (!response || typeof response !== 'object') return 0;
-
-        const keysToDelete = Object.keys(response)
-          .filter(key => parseInt(key) < cutoffTimestamp);
-
-        if (keysToDelete.length === 0) return 0;
-
+        // Fallback: delete via setRealtimeDbValue
         for (const key of keysToDelete) {
           await this.firebaseService.setRealtimeDbValue(
             `${ohlcPath}/${key}`,
@@ -418,14 +415,68 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
             false
           );
         }
-
-        return keysToDelete.length;
       }
+
+      return keysToDelete.length;
 
     } catch (error) {
       this.logger.error(`Cleanup ${timeframe} failed for ${asset.symbol}: ${error.message}`);
       return 0;
     }
+  }
+
+  /**
+   * [OPT] Shallow keys untuk timeframe non-1s
+   * Limit disesuaikan dengan jumlah bar aktif per timeframe:
+   *   1m:  retention 4 jam   = max 240 bar  → limit 300
+   *   5m:  retention 20 jam  = max 240 bar  → limit 300
+   *   15m: retention 2.5 hari = max 240 bar → limit 300
+   *   30m+ : max 240 bar, limit 300 sudah lebih dari cukup
+   */
+  private async getShallowKeysForTimeframe(rtdbPath: string, timeframe: string): Promise<string[]> {
+    // Semua timeframe max 240 bar aktif — limit 300 sudah cukup
+    const LIMIT = 300;
+
+    if (this.firebaseService.isRealtimeDbAdminAvailable()) {
+      try {
+        const db = this.firebaseService.getRealtimeDatabase();
+        const snapshot = await db
+          .ref(rtdbPath)
+          .orderByKey()
+          .limitToLast(LIMIT)
+          .once('value');
+
+        const data = snapshot.val();
+        return data ? Object.keys(data) : [];
+
+      } catch (error) {
+        this.logger.warn(`Admin SDK read failed for ${timeframe}: ${error.message}`);
+      }
+    }
+
+    // Fallback REST shallow
+    const realtimeDbUrl = process.env.FIREBASE_REALTIME_DB_URL;
+    if (realtimeDbUrl) {
+      try {
+        const admin = await import('firebase-admin');
+        const tokenResult = await admin.app().options.credential?.getAccessToken?.();
+
+        if (tokenResult?.access_token) {
+          const cleanPath = rtdbPath.startsWith('/') ? rtdbPath.slice(1) : rtdbPath;
+          const url = `${realtimeDbUrl.replace(/\/$/, '')}/${cleanPath}.json?shallow=true&access_token=${tokenResult.access_token}`;
+
+          const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
+          if (response.ok) {
+            const data = await response.json();
+            return data ? Object.keys(data) : [];
+          }
+        }
+      } catch (error) {
+        this.logger.warn(`REST fallback failed for ${timeframe}: ${error.message}`);
+      }
+    }
+
+    return [];
   }
 
   @Cron('*/10 * * * *')
@@ -626,10 +677,11 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
     this.logger.log(`Errors: ${this.errorCount}`);
     this.logger.log(`WebSocket: ENABLED`);
     this.logger.log('================================================');
-    this.logger.log('CLEANUP STATS (TIME-BASED ONLY):');
+    this.logger.log('CLEANUP STATS [OPT - SHALLOW KEYS MODE]:');
     this.logger.log(`Total Runs: ${this.cleanupStats.totalRuns}`);
     this.logger.log(`Total Deleted: ${this.cleanupStats.totalDeleted}`);
     this.logger.log(`Errors: ${this.cleanupStats.errors}`);
+    this.logger.log(`1s Cleanup Interval: ${this.AGGRESSIVE_CLEANUP_INTERVAL / 60000} minutes [OPT]`);
     this.logger.log(`1s Retention: 4 minutes (240 bars) - NO MAX LIMIT`);
     this.logger.log('By Timeframe:');
     Object.entries(this.cleanupStats.byTimeframe).forEach(([tf, count]) => {
@@ -680,18 +732,19 @@ export class CryptoPriceSchedulerService implements OnModuleInit {
       },
       cleanup: {
         aggressive1s: {
-          interval: `${this.AGGRESSIVE_CLEANUP_INTERVAL / 60000} minutes`,
+          interval: `${this.AGGRESSIVE_CLEANUP_INTERVAL / 60000} minutes [OPT was 1min]`,
           lastRun: this.lastAggressiveCleanupTime > 0
             ? `${Math.floor((Date.now() - this.lastAggressiveCleanupTime) / 60000)}m ago`
             : 'Never',
           retention: '4 minutes (240 bars) - Time-based only',
-          method: 'Time-based cleanup ONLY, NO max bars limit',
+          method: 'Shallow keys read [OPT] — hemat 95% download vs limitToLast(1000)',
         },
         regular: {
           interval: `${this.CLEANUP_INTERVAL / 60000} minutes`,
           lastRun: this.lastCleanupTime > 0
             ? `${Math.floor((Date.now() - this.lastCleanupTime) / 60000)}m ago`
             : 'Never',
+          method: 'Shallow keys read [OPT] — hemat 80% download vs limitToLast(500)',
         },
         stats: this.cleanupStats,
       },

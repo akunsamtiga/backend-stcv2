@@ -4,10 +4,6 @@ import { IsNumber, IsPositive, IsString, IsEnum, IsBoolean, IsOptional } from 'c
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { BALANCE_ACCOUNT_TYPE } from '../../common/constants';
 
-// ============================================
-// MANAGE BALANCE DTO (Admin direct balance management)
-// ============================================
-
 export class ManageBalanceDto {
   @ApiProperty({ 
     enum: BALANCE_ACCOUNT_TYPE,
@@ -34,10 +30,6 @@ export class ManageBalanceDto {
   @IsString()
   description: string;
 }
-
-// ============================================
-// APPROVE WITHDRAWAL DTO (Admin withdrawal approval)
-// ============================================
 
 export class ApproveWithdrawalDto {
   @ApiProperty({ 
