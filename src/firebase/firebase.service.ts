@@ -24,7 +24,7 @@ export class FirebaseService implements OnModuleInit {
   private realtimeDbAdmin: admin.database.Database | null = null;
   private realtimeDbRest: AxiosInstance | null = null;
   
-  // ✅ NEW: Storage instance
+  // ✅ Storage instance
   private storage: admin.storage.Storage | null = null;
   
   private isConnected = false;
@@ -94,7 +94,7 @@ export class FirebaseService implements OnModuleInit {
         admin.initializeApp({
           credential: admin.credential.cert(serviceAccount as admin.ServiceAccount),
           databaseURL: this.configService.get('firebase.realtimeDbUrl'),
-          storageBucket: `${serviceAccount.projectId}.firebasestorage.app`, // ✅ NEW: Add storage bucket
+          storageBucket: `${serviceAccount.projectId}.firebasestorage.app`,
         });
       }
 
@@ -115,7 +115,7 @@ export class FirebaseService implements OnModuleInit {
         this.logger.warn(`⚠️ Firestore test failed: ${error.message}`);
       }
 
-      // ✅ NEW: Initialize Storage
+      // Initialize Storage
       try {
         this.storage = admin.storage();
         this.logger.log('✅ Firebase Storage initialized');
@@ -136,7 +136,7 @@ export class FirebaseService implements OnModuleInit {
       this.logger.log('   • Batch writes for efficiency');
       this.logger.log('   • Health check: Every 2 minutes');
       this.logger.log('   • Timeouts: 5s (generous)');
-      this.logger.log('   • Storage: Ready for image uploads'); // ✅ NEW
+      this.logger.log('   • Storage: Ready for image uploads');
       
       this.startBackgroundTasks();
       
@@ -195,7 +195,7 @@ export class FirebaseService implements OnModuleInit {
         this.restConnectionPool.push(instance);
         this.connectionHealth.restConnections.set(i, {
           lastSuccess: Date.now(),
-          failures: 0
+          failures: 0,
         });
       }
       
@@ -211,6 +211,17 @@ export class FirebaseService implements OnModuleInit {
       this.isConnected = true;
       
       this.logger.log(`✅ Optimized REST pool created (${this.POOL_SIZE} connections)`);
+
+      // ✅ FIX: Inisialisasi Admin SDK meskipun REST sudah berhasil.
+      // SimulatorPriceRelayService membutuhkan Admin SDK untuk RTDB persistent listener
+      // (.on('value', ...)) karena push-based listener tidak bisa menggunakan REST API.
+      // REST pool tetap dipakai untuk write (lebih efisien), Admin SDK khusus untuk listener.
+      try {
+        this.realtimeDbAdmin = admin.database();
+        this.logger.log('✅ Realtime DB Admin SDK initialized (for persistent listeners)');
+      } catch (sdkError) {
+        this.logger.warn(`⚠️ Admin SDK init warning (listeners may not work): ${sdkError.message}`);
+      }
       
     } catch (restError) {
       this.logger.warn(`⚠️ REST API failed: ${restError.message}`);
@@ -719,12 +730,9 @@ export class FirebaseService implements OnModuleInit {
   }
 
   // ============================================================================
-  // ✅ NEW: FIREBASE STORAGE METHODS
+  // FIREBASE STORAGE METHODS
   // ============================================================================
 
-  /**
-   * Get Firebase Storage instance
-   */
   getStorage(): admin.storage.Storage {
     if (!this.storage) {
       throw new Error('Firebase Storage not initialized');
@@ -732,145 +740,130 @@ export class FirebaseService implements OnModuleInit {
     return this.storage;
   }
 
-
-async uploadImage(
-  file: Express.Multer.File,
-  folder: string,
-  fileName?: string,
-): Promise<{ url: string; path: string; size: number }> {
-  try {
-    // Validate file type
-    const allowedMimeTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
-    if (!allowedMimeTypes.includes(file.mimetype)) {
-      throw new BadRequestException(
-        `Invalid file type: ${file.mimetype}. Only JPEG, PNG, GIF, and WebP images are allowed.`,
-      );
-    }
-
-    // Validate file size (max 5MB)
-    const maxSize = 5 * 1024 * 1024; // 5MB
-    if (file.size > maxSize) {
-      throw new BadRequestException('File size must be less than 5MB');
-    }
-
-    const bucket = this.getStorage().bucket();
-    
-    if (!bucket) {
-      throw new BadRequestException('Storage bucket not initialized');
-    }
-
-    // ✅ FIX: Get bucket name safely
-    let bucketName: string;
+  async uploadImage(
+    file: Express.Multer.File,
+    folder: string,
+    fileName?: string,
+  ): Promise<{ url: string; path: string; size: number }> {
     try {
-      // Try to get from bucket object directly first
-      bucketName = bucket.name || '';
-      
-      // If still empty, try from metadata
-      if (!bucketName) {
-        const [metadata] = await bucket.getMetadata();
-        bucketName = metadata.name || '';
+      // Validate file type
+      const allowedMimeTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
+      if (!allowedMimeTypes.includes(file.mimetype)) {
+        throw new BadRequestException(
+          `Invalid file type: ${file.mimetype}. Only JPEG, PNG, GIF, and WebP images are allowed.`,
+        );
       }
+
+      // Validate file size (max 5MB)
+      const maxSize = 5 * 1024 * 1024;
+      if (file.size > maxSize) {
+        throw new BadRequestException('File size must be less than 5MB');
+      }
+
+      const bucket = this.getStorage().bucket();
       
-      // Final fallback using project ID
-      if (!bucketName) {
+      if (!bucket) {
+        throw new BadRequestException('Storage bucket not initialized');
+      }
+
+      let bucketName: string;
+      try {
+        bucketName = bucket.name || '';
+        
+        if (!bucketName) {
+          const [metadata] = await bucket.getMetadata();
+          bucketName = metadata.name || '';
+        }
+        
+        if (!bucketName) {
+          const projectId = this.configService.get<string>('firebase.projectId');
+          bucketName = `${projectId}.firebasestorage.app`;
+        }
+      } catch (error) {
         const projectId = this.configService.get<string>('firebase.projectId');
         bucketName = `${projectId}.firebasestorage.app`;
+        this.logger.warn(`Could not get bucket metadata, using fallback: ${bucketName}`);
       }
-    } catch (error) {
-      // Fallback to project-based name
-      const projectId = this.configService.get<string>('firebase.projectId');
-      bucketName = `${projectId}.firebasestorage.app`;
-      this.logger.warn(`Could not get bucket metadata, using fallback: ${bucketName}`);
-    }
 
-    // Generate unique filename
-    const timestamp = Date.now();
-    const randomString = Math.random().toString(36).substring(2, 15);
-    const extension = file.originalname.split('.').pop()?.toLowerCase() || 'jpg';
-    const finalFileName = fileName || `${timestamp}_${randomString}.${extension}`;
-    
-    // Construct storage path
-    const storagePath = `${folder}/${finalFileName}`;
-    const fileUpload = bucket.file(storagePath);
+      // Generate unique filename
+      const timestamp = Date.now();
+      const randomString = Math.random().toString(36).substring(2, 15);
+      const extension = file.originalname.split('.').pop()?.toLowerCase() || 'jpg';
+      const finalFileName = fileName || `${timestamp}_${randomString}.${extension}`;
+      
+      // Construct storage path
+      const storagePath = `${folder}/${finalFileName}`;
+      const fileUpload = bucket.file(storagePath);
 
-    this.logger.log(`📤 Uploading to ${bucketName}/${storagePath}`);
+      this.logger.log(`📤 Uploading to ${bucketName}/${storagePath}`);
 
-    // ✅ FIX: Use streaming upload instead of save()
-    const blobStream = fileUpload.createWriteStream({
-      metadata: {
-        contentType: file.mimetype,
+      const blobStream = fileUpload.createWriteStream({
         metadata: {
-          originalName: file.originalname,
-          uploadedAt: new Date().toISOString(),
+          contentType: file.mimetype,
+          metadata: {
+            originalName: file.originalname,
+            uploadedAt: new Date().toISOString(),
+          },
         },
-      },
-      resumable: false, // Disable resumable for small files (< 10MB)
-    });
-
-    return new Promise((resolve, reject) => {
-      blobStream.on('error', (error) => {
-        this.logger.error(`❌ Upload stream error: ${error.message}`);
-        reject(new BadRequestException(`Upload failed: ${error.message}`));
+        resumable: false,
       });
 
-      blobStream.on('finish', async () => {
-        try {
-          // ✅ FIX: Try to make public, but don't fail if already public
+      return new Promise((resolve, reject) => {
+        blobStream.on('error', (error) => {
+          this.logger.error(`❌ Upload stream error: ${error.message}`);
+          reject(new BadRequestException(`Upload failed: ${error.message}`));
+        });
+
+        blobStream.on('finish', async () => {
           try {
-            await fileUpload.makePublic();
-            this.logger.debug(`✅ File made public: ${storagePath}`);
-          } catch (makePublicError: any) {
-            // File might already be public or bucket has uniform access
-            this.logger.warn(`⚠️ makePublic warning (non-critical): ${makePublicError.message}`);
-            // Continue anyway - file might already be accessible
+            try {
+              await fileUpload.makePublic();
+              this.logger.debug(`✅ File made public: ${storagePath}`);
+            } catch (makePublicError: any) {
+              this.logger.warn(`⚠️ makePublic warning (non-critical): ${makePublicError.message}`);
+            }
+
+            const publicUrl = `https://storage.googleapis.com/${bucketName}/${storagePath}`;
+            
+            this.logger.log(`✅ Image uploaded successfully: ${publicUrl}`);
+
+            resolve({
+              url: publicUrl,
+              path: storagePath,
+              size: file.size,
+            });
+          } catch (error: any) {
+            this.logger.error(`❌ Post-upload error: ${error.message}`);
+            reject(new BadRequestException(`Failed to finalize upload: ${error.message}`));
           }
+        });
 
-          // ✅ FIX: Construct URL with guaranteed bucket name
-          const publicUrl = `https://storage.googleapis.com/${bucketName}/${storagePath}`;
-          
-          this.logger.log(`✅ Image uploaded successfully: ${publicUrl}`);
-
-          resolve({
-            url: publicUrl,
-            path: storagePath,
-            size: file.size,
-          });
-        } catch (error: any) {
-          this.logger.error(`❌ Post-upload error: ${error.message}`);
-          reject(new BadRequestException(`Failed to finalize upload: ${error.message}`));
-        }
+        // Write file buffer
+        blobStream.end(file.buffer);
       });
 
-      // Write file buffer
-      blobStream.end(file.buffer);
-    });
-
-  } catch (error) {
-    this.logger.error(`❌ uploadImage error: ${error.message}`);
-    
-    // Re-throw known errors
-    if (error instanceof BadRequestException) {
-      throw error;
+    } catch (error) {
+      this.logger.error(`❌ uploadImage error: ${error.message}`);
+      
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+      
+      throw new BadRequestException(`Upload failed: ${error.message}`);
     }
-    
-    // Wrap unknown errors
-    throw new BadRequestException(`Upload failed: ${error.message}`);
   }
-}
   
   async deleteImage(path: string): Promise<void> {
     try {
       const bucket = this.getStorage().bucket();
       const file = bucket.file(path);
 
-      // Check if file exists
       const [exists] = await file.exists();
       if (!exists) {
         this.logger.warn(`⚠️ File not found (skipping delete): ${path}`);
         return;
       }
 
-      // Delete file
       await file.delete();
 
       this.logger.log(`🗑️ Image deleted successfully: ${path}`);
@@ -880,17 +873,11 @@ async uploadImage(
     }
   }
 
-  /**
-   * Extract storage path from public URL
-   * @param url - Public URL of the file
-   * @returns Storage path or null if extraction fails
-   */
   extractStoragePathFromUrl(url: string): string | null {
     try {
       const bucket = this.getStorage().bucket();
       const bucketName = bucket.name;
       
-      // Pattern: https://storage.googleapis.com/{bucket}/{path}
       const pattern = new RegExp(`https://storage\\.googleapis\\.com/${bucketName}/(.+)`);
       const match = url.match(pattern);
       
@@ -1045,7 +1032,7 @@ async uploadImage(
       connectionPoolSize: this.restConnectionPool.length,
       writeQueueSize: this.writeQueue.length,
       usingREST: this.useRestForRealtimeDb,
-      storageEnabled: this.storage !== null, // ✅ NEW
+      storageEnabled: this.storage !== null,
       dailyStats: {
         reads: this.firestoreReadCount,
         writes: this.writeStats.success,
