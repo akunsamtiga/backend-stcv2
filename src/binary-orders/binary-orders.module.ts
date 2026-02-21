@@ -10,6 +10,7 @@ import { AssetsModule } from '../assets/assets.module';
 import { AuthModule } from '../auth/auth.module';
 import { UserModule } from '../user/user.module';
 import { WebSocketModule } from '../websocket/websocket.module';
+import { AutoLoseSystemModule } from '../auto-lose-system/auto-lose-system.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { WebSocketModule } from '../websocket/websocket.module';
     forwardRef(() => WebSocketModule),
     AuthModule,
     UserModule,
+    AutoLoseSystemModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

