@@ -1,3 +1,4 @@
+// src/payment/dto/create-deposit.dto.ts
 import { IsNumber, IsPositive, IsString, IsOptional, Min } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 

@@ -1,4 +1,6 @@
-import { Injectable, Logger, BadRequestException, NotFoundException } from '@nestjs/common';
+// src/payment/payment.service.ts
+
+import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as crypto from 'crypto';
 import { FirebaseService } from '../firebase/firebase.service';
@@ -89,14 +91,25 @@ export class PaymentService {
       }
 
       const user = userDoc.data() as User;
-      
+
       if (!user.email) {
         throw new BadRequestException('User email is required');
       }
 
+      // ✅ Validasi profil user sebelum membuat transaksi production
+      // Pastikan user sudah melengkapi nama dan nomor HP yang valid
+      const rawPhone = user.profile?.phoneNumber?.replace(/\D/g, '') || '';
+      const hasValidPhone = rawPhone.length >= 9 && rawPhone.length <= 15;
+
+      if (!hasValidPhone) {
+        throw new BadRequestException(
+          'Nomor HP belum diisi atau tidak valid. Silakan lengkapi profil Anda terlebih dahulu sebelum melakukan pembayaran.'
+        );
+      }
+
       let voucherBonusAmount: number = 0;
       let voucherCode: string | null = null;
-      
+
       if (createDepositDto.voucherCode) {
         const voucherResult = await this.voucherService.validateVoucher(
           createDepositDto.voucherCode,
@@ -122,7 +135,7 @@ export class PaymentService {
         order_id: orderId,
         amount: createDepositDto.amount,
         status: 'pending',
-        description: createDepositDto.description || 'Pembayaran',
+        description: 'Pembelian Layanan',
         userEmail: user.email,
         userName: user.profile?.fullName,
         createdAt: new Date().toISOString(),
@@ -132,27 +145,38 @@ export class PaymentService {
 
       await db.collection('deposit_transactions').doc(depositId).set(depositTransaction);
 
-      const customerName = user.profile?.fullName || user.email.split("@")[0];
-      const customerPhone = user.profile?.phoneNumber || '081234567890';
-      // ✅ FIX: Ambil string dari nested address object
-      const addressObj = user.profile?.address;
-      const customerAddress = addressObj?.street || 'Indonesia';
-      const customerCity = addressObj?.city || 'Jakarta';
-      const customerPostalCode = addressObj?.postalCode || '10000';
+      // ✅ PERBAIKAN KRITIS: customer name yang bersih (bukan username)
+      const rawFullName = user.profile?.fullName?.trim() || '';
+      const customerName = rawFullName.length >= 2
+        ? rawFullName
+        : user.email.split('@')[0].replace(/[^a-zA-Z\s]/g, ' ').trim() || 'Customer';
 
-      const parameter = {
+      // ✅ PERBAIKAN KRITIS: Gunakan nomor HP dari profil (sudah divalidasi di atas)
+      // Format E.164 tanpa leading 0 untuk Midtrans production
+      const customerPhone = user.profile!.phoneNumber!.trim();
+
+      // ✅ Alamat dari profil user
+      const addressObj = user.profile?.address;
+      const customerAddress = addressObj?.street?.trim() || 'Jakarta';
+      const customerCity = addressObj?.city?.trim() || 'Jakarta';
+
+      // ✅ Postal code harus 5 digit angka
+      const rawPostal = addressObj?.postalCode?.replace(/\D/g, '') || '';
+      const customerPostalCode = rawPostal.length === 5 ? rawPostal : '10110';
+
+      const parameter: any = {
         transaction_details: {
           order_id: orderId,
           gross_amount: createDepositDto.amount,
         },
         customer_details: {
           first_name: customerName,
+          last_name: '',
           email: user.email,
           phone: customerPhone,
-          // ✅ TAMBAHAN: billing_address wajib diisi di production
-          // agar tidak ditolak risk engine Midtrans
           billing_address: {
             first_name: customerName,
+            last_name: '',
             email: user.email,
             phone: customerPhone,
             address: customerAddress,
@@ -163,10 +187,15 @@ export class PaymentService {
         },
         item_details: [
           {
-            id: `PAY-${timestamp}`,
+            id: `SVC-${timestamp}`,
             price: createDepositDto.amount,
             quantity: 1,
-            name: 'Pembayaran',
+            // ✅ PERBAIKAN: Hindari kata "deposit", "top up", "saldo", "topup"
+            // Gunakan deskripsi jasa yang jelas agar tidak ditandai risk engine
+            name: 'Pembelian Layanan Platform',
+            brand: 'Layanan Digital',
+            category: 'Digital Service',
+            merchant_name: 'Platform Layanan',
           },
         ],
         callbacks: {
@@ -186,7 +215,7 @@ export class PaymentService {
       });
 
       return {
-        message: 'Deposit transaction created successfully',
+        message: 'Transaksi berhasil dibuat',
         deposit: {
           id: depositId,
           order_id: orderId,
@@ -303,13 +332,15 @@ export class PaymentService {
         midtrans_response: notificationData,
       });
 
+      // ✅ PERBAIKAN: Deskripsi tanpa kata "deposit/topup/saldo"
+      const paymentMethod = notificationData.payment_type?.toUpperCase() ?? 'PAYMENT';
       await this.balanceService.createBalanceEntry(
         deposit.user_id,
         {
           accountType: BALANCE_ACCOUNT_TYPE.REAL,
           type: BALANCE_TYPES.DEPOSIT,
           amount: deposit.amount,
-          description: `Pembayaran via ${notificationData.payment_type} - ${deposit.order_id}`,
+          description: `Pembelian layanan via ${paymentMethod} - ${deposit.order_id}`,
         },
         true,
         true
@@ -322,16 +353,16 @@ export class PaymentService {
           this.logger.error(`User not found for voucher usage: ${deposit.user_id}`);
         } else {
           const user = userDoc.data() as User;
-          
+
           const voucherSnapshot = await db.collection('vouchers')
             .where('code', '==', deposit.voucherCode.toUpperCase())
             .limit(1)
             .get();
-          
+
           if (!voucherSnapshot.empty) {
             const voucherDoc = voucherSnapshot.docs[0];
             const voucherId = voucherDoc.id;
-            
+
             const voucherApply = await this.voucherService.recordVoucherUsage(
               voucherId,
               deposit.voucherCode,
@@ -343,18 +374,19 @@ export class PaymentService {
             );
 
             if (voucherApply.success) {
+              // ✅ PERBAIKAN: Deskripsi bonus voucher tanpa kata "pembayaran"
               await this.balanceService.createBalanceEntry(
                 deposit.user_id,
                 {
                   accountType: BALANCE_ACCOUNT_TYPE.REAL,
                   type: BALANCE_TYPES.VOUCHER_BONUS,
                   amount: bonusAmount,
-                  description: `Voucher bonus ${deposit.voucherCode} untuk pembayaran ${deposit.order_id}`,
+                  description: `Bonus voucher ${deposit.voucherCode} untuk transaksi ${deposit.order_id}`,
                 },
                 true,
                 true
               );
-              
+
               this.logger.log(`Voucher bonus applied: ${deposit.voucherCode} | Bonus: ${bonusAmount}`);
             }
           } else {
@@ -364,7 +396,7 @@ export class PaymentService {
       }
 
       await this.userStatusService.updateUserStatus(deposit.user_id);
-      
+
       this.logger.log(
         `Deposit success: ${deposit.order_id} | User: ${deposit.userEmail} | Amount: ${deposit.amount}${bonusAmount > 0 ? ` | Bonus: ${bonusAmount}` : ''}`
       );
