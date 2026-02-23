@@ -35,4 +35,12 @@ export class GoogleLoginDto {
   @IsOptional()
   @IsString()
   referralCode?: string;
+
+  @ApiPropertyOptional({ 
+    example: 'AFFAB12CD34',
+    description: 'Affiliate code from an affiliator (optional)'
+  })
+  @IsOptional()
+  @IsString()
+  affiliateCode?: string;
 }

@@ -1,6 +1,7 @@
 // src/balance/balance.service.ts
 
 import { Injectable, BadRequestException, Logger, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { FirebaseService } from '../firebase/firebase.service';
 import { CreateBalanceDto } from './dto/create-balance.dto';
 import { QueryBalanceDto } from './dto/query-balance.dto';
@@ -32,7 +33,10 @@ export class BalanceService {
   private readonly RETRY_DELAY_MS = 200;
   private readonly MAX_CONSECUTIVE_FAILURES = 5;
 
-  constructor(private firebaseService: FirebaseService) {
+  constructor(
+    private firebaseService: FirebaseService,
+    private eventEmitter: EventEmitter2,
+  ) {
     setInterval(() => this.cleanupCache(), 30000);
   }
 
@@ -357,6 +361,11 @@ export class BalanceService {
                   this.logger.warn(`⚠️ Status update failed: ${error.message}`);
                 }
               }
+
+              // ─── Emit event for Affiliate Program deposit tracking ──────
+              this.eventEmitter.emit('affiliate.user.deposited', { userId, amount });
+              this.logger.debug(`📡 Emitted affiliate.user.deposited for user ${userId}`);
+              // ─────────────────────────────────────────────────────────────
             }
 
             if (affiliateInfo.hasPending && affiliateInfo.affiliateId && affiliateInfo.referrerId) {

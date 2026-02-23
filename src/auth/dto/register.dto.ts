@@ -36,6 +36,15 @@ export class RegisterDto {
   referralCode?: string;
 
   @ApiPropertyOptional({ 
+    example: 'AFFAB12CD34',
+    description: 'Affiliate code from an affiliator (optional)',
+    required: false
+  })
+  @IsOptional()
+  @IsString()
+  affiliateCode?: string;
+
+  @ApiPropertyOptional({ 
     example: 'John Doe',
     description: 'Full name (optional, can be set later)',
     required: false

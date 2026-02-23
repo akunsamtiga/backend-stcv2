@@ -127,6 +127,9 @@ export interface User {
   createdBy?: string;
   lastLoginAt?: string;
   loginCount?: number;
+  // Affiliate Program fields
+  isAffiliator?: boolean;
+  affiliatorProgramId?: string;
 }
 
 export interface Balance {
@@ -181,6 +184,76 @@ export interface AffiliateStats {
   totalCommission: number;
   referrals: Affiliate[];
 }
+
+// ─── Affiliate Program Interfaces ────────────────────────────────────────────
+
+export interface AffiliatorProgram {
+  id: string;
+  userId: string;
+  userEmail: string;
+  affiliateCode: string;        // Format: AFF + 8 alphanumeric chars
+  isActive: boolean;
+
+  // Commission config
+  revenueSharePercentage: number;  // Default: 50
+  unlockThreshold: number;         // Default: 5 (invited users who must deposit)
+
+  // Balances
+  commissionBalance: number;       // Available (unlocked) commission balance
+  lockedCommissionBalance: number; // Accumulated before unlock (reserved / informational)
+  isCommissionUnlocked: boolean;
+
+  // Stats
+  totalInvited: number;
+  totalInvitedDeposited: number;
+  totalCommissionEarned: number;
+
+  // Admin tracking
+  assignedBy: string;
+  assignedAt: string;
+  revokedBy?: string;
+  revokedAt?: string;
+
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AffiliatorInvite {
+  id: string;
+  affiliatorId: string;    // userId of the affiliator
+  programId: string;       // AffiliatorProgram.id
+  inviteeId: string;
+  inviteeEmail: string;
+
+  hasDeposited: boolean;
+  firstDepositAt?: string;
+  firstDepositAmount?: number;
+
+  // Whether this invite was counted toward the unlock threshold
+  // First N (unlockThreshold) depositing invitees get isCountedForUnlock = true
+  // and do NOT generate commissions
+  isCountedForUnlock: boolean;
+
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AffiliateCommissionLog {
+  id: string;
+  affiliatorId: string;   // userId of the affiliator
+  programId: string;      // AffiliatorProgram.id
+  inviteeId: string;
+  orderId: string;
+
+  orderAmount: number;
+  lossAmount: number;             // = orderAmount (full stake lost)
+  commissionPercentage: number;   // revenueSharePercentage at time of event
+  commissionAmount: number;       // = lossAmount * commissionPercentage / 100
+
+  createdAt: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 export interface Asset {
   id: string;

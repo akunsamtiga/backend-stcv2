@@ -13,6 +13,7 @@ export const BALANCE_TYPES = {
 export const BALANCE_ACCOUNT_TYPE = {
   REAL: 'real',
   DEMO: 'demo',
+  AFFILIATE_COMMISSION: 'affiliate_commission',
 } as const;
 
 export const ORDER_STATUS = {
@@ -79,6 +80,17 @@ export const AFFILIATE_CONFIG = {
   },
 } as const;
 
+export const AFFILIATE_PROGRAM_CONFIG = {
+  DEFAULT_REVENUE_SHARE: 50,          // 50% of invitee's trading loss
+  DEFAULT_UNLOCK_THRESHOLD: 5,        // 5 invited users must deposit to unlock
+  MIN_LOSS_AMOUNT_FOR_COMMISSION: 1,  // Minimum loss amount to generate commission
+} as const;
+
+export const AFFILIATOR_PROGRAM_STATUS = {
+  ACTIVE: 'active',
+  INACTIVE: 'inactive',
+} as const;
+
 export const WITHDRAWAL_STATUS = {
   PENDING: 'pending',
   APPROVED: 'approved',
@@ -102,6 +114,10 @@ export const COLLECTIONS = {
   WITHDRAWAL_REQUESTS: 'withdrawal_requests',
   VOUCHERS: 'vouchers',
   VOUCHER_USAGES: 'voucher_usages',
+  // Affiliate Program (separate from referral system)
+  AFFILIATOR_PROGRAMS: 'affiliator_programs',
+  AFFILIATOR_INVITES: 'affiliator_invites',
+  AFFILIATE_COMMISSION_LOGS: 'affiliate_commission_logs',
 } as const;
 
 export const ASSET_TYPE = {

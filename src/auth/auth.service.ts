@@ -1,6 +1,6 @@
 // src/auth/auth.service.ts
 
-import { Injectable, UnauthorizedException, ConflictException, Logger, OnModuleInit, BadRequestException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, ConflictException, Logger, OnModuleInit, BadRequestException, Optional } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
@@ -9,6 +9,9 @@ import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { COLLECTIONS, BALANCE_TYPES, BALANCE_ACCOUNT_TYPE, USER_ROLES, USER_STATUS, AFFILIATE_STATUS } from '../common/constants';
 import { User, UserProfile } from '../common/interfaces';
+
+// Lazy import to avoid circular dependency — resolved at runtime via Optional()
+import type { AffiliateProgramService } from '../affiliate-program/affiliate-program.service';
 
 @Injectable()
 export class AuthService implements OnModuleInit {
@@ -23,6 +26,7 @@ export class AuthService implements OnModuleInit {
     private firebaseService: FirebaseService,
     private jwtService: JwtService,
     private configService: ConfigService,
+    @Optional() private affiliateProgramService?: AffiliateProgramService,
   ) {
     setInterval(() => this.cleanupCache(), 60000);
   }
@@ -169,7 +173,7 @@ export class AuthService implements OnModuleInit {
   async register(registerDto: RegisterDto) {
     const startTime = Date.now();
     const db = this.firebaseService.getFirestore();
-    const { email, password, referralCode, fullName, phoneNumber, dateOfBirth, gender, nationality } = registerDto;
+    const { email, password, referralCode, affiliateCode, fullName, phoneNumber, dateOfBirth, gender, nationality } = registerDto;
 
     try {
       const usersSnapshot = await db.collection(COLLECTIONS.USERS)
@@ -291,6 +295,28 @@ export class AuthService implements OnModuleInit {
         }
       }
 
+      // ─── Affiliate Program invite hook ────────────────────────────────────
+      let affiliateProgramResult: any = null;
+      if (affiliateCode?.trim() && this.affiliateProgramService) {
+        try {
+          const result = await this.affiliateProgramService.handleNewRegistration(
+            userId,
+            email,
+            affiliateCode.trim(),
+          );
+          if (result.registered) {
+            affiliateProgramResult = result;
+            this.logger.log(`✅ Affiliate program invite created via code: ${affiliateCode}`);
+          } else {
+            this.logger.warn(`⚠️ Affiliate program invite not registered for code: ${affiliateCode}`);
+          }
+        } catch (affProgError) {
+          // Non-blocking — registration must still succeed
+          this.logger.error(`⚠️ Affiliate program hook failed: ${affProgError.message}`);
+        }
+      }
+      // ─────────────────────────────────────────────────────────────────────
+
       let profileCompletion = 10;
       if (fullName) profileCompletion += 10;
       if (phoneNumber) profileCompletion += 10;
@@ -334,6 +360,12 @@ export class AuthService implements OnModuleInit {
               referrerId: referrerUserId,
               commissionPending: true,
               message: 'Commission will be calculated on first deposit',
+            }
+          : null,
+        affiliateProgram: affiliateProgramResult?.registered
+          ? {
+              affiliatorCode: affiliateCode,
+              message: 'You have been registered under an affiliator program',
             }
           : null,
         token,

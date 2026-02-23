@@ -529,6 +529,73 @@
           "order": "DESCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "affiliator_programs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "isActive", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "affiliator_programs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "userId", "order": "ASCENDING" },
+        { "fieldPath": "isActive", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "affiliator_programs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "affiliateCode", "order": "ASCENDING" },
+        { "fieldPath": "isActive", "order": "ASCENDING" }
+      ]
+    },
+
+    {
+      "collectionGroup": "affiliator_invites",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "affiliatorId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "affiliator_invites",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "affiliatorId", "order": "ASCENDING" },
+        { "fieldPath": "hasDeposited", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "affiliator_invites",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "inviteeId", "order": "ASCENDING" },
+        { "fieldPath": "hasDeposited", "order": "ASCENDING" }
+      ]
+    },
+
+    {
+      "collectionGroup": "affiliate_commission_logs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "affiliatorId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "affiliate_commission_logs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "inviteeId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": [
@@ -642,6 +709,22 @@
           "order": "DESCENDING",
           "queryScope": "COLLECTION"
         }
+      ]
+    },
+    {
+      "collectionGroup": "affiliator_programs",
+      "fieldPath": "createdAt",
+      "indexes": [
+        { "order": "ASCENDING", "queryScope": "COLLECTION" },
+        { "order": "DESCENDING", "queryScope": "COLLECTION" }
+      ]
+    },
+    {
+      "collectionGroup": "affiliate_commission_logs",
+      "fieldPath": "createdAt",
+      "indexes": [
+        { "order": "ASCENDING", "queryScope": "COLLECTION" },
+        { "order": "DESCENDING", "queryScope": "COLLECTION" }
       ]
     }
   ]

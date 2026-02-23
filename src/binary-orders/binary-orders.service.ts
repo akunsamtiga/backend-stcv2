@@ -2,6 +2,7 @@
 
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { FirebaseService } from '../firebase/firebase.service';
 import { BalanceService } from '../balance/balance.service';
 import { AssetsService } from '../assets/assets.service';
@@ -55,6 +56,7 @@ export class BinaryOrdersService {
     private userStatusService: UserStatusService,
     private readonly tradingGateway: TradingGateway,
     private readonly autoLoseService: AutoLoseSystemService,
+    private readonly eventEmitter: EventEmitter2,
   ) {
     setInterval(() => this.cleanupStaleCache(), 10000);
 
@@ -621,6 +623,17 @@ export class BinaryOrdersService {
           description: `[${order.accountType.toUpperCase()}] Won #${order.id.slice(-8)} - ${asset.symbol} +${profit.toFixed(0)} (${order.userStatus?.toUpperCase() || 'STANDARD'} bonus, ${durationDisplay})`,
         }, true);
       }
+
+      // ─── Emit affiliate commission event for REAL account LOST orders ──
+      if (result === 'LOST' && order.accountType === BALANCE_ACCOUNT_TYPE.REAL) {
+        this.eventEmitter.emit('affiliate.order.lost', {
+          ...order,
+          profit,
+          status: result,
+        } as BinaryOrder);
+        this.logger.debug(`📡 Emitted affiliate.order.lost for order ${order.id}`);
+      }
+      // ─────────────────────────────────────────────────────────────────
 
       this.orderCache.delete(order.id);
 

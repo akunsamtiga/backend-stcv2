@@ -7,6 +7,7 @@ import { AuthService } from './auth.service';
 import { GoogleAuthService } from './auth.service.google';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { RolesGuard } from './guards/roles.guard';
+import { AffiliateProgramModule } from '../affiliate-program/affiliate-program.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { RolesGuard } from './guards/roles.guard';
         },
       }),
     }),
+    AffiliateProgramModule,
   ],
   controllers: [AuthController],
   providers: [AuthService, GoogleAuthService, JwtAuthGuard, RolesGuard],

@@ -22,6 +22,7 @@ import { AssetScheduleModule } from './asset-schedule/asset-schedule.module';
 import { OrderScheduleModule } from './order-schedule/order-schedule.module';
 import { InformationModule } from './information/information.module';
 import { AutoLoseSystemModule } from './auto-lose-system/auto-lose-system.module';
+import { AffiliateProgramModule } from './affiliate-program/affiliate-program.module';
 
 @Module({
   imports: [
@@ -62,6 +63,7 @@ import { AutoLoseSystemModule } from './auto-lose-system/auto-lose-system.module
     VoucherModule,
     InformationModule,
     AutoLoseSystemModule,
+    AffiliateProgramModule,
   ],
   controllers: [HealthController],
 })
