@@ -1,4 +1,5 @@
 // src/common/interfaces/index.ts
+
 export interface ApiResponse<T = any> {
   success: boolean;
   message?: string;
@@ -29,7 +30,7 @@ export interface UserProfile {
   dateOfBirth?: string;
   gender?: 'male' | 'female' | 'other';
   nationality?: string;
-  
+
   address?: {
     street?: string;
     city?: string;
@@ -37,7 +38,7 @@ export interface UserProfile {
     postalCode?: string;
     country?: string;
   };
-  
+
   identityDocument?: {
     type?: 'ktp' | 'passport' | 'sim';
     number?: string;
@@ -62,7 +63,7 @@ export interface UserProfile {
       mimeType?: string;
     };
   };
-  
+
   bankAccount?: {
     bankName?: string;
     accountNumber?: string;
@@ -70,14 +71,14 @@ export interface UserProfile {
     isVerified?: boolean;
     verifiedAt?: string;
   };
-  
+
   avatar?: {
     url: string;
     uploadedAt: string;
     fileSize?: number;
     mimeType?: string;
   };
-  
+
   selfieVerification?: {
     photoUrl: string;
     uploadedAt: string;
@@ -90,7 +91,7 @@ export interface UserProfile {
     fileSize?: number;
     mimeType?: string;
   };
-  
+
   settings?: {
     emailNotifications?: boolean;
     smsNotifications?: boolean;
@@ -99,7 +100,7 @@ export interface UserProfile {
     language?: string;
     timezone?: string;
   };
-  
+
   verification?: {
     emailVerified?: boolean;
     phoneVerified?: boolean;
@@ -191,7 +192,7 @@ export interface AffiliatorProgram {
   id: string;
   userId: string;
   userEmail: string;
-  affiliateCode: string;        // Format: AFF + 8 alphanumeric chars
+  affiliateCode: string;       // Format: AFF + 8 alphanumeric chars
   isActive: boolean;
 
   // Commission config
@@ -199,7 +200,7 @@ export interface AffiliatorProgram {
   unlockThreshold: number;         // Default: 5 (invited users who must deposit)
 
   // Balances
-  commissionBalance: number;       // Available (unlocked) commission balance
+  commissionBalance: number;       // Available (unlocked) commission balance — reserved saat ada withdrawal pending
   lockedCommissionBalance: number; // Accumulated before unlock (reserved / informational)
   isCommissionUnlocked: boolean;
 
@@ -207,10 +208,12 @@ export interface AffiliatorProgram {
   totalInvited: number;
   totalInvitedDeposited: number;
   totalCommissionEarned: number;
+  totalCommissionWithdrawn?: number; // Total yang sudah berhasil ditarik (status: completed)
 
   // Admin tracking
   assignedBy: string;
   assignedAt: string;
+  updatedBy?: string;
   revokedBy?: string;
   revokedAt?: string;
 
@@ -220,8 +223,8 @@ export interface AffiliatorProgram {
 
 export interface AffiliatorInvite {
   id: string;
-  affiliatorId: string;    // userId of the affiliator
-  programId: string;       // AffiliatorProgram.id
+  affiliatorId: string;   // userId of the affiliator
+  programId: string;      // AffiliatorProgram.id
   inviteeId: string;
   inviteeEmail: string;
 
@@ -229,9 +232,9 @@ export interface AffiliatorInvite {
   firstDepositAt?: string;
   firstDepositAmount?: number;
 
-  // Whether this invite was counted toward the unlock threshold
+  // Whether this invite was counted toward the unlock threshold.
   // First N (unlockThreshold) depositing invitees get isCountedForUnlock = true
-  // and do NOT generate commissions
+  // and do NOT generate commissions.
   isCountedForUnlock: boolean;
 
   createdAt: string;
@@ -240,17 +243,48 @@ export interface AffiliatorInvite {
 
 export interface AffiliateCommissionLog {
   id: string;
-  affiliatorId: string;   // userId of the affiliator
-  programId: string;      // AffiliatorProgram.id
+  affiliatorId: string;  // userId of the affiliator
+  programId: string;     // AffiliatorProgram.id
   inviteeId: string;
   orderId: string;
 
   orderAmount: number;
-  lossAmount: number;             // = orderAmount (full stake lost)
-  commissionPercentage: number;   // revenueSharePercentage at time of event
-  commissionAmount: number;       // = lossAmount * commissionPercentage / 100
+  lossAmount: number;            // = orderAmount (full stake lost)
+  commissionPercentage: number;  // revenueSharePercentage at time of event
+  commissionAmount: number;      // = lossAmount * commissionPercentage / 100
 
   createdAt: string;
+}
+
+export interface AffiliateCommissionWithdrawal {
+  id: string;
+  affiliatorId: string;  // userId of the affiliator
+  programId: string;     // AffiliatorProgram.id
+  amount: number;        // Jumlah yang ingin ditarik
+  status: 'pending' | 'approved' | 'rejected' | 'completed';
+
+  // Snapshot info affiliator saat request dibuat
+  userEmail: string;
+  bankAccount: {
+    bankName: string;
+    accountNumber: string;
+    accountHolderName: string;
+  };
+
+  // Snapshot saldo komisi saat request dibuat (untuk audit trail)
+  commissionBalanceAtRequest: number;
+
+  // Catatan opsional dari affiliator
+  note?: string;
+
+  // Review oleh admin
+  reviewedBy?: string;
+  reviewedAt?: string;
+  adminNotes?: string;
+  rejectionReason?: string;
+
+  createdAt: string;
+  updatedAt: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -421,25 +455,25 @@ export interface Information {
   description: string;
   type: InformationType;
   priority: InformationPriority;
-  
+
   // Display settings
   imageUrl?: string;
   linkUrl?: string;
   linkText?: string;
-  
+
   // Scheduling
   startDate?: string;
   endDate?: string;
   publishDate?: string;
-  
+
   // Status
   isActive: boolean;
   isPinned: boolean;
-  
+
   // Targeting
   targetUserStatus?: ('standard' | 'gold' | 'vip')[];
   targetUserRoles?: ('user' | 'admin' | 'super_admin')[];
-  
+
   // Metadata
   createdBy: string;
   createdByEmail?: string;
@@ -447,7 +481,7 @@ export interface Information {
   updatedByEmail?: string;
   createdAt: string;
   updatedAt?: string;
-  
+
   // Analytics
   viewCount?: number;
   clickCount?: number;

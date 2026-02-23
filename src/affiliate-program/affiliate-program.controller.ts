@@ -1,12 +1,13 @@
 // src/affiliate-program/affiliate-program.controller.ts
 
-import { Controller, Get, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Delete, Body, Param, UseGuards } from '@nestjs/common';
 import {
-  ApiTags, ApiOperation, ApiBearerAuth, ApiResponse,
+  ApiTags, ApiOperation, ApiBearerAuth, ApiResponse, ApiParam,
 } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/user.decorator';
 import { AffiliateProgramService } from './affiliate-program.service';
+import { RequestCommissionWithdrawalDto } from './dto/affiliate-commission-withdrawal.dto';
 
 @ApiTags('affiliate-program')
 @Controller('affiliate-program')
@@ -14,6 +15,8 @@ import { AffiliateProgramService } from './affiliate-program.service';
 @ApiBearerAuth()
 export class AffiliateProgramController {
   constructor(private affiliateProgramService: AffiliateProgramService) {}
+
+  // ── Dashboard ─────────────────────────────────────────────────────────────
 
   @Get('my-program')
   @ApiOperation({
@@ -53,6 +56,7 @@ export class AffiliateProgramController {
             depositedInvites: 3,
             pendingInvites: 2,
             totalCommissionEarned: 0,
+            totalCommissionWithdrawn: 0,
           },
         },
       },
@@ -62,6 +66,8 @@ export class AffiliateProgramController {
   getMyProgram(@CurrentUser('sub') userId: string) {
     return this.affiliateProgramService.getMyProgram(userId);
   }
+
+  // ── Invites ───────────────────────────────────────────────────────────────
 
   @Get('my-invites')
   @ApiOperation({
@@ -98,6 +104,8 @@ export class AffiliateProgramController {
     return this.affiliateProgramService.getMyInvites(userId);
   }
 
+  // ── Commission Balance ────────────────────────────────────────────────────
+
   @Get('my-commissions')
   @ApiOperation({
     summary: 'Get my commission balance and history',
@@ -120,6 +128,7 @@ export class AffiliateProgramController {
           lockedCommissionBalance: 0,
           isCommissionUnlocked: true,
           totalEarned: 1200000,
+          totalWithdrawn: 750000,
           revenueSharePercentage: 50,
           commissionLogs: [
             {
@@ -138,5 +147,116 @@ export class AffiliateProgramController {
   @ApiResponse({ status: 403, description: 'Not an affiliator' })
   getMyCommissions(@CurrentUser('sub') userId: string) {
     return this.affiliateProgramService.getMyCommissions(userId);
+  }
+
+  // ── Commission Withdrawal ─────────────────────────────────────────────────
+
+  @Post('commission-withdrawals')
+  @ApiOperation({
+    summary: 'Request commission withdrawal',
+    description: `Submit a withdrawal request for your affiliate commission balance.
+
+    **Syarat:**
+    - Commission balance harus sudah terbuka (minimal ${5} user undangan sudah deposit)
+    - Minimal penarikan Rp 50.000
+    - Tidak boleh ada request pending lain yang belum diproses
+    - Harus sudah mendaftarkan rekening bank di profil
+    
+    ⚠️ Jumlah yang diminta langsung di-reserve dari commission balance selama request pending.
+    Saldo akan dikembalikan jika request ditolak atau dibatalkan.`,
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Withdrawal request submitted successfully',
+    schema: {
+      example: {
+        success: true,
+        data: {
+          message: 'Commission withdrawal request submitted successfully',
+          withdrawal: {
+            id: 'acw_abc123',
+            amount: 150000,
+            status: 'pending',
+            bankAccount: {
+              bankName: 'Bank BCA',
+              accountNumber: '1234567890',
+              accountHolderName: 'John Doe',
+            },
+            commissionBalanceRemaining: 300000,
+            createdAt: '2024-02-01T10:00:00.000Z',
+          },
+        },
+      },
+    },
+  })
+  @ApiResponse({ status: 400, description: 'Saldo tidak cukup, commission terkunci, atau nominal di bawah minimum' })
+  @ApiResponse({ status: 403, description: 'Bukan affiliator atau program tidak aktif' })
+  @ApiResponse({ status: 404, description: 'Rekening bank belum terdaftar di profil' })
+  @ApiResponse({ status: 409, description: 'Sudah ada request pending yang belum diproses' })
+  requestCommissionWithdrawal(
+    @CurrentUser('sub') userId: string,
+    @Body() dto: RequestCommissionWithdrawalDto,
+  ) {
+    return this.affiliateProgramService.requestCommissionWithdrawal(userId, dto);
+  }
+
+  @Get('commission-withdrawals')
+  @ApiOperation({
+    summary: 'Get my commission withdrawal history',
+    description: 'Menampilkan semua riwayat request penarikan komisi beserta status terkini.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Commission withdrawal history',
+    schema: {
+      example: {
+        success: true,
+        data: {
+          commissionBalance: 300000,
+          isCommissionUnlocked: true,
+          totalWithdrawn: 150000,
+          withdrawals: [
+            {
+              id: 'acw_abc123',
+              amount: 150000,
+              status: 'completed',
+              bankAccount: {
+                bankName: 'Bank BCA',
+                accountNumber: '1234567890',
+                accountHolderName: 'John Doe',
+              },
+              note: 'Penarikan bulan Januari',
+              adminNotes: 'Approved and processed',
+              reviewedAt: '2024-02-02T09:00:00.000Z',
+              createdAt: '2024-02-01T10:00:00.000Z',
+            },
+          ],
+        },
+      },
+    },
+  })
+  @ApiResponse({ status: 403, description: 'Bukan affiliator' })
+  getMyCommissionWithdrawals(@CurrentUser('sub') userId: string) {
+    return this.affiliateProgramService.getMyCommissionWithdrawals(userId);
+  }
+
+  @Delete('commission-withdrawals/:withdrawalId/cancel')
+  @ApiOperation({
+    summary: 'Cancel a pending commission withdrawal request',
+    description: `Batalkan request penarikan komisi yang masih berstatus pending.
+    
+    ⚠️ Hanya request dengan status **pending** yang dapat dibatalkan.
+    Saldo yang sudah di-reserve akan dikembalikan ke commission balance.`,
+  })
+  @ApiParam({ name: 'withdrawalId', description: 'Commission withdrawal request ID' })
+  @ApiResponse({ status: 200, description: 'Withdrawal request cancelled successfully' })
+  @ApiResponse({ status: 400, description: 'Request tidak bisa dibatalkan — statusnya bukan pending' })
+  @ApiResponse({ status: 403, description: 'Request ini bukan milik Anda' })
+  @ApiResponse({ status: 404, description: 'Request tidak ditemukan' })
+  cancelCommissionWithdrawal(
+    @CurrentUser('sub') userId: string,
+    @Param('withdrawalId') withdrawalId: string,
+  ) {
+    return this.affiliateProgramService.cancelCommissionWithdrawal(userId, withdrawalId);
   }
 }

@@ -554,7 +554,6 @@
         { "fieldPath": "isActive", "order": "ASCENDING" }
       ]
     },
-
     {
       "collectionGroup": "affiliator_invites",
       "queryScope": "COLLECTION",
@@ -580,7 +579,6 @@
         { "fieldPath": "hasDeposited", "order": "ASCENDING" }
       ]
     },
-
     {
       "collectionGroup": "affiliate_commission_logs",
       "queryScope": "COLLECTION",
@@ -594,6 +592,30 @@
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "inviteeId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "affiliate_commission_withdrawals",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "affiliatorId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "affiliate_commission_withdrawals",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "affiliatorId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "affiliate_commission_withdrawals",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
         { "fieldPath": "createdAt", "order": "DESCENDING" }
       ]
     }
@@ -721,6 +743,14 @@
     },
     {
       "collectionGroup": "affiliate_commission_logs",
+      "fieldPath": "createdAt",
+      "indexes": [
+        { "order": "ASCENDING", "queryScope": "COLLECTION" },
+        { "order": "DESCENDING", "queryScope": "COLLECTION" }
+      ]
+    },
+    {
+      "collectionGroup": "affiliate_commission_withdrawals",
       "fieldPath": "createdAt",
       "indexes": [
         { "order": "ASCENDING", "queryScope": "COLLECTION" },

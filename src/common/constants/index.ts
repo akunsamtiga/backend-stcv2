@@ -1,4 +1,5 @@
 // src/common/constants/index.ts
+
 export const BALANCE_TYPES = {
   DEPOSIT: 'deposit',
   WITHDRAWAL: 'withdrawal',
@@ -81,9 +82,9 @@ export const AFFILIATE_CONFIG = {
 } as const;
 
 export const AFFILIATE_PROGRAM_CONFIG = {
-  DEFAULT_REVENUE_SHARE: 50,          // 50% of invitee's trading loss
-  DEFAULT_UNLOCK_THRESHOLD: 5,        // 5 invited users must deposit to unlock
-  MIN_LOSS_AMOUNT_FOR_COMMISSION: 1,  // Minimum loss amount to generate commission
+  DEFAULT_REVENUE_SHARE: 50,         // 50% of invitee's trading loss
+  DEFAULT_UNLOCK_THRESHOLD: 5,       // 5 invited users must deposit to unlock
+  MIN_LOSS_AMOUNT_FOR_COMMISSION: 1, // Minimum loss amount to generate commission
 } as const;
 
 export const AFFILIATOR_PROGRAM_STATUS = {
@@ -105,6 +106,21 @@ export const WITHDRAWAL_CONFIG = {
   REQUIRE_BANK_ACCOUNT: true,
 } as const;
 
+// ─── Affiliate Commission Withdrawal ─────────────────────────────────────────
+
+export const COMMISSION_WITHDRAWAL_STATUS = {
+  PENDING: 'pending',
+  APPROVED: 'approved',
+  REJECTED: 'rejected',
+  COMPLETED: 'completed',
+} as const;
+
+export const COMMISSION_WITHDRAWAL_CONFIG = {
+  MIN_AMOUNT: 50000, // Minimum penarikan komisi Rp 50.000
+} as const;
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 export const COLLECTIONS = {
   USERS: 'users',
   BALANCE: 'balance',
@@ -118,6 +134,7 @@ export const COLLECTIONS = {
   AFFILIATOR_PROGRAMS: 'affiliator_programs',
   AFFILIATOR_INVITES: 'affiliator_invites',
   AFFILIATE_COMMISSION_LOGS: 'affiliate_commission_logs',
+  AFFILIATE_COMMISSION_WITHDRAWALS: 'affiliate_commission_withdrawals',
 } as const;
 
 export const ASSET_TYPE = {
@@ -210,27 +227,30 @@ export const DURATION_SECONDS = {
 export const ALL_DURATIONS = [
   0.0167,
   1, 2, 3, 4, 5,
-  15, 30, 45, 60
+  15, 30, 45, 60,
 ] as const;
 
 export const DURATION_CONFIG = {
-  0.0167: { display: '1s', seconds: 1, minutes: 0.0167, type: 'ultra_short' },
-  1: { display: '1m', seconds: 60, minutes: 1, type: 'short' },
-  2: { display: '2m', seconds: 120, minutes: 2, type: 'short' },
-  3: { display: '3m', seconds: 180, minutes: 3, type: 'short' },
-  4: { display: '4m', seconds: 240, minutes: 4, type: 'short' },
-  5: { display: '5m', seconds: 300, minutes: 5, type: 'short' },
-  15: { display: '15m', seconds: 900, minutes: 15, type: 'medium' },
-  30: { display: '30m', seconds: 1800, minutes: 30, type: 'medium' },
-  45: { display: '45m', seconds: 2700, minutes: 45, type: 'medium' },
-  60: { display: '60m', seconds: 3600, minutes: 60, type: 'medium' },
+  0.0167: { display: '1s',  seconds: 1,    minutes: 0.0167, type: 'ultra_short' },
+  1:      { display: '1m',  seconds: 60,   minutes: 1,      type: 'short' },
+  2:      { display: '2m',  seconds: 120,  minutes: 2,      type: 'short' },
+  3:      { display: '3m',  seconds: 180,  minutes: 3,      type: 'short' },
+  4:      { display: '4m',  seconds: 240,  minutes: 4,      type: 'short' },
+  5:      { display: '5m',  seconds: 300,  minutes: 5,      type: 'short' },
+  15:     { display: '15m', seconds: 900,  minutes: 15,     type: 'medium' },
+  30:     { display: '30m', seconds: 1800, minutes: 30,     type: 'medium' },
+  45:     { display: '45m', seconds: 2700, minutes: 45,     type: 'medium' },
+  60:     { display: '60m', seconds: 3600, minutes: 60,     type: 'medium' },
 } as const;
+
+// ─── Derived Types ────────────────────────────────────────────────────────────
 
 export type ValidDuration = typeof ALL_DURATIONS[number];
 export type BalanceAccountType = typeof BALANCE_ACCOUNT_TYPE[keyof typeof BALANCE_ACCOUNT_TYPE];
 export type UserStatus = typeof USER_STATUS[keyof typeof USER_STATUS];
 export type AffiliateStatus = typeof AFFILIATE_STATUS[keyof typeof AFFILIATE_STATUS];
 export type WithdrawalStatus = typeof WITHDRAWAL_STATUS[keyof typeof WITHDRAWAL_STATUS];
+export type CommissionWithdrawalStatus = typeof COMMISSION_WITHDRAWAL_STATUS[keyof typeof COMMISSION_WITHDRAWAL_STATUS];
 export type AssetType = typeof ASSET_TYPE[keyof typeof ASSET_TYPE];
 export type AssetCategory = typeof ASSET_CATEGORY[keyof typeof ASSET_CATEGORY];
 export type AssetDataSource = typeof ASSET_DATA_SOURCE[keyof typeof ASSET_DATA_SOURCE];

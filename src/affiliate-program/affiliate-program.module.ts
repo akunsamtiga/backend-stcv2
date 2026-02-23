@@ -7,10 +7,12 @@ import { AffiliateProgramService } from './affiliate-program.service';
 import { AffiliateProgramController } from './affiliate-program.controller';
 import { AffiliateProgramAdminController } from './affiliate-program-admin.controller';
 import { AuthModule } from '../auth/auth.module';
+import { BalanceModule } from '../balance/balance.module'; // ← BARU
 
 @Module({
   imports: [
     AuthModule,
+    BalanceModule, // ← BARU: agar BalanceService tersedia untuk di-inject
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

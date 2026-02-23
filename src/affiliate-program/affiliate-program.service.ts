@@ -11,15 +11,24 @@ import {
   AFFILIATOR_PROGRAM_STATUS,
   AFFILIATE_PROGRAM_CONFIG,
   BALANCE_ACCOUNT_TYPE,
+  BALANCE_TYPES,
+  COMMISSION_WITHDRAWAL_STATUS,
+  COMMISSION_WITHDRAWAL_CONFIG,
 } from '../common/constants';
 import {
   AffiliatorProgram,
   AffiliatorInvite,
   AffiliateCommissionLog,
+  AffiliateCommissionWithdrawal,
   BinaryOrder,
   User,
 } from '../common/interfaces';
 import { AssignAffiliatorDto, UpdateAffiliatorConfigDto, GetAffiliatorsQueryDto } from './dto/affiliate-program.dto';
+import {
+  RequestCommissionWithdrawalDto,
+  ApproveCommissionWithdrawalDto,
+  GetCommissionWithdrawalsQueryDto,
+} from './dto/affiliate-commission-withdrawal.dto';
 
 @Injectable()
 export class AffiliateProgramService {
@@ -72,6 +81,7 @@ export class AffiliateProgramService {
       totalInvited: 0,
       totalInvitedDeposited: 0,
       totalCommissionEarned: 0,
+      totalCommissionWithdrawn: 0,
       assignedBy: adminId,
       assignedAt: timestamp,
       createdAt: timestamp,
@@ -186,7 +196,6 @@ export class AffiliateProgramService {
     }
 
     const snapshot = await ref.orderBy('createdAt', 'desc').get();
-    // FIX: type the 'd' parameter explicitly to suppress TS7006
     const programs: AffiliatorProgram[] = snapshot.docs.map(
       (d: FirebaseFirestore.QueryDocumentSnapshot) => d.data() as AffiliatorProgram
     );
@@ -269,6 +278,7 @@ export class AffiliateProgramService {
         lockedCommissionBalance: program.lockedCommissionBalance,
         isCommissionUnlocked: program.isCommissionUnlocked,
         totalCommissionEarned: program.totalCommissionEarned,
+        totalCommissionWithdrawn: program.totalCommissionWithdrawn || 0,
         revenueSharePercentage: program.revenueSharePercentage,
         unlockThreshold: program.unlockThreshold,
         unlockProgress: `${Math.min(unlockCount, program.unlockThreshold)} / ${program.unlockThreshold}`,
@@ -335,6 +345,7 @@ export class AffiliateProgramService {
         depositedInvites: depositedCount,
         pendingInvites: invites.filter(i => !i.hasDeposited).length,
         totalCommissionEarned: program.totalCommissionEarned,
+        totalCommissionWithdrawn: program.totalCommissionWithdrawn || 0,
       },
     };
   }
@@ -409,6 +420,7 @@ export class AffiliateProgramService {
       lockedCommissionBalance: program.lockedCommissionBalance,
       isCommissionUnlocked: program.isCommissionUnlocked,
       totalEarned: program.totalCommissionEarned,
+      totalWithdrawn: program.totalCommissionWithdrawn || 0,
       revenueSharePercentage: program.revenueSharePercentage,
       commissionLogs: logs.map(l => ({
         id: l.id,
@@ -419,6 +431,436 @@ export class AffiliateProgramService {
         createdAt: l.createdAt,
       })),
     };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // AFFILIATOR: Request commission withdrawal
+  // ─────────────────────────────────────────────────────────────────────────
+
+  async requestCommissionWithdrawal(userId: string, dto: RequestCommissionWithdrawalDto) {
+    const db = this.firebaseService.getFirestore();
+
+    // 1. Validate affiliator program active
+    const programSnapshot = await db
+      .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
+      .where('userId', '==', userId)
+      .where('isActive', '==', true)
+      .limit(1)
+      .get();
+
+    if (programSnapshot.empty) {
+      throw new ForbiddenException('You do not have an active affiliator program');
+    }
+
+    const program = programSnapshot.docs[0].data() as AffiliatorProgram;
+
+    if (!program.isCommissionUnlocked) {
+      throw new BadRequestException(
+        `Commission balance is still locked. Invite at least ${program.unlockThreshold} users who deposit to unlock.`,
+      );
+    }
+
+    if (dto.amount < COMMISSION_WITHDRAWAL_CONFIG.MIN_AMOUNT) {
+      throw new BadRequestException(
+        `Minimum withdrawal amount is Rp ${COMMISSION_WITHDRAWAL_CONFIG.MIN_AMOUNT.toLocaleString('id-ID')}`,
+      );
+    }
+
+    if (dto.amount > program.commissionBalance) {
+      throw new BadRequestException(
+        `Insufficient commission balance. Available: Rp ${program.commissionBalance.toLocaleString('id-ID')}, Requested: Rp ${dto.amount.toLocaleString('id-ID')}`,
+      );
+    }
+
+    // 2. Validate user has a bank account
+    const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
+    if (!userDoc.exists) {
+      throw new NotFoundException('User not found');
+    }
+    const user = userDoc.data() as User;
+
+    const bankAccount = user.profile?.bankAccount;
+    if (
+      !bankAccount?.bankName ||
+      !bankAccount?.accountNumber ||
+      !bankAccount?.accountHolderName
+    ) {
+      throw new NotFoundException(
+        'Rekening bank belum terdaftar di profil. Harap lengkapi data rekening bank terlebih dahulu.',
+      );
+    }
+
+    // 3. Check no pending request already exists
+    const pendingSnapshot = await db
+      .collection(COLLECTIONS.AFFILIATE_COMMISSION_WITHDRAWALS)
+      .where('affiliatorId', '==', userId)
+      .where('status', '==', COMMISSION_WITHDRAWAL_STATUS.PENDING)
+      .limit(1)
+      .get();
+
+    if (!pendingSnapshot.empty) {
+      throw new ConflictException(
+        'You already have a pending commission withdrawal request. Please wait for it to be processed.',
+      );
+    }
+
+    // 4. Create withdrawal request
+    const withdrawalId = await this.firebaseService.generateId(
+      COLLECTIONS.AFFILIATE_COMMISSION_WITHDRAWALS,
+    );
+    const timestamp = new Date().toISOString();
+
+    const withdrawal: AffiliateCommissionWithdrawal = {
+      id: withdrawalId,
+      affiliatorId: userId,
+      programId: program.id,
+      amount: dto.amount,
+      status: COMMISSION_WITHDRAWAL_STATUS.PENDING,
+      userEmail: user.email,
+      bankAccount: {
+        bankName: bankAccount.bankName!,
+        accountNumber: bankAccount.accountNumber!,
+        accountHolderName: bankAccount.accountHolderName!,
+      },
+      commissionBalanceAtRequest: program.commissionBalance,
+      note: dto.note,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+
+    await db
+      .collection(COLLECTIONS.AFFILIATE_COMMISSION_WITHDRAWALS)
+      .doc(withdrawalId)
+      .set(withdrawal);
+
+    // 5. Reserve (deduct) the amount from commissionBalance immediately
+    //    to prevent double-spending while request is pending
+    await programSnapshot.docs[0].ref.update({
+      commissionBalance: program.commissionBalance - dto.amount,
+      updatedAt: timestamp,
+    });
+
+    this.logger.log(
+      `✅ Commission withdrawal requested: affiliator ${userId}, amount Rp ${dto.amount.toLocaleString('id-ID')}, id: ${withdrawalId}`,
+    );
+
+    return {
+      message: 'Commission withdrawal request submitted successfully',
+      withdrawal: {
+        id: withdrawalId,
+        amount: dto.amount,
+        status: COMMISSION_WITHDRAWAL_STATUS.PENDING,
+        bankAccount: withdrawal.bankAccount,
+        commissionBalanceRemaining: program.commissionBalance - dto.amount,
+        createdAt: timestamp,
+      },
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // AFFILIATOR: Get own commission withdrawal history
+  // ─────────────────────────────────────────────────────────────────────────
+
+  async getMyCommissionWithdrawals(userId: string) {
+    const db = this.firebaseService.getFirestore();
+
+    const programSnapshot = await db
+      .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
+      .where('userId', '==', userId)
+      .limit(1)
+      .get();
+
+    if (programSnapshot.empty) {
+      throw new ForbiddenException('You do not have an affiliator program');
+    }
+
+    const program = programSnapshot.docs[0].data() as AffiliatorProgram;
+
+    const snapshot = await db
+      .collection(COLLECTIONS.AFFILIATE_COMMISSION_WITHDRAWALS)
+      .where('affiliatorId', '==', userId)
+      .orderBy('createdAt', 'desc')
+      .get();
+
+    const withdrawals: AffiliateCommissionWithdrawal[] = snapshot.docs.map(
+      (d: FirebaseFirestore.QueryDocumentSnapshot) => d.data() as AffiliateCommissionWithdrawal,
+    );
+
+    const totalWithdrawn = withdrawals
+      .filter(w => w.status === COMMISSION_WITHDRAWAL_STATUS.COMPLETED)
+      .reduce((sum, w) => sum + w.amount, 0);
+
+    return {
+      commissionBalance: program.commissionBalance,
+      isCommissionUnlocked: program.isCommissionUnlocked,
+      totalWithdrawn,
+      withdrawals: withdrawals.map(w => ({
+        id: w.id,
+        amount: w.amount,
+        status: w.status,
+        bankAccount: w.bankAccount,
+        note: w.note,
+        adminNotes: w.adminNotes,
+        rejectionReason: w.rejectionReason,
+        reviewedAt: w.reviewedAt,
+        createdAt: w.createdAt,
+      })),
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // AFFILIATOR: Cancel a pending commission withdrawal
+  // ─────────────────────────────────────────────────────────────────────────
+
+  async cancelCommissionWithdrawal(userId: string, withdrawalId: string) {
+    const db = this.firebaseService.getFirestore();
+
+    const withdrawalDoc = await db
+      .collection(COLLECTIONS.AFFILIATE_COMMISSION_WITHDRAWALS)
+      .doc(withdrawalId)
+      .get();
+
+    if (!withdrawalDoc.exists) {
+      throw new NotFoundException('Withdrawal request not found');
+    }
+
+    const withdrawal = withdrawalDoc.data() as AffiliateCommissionWithdrawal;
+
+    if (withdrawal.affiliatorId !== userId) {
+      throw new ForbiddenException('You do not own this withdrawal request');
+    }
+
+    if (withdrawal.status !== COMMISSION_WITHDRAWAL_STATUS.PENDING) {
+      throw new BadRequestException(
+        `Cannot cancel a withdrawal that is already ${withdrawal.status}`,
+      );
+    }
+
+    const timestamp = new Date().toISOString();
+
+    // Restore commissionBalance
+    const programDoc = await db
+      .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
+      .doc(withdrawal.programId)
+      .get();
+
+    if (programDoc.exists) {
+      const program = programDoc.data() as AffiliatorProgram;
+      await programDoc.ref.update({
+        commissionBalance: program.commissionBalance + withdrawal.amount,
+        updatedAt: timestamp,
+      });
+    }
+
+    await withdrawalDoc.ref.update({
+      status: COMMISSION_WITHDRAWAL_STATUS.REJECTED,
+      rejectionReason: 'Cancelled by affiliator',
+      updatedAt: timestamp,
+    });
+
+    this.logger.log(
+      `↩️ Commission withdrawal cancelled: ${withdrawalId} by affiliator ${userId}`,
+    );
+
+    return { message: 'Withdrawal request cancelled successfully' };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // SUPER ADMIN: Get all commission withdrawal requests
+  // ─────────────────────────────────────────────────────────────────────────
+
+  async getAllCommissionWithdrawals(query: GetCommissionWithdrawalsQueryDto) {
+    const db = this.firebaseService.getFirestore();
+
+    let ref: any;
+
+    if (
+      query.status &&
+      ['pending', 'approved', 'rejected', 'completed'].includes(query.status)
+    ) {
+      ref = db
+        .collection(COLLECTIONS.AFFILIATE_COMMISSION_WITHDRAWALS)
+        .where('status', '==', query.status)
+        .orderBy('createdAt', 'desc');
+    } else {
+      ref = db
+        .collection(COLLECTIONS.AFFILIATE_COMMISSION_WITHDRAWALS)
+        .orderBy('createdAt', 'desc');
+    }
+
+    const snapshot = await ref.get();
+    const all: AffiliateCommissionWithdrawal[] = snapshot.docs.map(
+      (d: FirebaseFirestore.QueryDocumentSnapshot) => d.data() as AffiliateCommissionWithdrawal,
+    );
+
+    const { page = 1, limit = 20 } = query;
+    const start = (page - 1) * limit;
+    const paginated = all.slice(start, start + limit);
+
+    return {
+      withdrawals: paginated,
+      pagination: {
+        page,
+        limit,
+        total: all.length,
+        totalPages: Math.ceil(all.length / limit),
+      },
+      summary: {
+        total: all.length,
+        pending: all.filter(w => w.status === COMMISSION_WITHDRAWAL_STATUS.PENDING).length,
+        approved: all.filter(w => w.status === COMMISSION_WITHDRAWAL_STATUS.APPROVED).length,
+        rejected: all.filter(w => w.status === COMMISSION_WITHDRAWAL_STATUS.REJECTED).length,
+        completed: all.filter(w => w.status === COMMISSION_WITHDRAWAL_STATUS.COMPLETED).length,
+        totalAmountPending: all
+          .filter(w => w.status === COMMISSION_WITHDRAWAL_STATUS.PENDING)
+          .reduce((s, w) => s + w.amount, 0),
+        totalAmountCompleted: all
+          .filter(w => w.status === COMMISSION_WITHDRAWAL_STATUS.COMPLETED)
+          .reduce((s, w) => s + w.amount, 0),
+      },
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // SUPER ADMIN: Approve or reject a commission withdrawal
+  // ─────────────────────────────────────────────────────────────────────────
+
+  async approveCommissionWithdrawal(
+    withdrawalId: string,
+    dto: ApproveCommissionWithdrawalDto,
+    adminId: string,
+  ) {
+    const db = this.firebaseService.getFirestore();
+
+    const withdrawalDoc = await db
+      .collection(COLLECTIONS.AFFILIATE_COMMISSION_WITHDRAWALS)
+      .doc(withdrawalId)
+      .get();
+
+    if (!withdrawalDoc.exists) {
+      throw new NotFoundException('Commission withdrawal request not found');
+    }
+
+    const withdrawal = withdrawalDoc.data() as AffiliateCommissionWithdrawal;
+
+    if (withdrawal.status !== COMMISSION_WITHDRAWAL_STATUS.PENDING) {
+      throw new BadRequestException(
+        `This withdrawal request has already been ${withdrawal.status}`,
+      );
+    }
+
+    const timestamp = new Date().toISOString();
+
+    if (dto.approve) {
+      // ── APPROVE ─────────────────────────────────────────────────────────
+      // Create a balance record (affiliate_commission type) on REAL account
+      // so affiliator's real balance increases by the withdrawal amount.
+
+      const balanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
+
+      await db.collection(COLLECTIONS.BALANCE).doc(balanceId).set({
+        id: balanceId,
+        user_id: withdrawal.affiliatorId,
+        accountType: BALANCE_ACCOUNT_TYPE.REAL,
+        type: BALANCE_TYPES.AFFILIATE_COMMISSION,
+        amount: withdrawal.amount,
+        description: `Commission withdrawal approved — ${withdrawal.bankAccount.bankName} ${withdrawal.bankAccount.accountNumber}`,
+        createdAt: timestamp,
+      });
+
+      await withdrawalDoc.ref.update({
+        status: COMMISSION_WITHDRAWAL_STATUS.COMPLETED,
+        reviewedBy: adminId,
+        reviewedAt: timestamp,
+        adminNotes: dto.adminNotes || 'Approved and processed',
+        updatedAt: timestamp,
+      });
+
+      // Update totalCommissionWithdrawn on program
+      const programDoc = await db
+        .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
+        .doc(withdrawal.programId)
+        .get();
+
+      if (programDoc.exists) {
+        const program = programDoc.data() as AffiliatorProgram;
+        await programDoc.ref.update({
+          totalCommissionWithdrawn: (program.totalCommissionWithdrawn || 0) + withdrawal.amount,
+          updatedAt: timestamp,
+        });
+      }
+
+      this.logger.log(
+        `✅ Commission withdrawal APPROVED: ${withdrawalId}\n` +
+        `   Affiliator: ${withdrawal.userEmail}\n` +
+        `   Amount: Rp ${withdrawal.amount.toLocaleString('id-ID')}\n` +
+        `   Bank: ${withdrawal.bankAccount.bankName} - ${withdrawal.bankAccount.accountNumber}\n` +
+        `   Admin: ${adminId}`,
+      );
+
+      return {
+        message: 'Commission withdrawal approved and processed successfully',
+        withdrawal: {
+          id: withdrawalId,
+          amount: withdrawal.amount,
+          status: COMMISSION_WITHDRAWAL_STATUS.COMPLETED,
+          affiliatorEmail: withdrawal.userEmail,
+          bankAccount: withdrawal.bankAccount,
+          reviewedBy: adminId,
+          reviewedAt: timestamp,
+        },
+      };
+    } else {
+      // ── REJECT ──────────────────────────────────────────────────────────
+      if (!dto.rejectionReason?.trim()) {
+        throw new BadRequestException(
+          'Rejection reason is required when rejecting a withdrawal',
+        );
+      }
+
+      // Restore the reserved commissionBalance back to affiliator program
+      const programDoc = await db
+        .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
+        .doc(withdrawal.programId)
+        .get();
+
+      if (programDoc.exists) {
+        const program = programDoc.data() as AffiliatorProgram;
+        await programDoc.ref.update({
+          commissionBalance: program.commissionBalance + withdrawal.amount,
+          updatedAt: timestamp,
+        });
+      }
+
+      await withdrawalDoc.ref.update({
+        status: COMMISSION_WITHDRAWAL_STATUS.REJECTED,
+        reviewedBy: adminId,
+        reviewedAt: timestamp,
+        rejectionReason: dto.rejectionReason,
+        adminNotes: dto.adminNotes || dto.rejectionReason,
+        updatedAt: timestamp,
+      });
+
+      this.logger.log(
+        `❌ Commission withdrawal REJECTED: ${withdrawalId}\n` +
+        `   Affiliator: ${withdrawal.userEmail}\n` +
+        `   Amount: Rp ${withdrawal.amount.toLocaleString('id-ID')}\n` +
+        `   Reason: ${dto.rejectionReason}\n` +
+        `   Admin: ${adminId}`,
+      );
+
+      return {
+        message: 'Commission withdrawal rejected',
+        withdrawal: {
+          id: withdrawalId,
+          amount: withdrawal.amount,
+          status: COMMISSION_WITHDRAWAL_STATUS.REJECTED,
+          rejectionReason: dto.rejectionReason,
+          reviewedBy: adminId,
+          reviewedAt: timestamp,
+        },
+      };
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────
