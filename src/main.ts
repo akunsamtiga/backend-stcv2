@@ -4,6 +4,7 @@ import { ValidationPipe, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { Request, Response, NextFunction } from 'express';
+import * as express from 'express';
 import helmet from 'helmet';
 import * as compression from 'compression';
 import { IoAdapter } from '@nestjs/platform-socket.io';
@@ -16,7 +17,9 @@ import { TimezoneUtil } from './common/utils';
 process.env.TZ = 'Asia/Jakarta';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, {
+    bodyParser: false, // Disable default body parser so we can configure it manually below
+  });
 
   const configService = app.get(ConfigService);
   const logger = new Logger('Bootstrap');
@@ -34,6 +37,12 @@ async function bootstrap() {
   logger.log('🌍 ================================================');
   logger.log('');
 
+  // ✅ FIX: Naikkan body size limit ke 15MB untuk mendukung upload icon base64
+  // Gambar 1MB → base64 ~1.33MB, default Express hanya 100KB
+  app.use(express.json({ limit: '15mb' }));
+  app.use(express.urlencoded({ limit: '15mb', extended: true }));
+  logger.log('✅ Body size limit set to 15MB');
+
   app.useWebSocketAdapter(new IoAdapter(app));
   logger.log('✅ WebSocket Adapter initialized');
 
@@ -42,7 +51,10 @@ async function bootstrap() {
     
     let timeout = 3000;
     
-    if (path.includes('/binary-orders')) {
+    // ✅ FIX: Timeout lebih panjang untuk endpoint asset (POST/PUT) karena ada upload icon
+    if (path.includes('/assets') && (req.method === 'POST' || req.method === 'PUT')) {
+      timeout = 30000; // 30s untuk create/update asset dengan icon
+    } else if (path.includes('/binary-orders')) {
       timeout = 2000;
     } else if (path.includes('/price')) {
       timeout = 1500;
@@ -215,6 +227,7 @@ async function bootstrap() {
     logger.log('⚡   • Events: price:update, order:update');
     logger.log('⚡ ================================================');
     logger.log('⚡ AGGRESSIVE TIMEOUTS:');
+    logger.log('⚡   • Asset Create/Update: 30s (icon upload)');
     logger.log('⚡   • Binary Orders: 2s');
     logger.log('⚡   • Price Requests: 1.5s');
     logger.log('⚡   • Health Check: 800ms');
