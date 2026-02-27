@@ -23,6 +23,9 @@ import { RolesGuard } from './guards/roles.guard';
   ],
   controllers: [AuthController],
   providers: [AuthService, GoogleAuthService, JwtAuthGuard, RolesGuard],
-  exports: [JwtAuthGuard, RolesGuard, JwtModule],
+  exports: [JwtAuthGuard, RolesGuard, JwtModule, AuthService, GoogleAuthService],
+  // ✅ NOTE: AffiliateProgramService di-inject via @Optional() di AuthService dan GoogleAuthService,
+  // sehingga tidak perlu di-import di sini (menghindari circular dependency).
+  // AffiliateProgramModule yang akan inject service-nya saat runtime via ModuleRef.
 })
 export class AuthModule {}

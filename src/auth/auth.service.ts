@@ -26,7 +26,7 @@ export class AuthService implements OnModuleInit {
     private firebaseService: FirebaseService,
     private jwtService: JwtService,
     private configService: ConfigService,
-    @Optional() private affiliateProgramService?: AffiliateProgramService,
+    @Optional() public affiliateProgramService?: AffiliateProgramService,
   ) {
     setInterval(() => this.cleanupCache(), 60000);
   }

@@ -2,6 +2,7 @@
 
 import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { EventEmitter2 } from '@nestjs/event-emitter'; // ✅ FIX: import EventEmitter2
 import * as crypto from 'crypto';
 import { FirebaseService } from '../firebase/firebase.service';
 import { BalanceService } from '../balance/balance.service';
@@ -47,6 +48,7 @@ export class PaymentService {
     private balanceService: BalanceService,
     private userStatusService: UserStatusService,
     private voucherService: VoucherService,
+    private eventEmitter: EventEmitter2, // ✅ FIX: inject EventEmitter2
   ) {
     this.initializeMidtrans();
   }
@@ -396,6 +398,12 @@ export class PaymentService {
       }
 
       await this.userStatusService.updateUserStatus(deposit.user_id);
+
+      // ✅ FIX: Emit event agar affiliate program service mencatat deposit invitee
+      this.eventEmitter.emit('affiliate.user.deposited', {
+        userId: deposit.user_id,
+        amount: deposit.amount,
+      });
 
       this.logger.log(
         `Deposit success: ${deposit.order_id} | User: ${deposit.userEmail} | Amount: ${deposit.amount}${bonusAmount > 0 ? ` | Bonus: ${bonusAmount}` : ''}`

@@ -1,6 +1,6 @@
 // src/auth/auth.service.google.ts
 
-import { Injectable, UnauthorizedException, Logger, BadRequestException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, Logger, BadRequestException, Optional } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as admin from 'firebase-admin';
@@ -10,6 +10,9 @@ import { GoogleLoginDto } from './dto/google-login.dto';
 import { COLLECTIONS, BALANCE_TYPES, BALANCE_ACCOUNT_TYPE, USER_ROLES, USER_STATUS, AFFILIATE_STATUS } from '../common/constants';
 import { User, UserProfile } from '../common/interfaces';
 
+// Lazy import to avoid circular dependency — resolved at runtime via Optional()
+import type { AffiliateProgramService } from '../affiliate-program/affiliate-program.service';
+
 @Injectable()
 export class GoogleAuthService {
   private readonly logger = new Logger(GoogleAuthService.name);
@@ -18,6 +21,7 @@ export class GoogleAuthService {
     private firebaseService: FirebaseService,
     private jwtService: JwtService,
     private configService: ConfigService,
+    @Optional() public affiliateProgramService?: AffiliateProgramService,
   ) {}
 
   private async generateGoogleUserPassword(uid: string, email: string): Promise<string> {
@@ -65,7 +69,8 @@ export class GoogleAuthService {
           uid,
           displayName,
           photoURL,
-          googleLoginDto.referralCode
+          googleLoginDto.referralCode,
+          googleLoginDto.affiliateCode, // ✅ FIX: teruskan affiliateCode
         );
         isNewUser = true;
 
@@ -163,9 +168,11 @@ export class GoogleAuthService {
     displayName: string,
     photoURL: string,
     referralCode?: string,
+    affiliateCode?: string, // ✅ FIX: tambah parameter
   ): Promise<User> {
     const db = this.firebaseService.getFirestore();
 
+    // ── Referral (existing system) ────────────────────────────────────────
     let referrerUser = null;
     if (referralCode && referralCode.trim() !== '') {
       const referrerSnapshot = await db.collection(COLLECTIONS.USERS)
@@ -234,6 +241,7 @@ export class GoogleAuthService {
 
     await db.collection(COLLECTIONS.USERS).doc(userId).set(userData);
 
+    // ── Initial balance ───────────────────────────────────────────────────
     const balanceId1 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
     const balanceId2 = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
 
@@ -258,6 +266,7 @@ export class GoogleAuthService {
       }),
     ]);
 
+    // ── Old referral/affiliate system ─────────────────────────────────────
     if (referrerUser) {
       try {
         const affiliateId = await this.firebaseService.generateId(COLLECTIONS.AFFILIATES);
@@ -278,6 +287,26 @@ export class GoogleAuthService {
         this.logger.error(`Failed to create affiliate record: ${affiliateError.message}`);
       }
     }
+
+    // ── ✅ FIX: Affiliate Program invite hook ─────────────────────────────
+    if (affiliateCode?.trim() && this.affiliateProgramService) {
+      try {
+        const result = await this.affiliateProgramService.handleNewRegistration(
+          userId,
+          email,
+          affiliateCode.trim(),
+        );
+        if (result.registered) {
+          this.logger.log(`✅ Affiliate program invite created via code: ${affiliateCode}`);
+        } else {
+          this.logger.warn(`⚠️ Affiliate program invite not registered for code: ${affiliateCode}`);
+        }
+      } catch (affProgError) {
+        // Non-blocking — registrasi tetap harus sukses
+        this.logger.error(`⚠️ Affiliate program hook failed: ${affProgError.message}`);
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────
 
     this.logger.log(
       `Google user created: ${email} (Status: STANDARD, Real: Rp 0, Demo: Rp 10,000,000)`

@@ -1,18 +1,19 @@
 // src/affiliate-program/affiliate-program.module.ts
 
-import { Module } from '@nestjs/common';
+import { Module, OnModuleInit } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ModuleRef } from '@nestjs/core';
 import { AffiliateProgramService } from './affiliate-program.service';
 import { AffiliateProgramController } from './affiliate-program.controller';
 import { AffiliateProgramAdminController } from './affiliate-program-admin.controller';
 import { AuthModule } from '../auth/auth.module';
-import { BalanceModule } from '../balance/balance.module'; // ← BARU
+import { BalanceModule } from '../balance/balance.module';
 
 @Module({
   imports: [
     AuthModule,
-    BalanceModule, // ← BARU: agar BalanceService tersedia untuk di-inject
+    BalanceModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -31,4 +32,36 @@ import { BalanceModule } from '../balance/balance.module'; // ← BARU
   providers: [AffiliateProgramService],
   exports: [AffiliateProgramService],
 })
-export class AffiliateProgramModule {}
+export class AffiliateProgramModule implements OnModuleInit {
+  constructor(
+    private moduleRef: ModuleRef,
+    private affiliateProgramService: AffiliateProgramService,
+  ) {}
+
+  // ✅ FIX: Setelah semua module siap, inject AffiliateProgramService
+  // ke dalam AuthService dan GoogleAuthService yang menggunakan @Optional().
+  // Ini menghindari circular dependency (AffiliateProgramModule → AuthModule → AffiliateProgramModule).
+  async onModuleInit() {
+    setTimeout(async () => {
+      try {
+        const { AuthService } = await import('../auth/auth.service');
+        const authService = this.moduleRef.get(AuthService, { strict: false });
+        if (authService) {
+          authService.affiliateProgramService = this.affiliateProgramService;
+        }
+      } catch (error) {
+        // Ignore if not available
+      }
+
+      try {
+        const { GoogleAuthService } = await import('../auth/auth.service.google');
+        const googleAuthService = this.moduleRef.get(GoogleAuthService, { strict: false });
+        if (googleAuthService) {
+          googleAuthService.affiliateProgramService = this.affiliateProgramService;
+        }
+      } catch (error) {
+        // Ignore if not available
+      }
+    }, 500);
+  }
+}
