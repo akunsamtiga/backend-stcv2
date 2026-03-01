@@ -43,13 +43,14 @@ export class AffiliateProgramService {
   async assignAffiliator(userId: string, dto: AssignAffiliatorDto, adminId: string) {
     const db = this.firebaseService.getFirestore();
 
+    // 1. Verifikasi user ada
     const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
     if (!userDoc.exists) {
-      throw new NotFoundException(`User ${userId} not found`);
+      throw new NotFoundException(`User ${userId} tidak ditemukan`);
     }
-
     const user = userDoc.data() as User;
 
+    // 2. Cek apakah sudah menjadi affiliator
     const existingSnapshot = await db
       .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
       .where('userId', '==', userId)
@@ -57,11 +58,38 @@ export class AffiliateProgramService {
       .get();
 
     if (!existingSnapshot.empty) {
-      throw new ConflictException(`User ${userId} is already an affiliator`);
+      throw new ConflictException(`User ${userId} sudah menjadi affiliator`);
     }
 
+    // 3. Resolve kode affiliate (kustom atau auto-generate)
+    let affiliateCode: string;
+
+    if (dto.customCode?.trim()) {
+      // Normalisasi ke huruf besar
+      affiliateCode = dto.customCode.trim().toUpperCase();
+
+      // Cek keunikan di SEMUA program (aktif maupun tidak)
+      const codeConflict = await db
+        .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
+        .where('affiliateCode', '==', affiliateCode)
+        .limit(1)
+        .get();
+
+      if (!codeConflict.empty) {
+        throw new ConflictException(
+          `Kode affiliate "${affiliateCode}" sudah digunakan. Silakan pilih kode lain.`,
+        );
+      }
+
+      this.logger.log(`✅ Menggunakan kode kustom: ${affiliateCode}`);
+    } else {
+      // Auto-generate kode unik
+      affiliateCode = await this.generateUniqueAffiliateCode();
+      this.logger.log(`✅ Kode otomatis digenerate: ${affiliateCode}`);
+    }
+
+    // 4. Buat program affiliator
     const programId = await this.firebaseService.generateId(COLLECTIONS.AFFILIATOR_PROGRAMS);
-    const affiliateCode = this.generateAffiliateCode();
     const timestamp = new Date().toISOString();
 
     const revenueSharePercentage = dto.revenueSharePercentage ?? AFFILIATE_PROGRAM_CONFIG.DEFAULT_REVENUE_SHARE;
@@ -90,16 +118,19 @@ export class AffiliateProgramService {
 
     await db.collection(COLLECTIONS.AFFILIATOR_PROGRAMS).doc(programId).set(program);
 
+    // 5. Update flag di user
     await db.collection(COLLECTIONS.USERS).doc(userId).update({
       isAffiliator: true,
       affiliatorProgramId: programId,
       updatedAt: timestamp,
     });
 
-    this.logger.log(`✅ User ${user.email} assigned as affiliator (code: ${affiliateCode}, share: ${revenueSharePercentage}%)`);
+    this.logger.log(
+      `✅ User ${user.email} dijadikan affiliator (kode: ${affiliateCode}, share: ${revenueSharePercentage}%) oleh admin ${adminId}`
+    );
 
     return {
-      message: 'User successfully assigned as affiliator',
+      message: 'User berhasil dijadikan affiliator',
       program: {
         id: programId,
         userId,
@@ -110,6 +141,7 @@ export class AffiliateProgramService {
         isActive: true,
         isCommissionUnlocked: false,
         assignedAt: timestamp,
+        shareLink: `https://stouch.id/ref/${affiliateCode}`,
       },
     };
   }
@@ -128,7 +160,7 @@ export class AffiliateProgramService {
       .get();
 
     if (programSnapshot.empty) {
-      throw new NotFoundException(`No affiliator program found for user ${userId}`);
+      throw new NotFoundException(`Tidak ada program affiliator untuk user ${userId}`);
     }
 
     const programDoc = programSnapshot.docs[0];
@@ -146,9 +178,9 @@ export class AffiliateProgramService {
       updatedAt: timestamp,
     });
 
-    this.logger.log(`⛔ Affiliator status revoked for user ${userId} by admin ${adminId}`);
+    this.logger.log(`⛔ Status affiliator dicabut untuk user ${userId} oleh admin ${adminId}`);
 
-    return { message: 'Affiliator status revoked successfully' };
+    return { message: 'Status affiliator berhasil dicabut' };
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -160,7 +192,7 @@ export class AffiliateProgramService {
 
     const programDoc = await db.collection(COLLECTIONS.AFFILIATOR_PROGRAMS).doc(programId).get();
     if (!programDoc.exists) {
-      throw new NotFoundException(`Affiliator program ${programId} not found`);
+      throw new NotFoundException(`Program affiliator ${programId} tidak ditemukan`);
     }
 
     const updates: any = { updatedAt: new Date().toISOString(), updatedBy: adminId };
@@ -177,9 +209,9 @@ export class AffiliateProgramService {
 
     await programDoc.ref.update(updates);
 
-    this.logger.log(`✅ Affiliator program ${programId} updated by admin ${adminId}`);
+    this.logger.log(`✅ Program affiliator ${programId} diperbarui oleh admin ${adminId}`);
 
-    return { message: 'Affiliator configuration updated successfully', updates };
+    return { message: 'Konfigurasi affiliator berhasil diperbarui', updates };
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -205,8 +237,14 @@ export class AffiliateProgramService {
     const start = (page - 1) * limit;
     const paginated = programs.slice(start, start + limit);
 
+    // Tambahkan shareLink ke setiap program
+    const programsWithLink = paginated.map(p => ({
+      ...p,
+      shareLink: `https://stouch.id/ref/${p.affiliateCode}`,
+    }));
+
     return {
-      affiliators: paginated,
+      affiliators: programsWithLink,
       pagination: {
         page,
         limit,
@@ -236,7 +274,7 @@ export class AffiliateProgramService {
       .get();
 
     if (programSnapshot.empty) {
-      throw new NotFoundException(`No affiliator program found for user ${userId}`);
+      throw new NotFoundException(`Tidak ada program affiliator untuk user ${userId}`);
     }
 
     const program = programSnapshot.docs[0].data() as AffiliatorProgram;
@@ -267,7 +305,10 @@ export class AffiliateProgramService {
     const unlockCount = depositedInvites.filter(i => i.isCountedForUnlock).length;
 
     return {
-      program,
+      program: {
+        ...program,
+        shareLink: `https://stouch.id/ref/${program.affiliateCode}`,
+      },
       stats: {
         totalInvited: invites.length,
         depositedInvites: depositedInvites.length,
@@ -302,13 +343,13 @@ export class AffiliateProgramService {
       .get();
 
     if (programSnapshot.empty) {
-      throw new ForbiddenException('You are not an affiliator. Contact the admin to apply.');
+      throw new ForbiddenException('Kamu bukan affiliator. Hubungi admin untuk mendaftar.');
     }
 
     const program = programSnapshot.docs[0].data() as AffiliatorProgram;
 
     if (!program.isActive) {
-      throw new ForbiddenException('Your affiliator program has been deactivated');
+      throw new ForbiddenException('Program affiliator kamu telah dinonaktifkan');
     }
 
     const invitesSnapshot = await db
@@ -324,6 +365,7 @@ export class AffiliateProgramService {
 
     return {
       affiliateCode: program.affiliateCode,
+      shareLink: `https://stouch.id/ref/${program.affiliateCode}`,
       isCommissionUnlocked: program.isCommissionUnlocked,
       revenueSharePercentage: program.revenueSharePercentage,
       balances: {
@@ -337,8 +379,8 @@ export class AffiliateProgramService {
         percentage: Math.round((unlockProgress / program.unlockThreshold) * 100),
         isUnlocked: program.isCommissionUnlocked,
         message: program.isCommissionUnlocked
-          ? '🎉 Your commission balance is unlocked! You earn commissions from losses of your invited users.'
-          : `Invite ${program.unlockThreshold - unlockProgress} more user(s) who complete a deposit to unlock your commission balance.`,
+          ? '🎉 Komisi kamu sudah terbuka! Kamu mendapat komisi dari trading loss pengguna undanganmu.'
+          : `Undang ${program.unlockThreshold - unlockProgress} pengguna lagi yang sudah deposit untuk membuka komisi.`,
       },
       stats: {
         totalInvited: invites.length,
@@ -360,7 +402,7 @@ export class AffiliateProgramService {
       .get();
 
     if (programSnapshot.empty) {
-      throw new ForbiddenException('You are not an affiliator');
+      throw new ForbiddenException('Kamu bukan affiliator');
     }
 
     const invitesSnapshot = await db
@@ -399,7 +441,7 @@ export class AffiliateProgramService {
       .get();
 
     if (programSnapshot.empty) {
-      throw new ForbiddenException('You are not an affiliator');
+      throw new ForbiddenException('Kamu bukan affiliator');
     }
 
     const program = programSnapshot.docs[0].data() as AffiliatorProgram;
@@ -440,7 +482,7 @@ export class AffiliateProgramService {
   async requestCommissionWithdrawal(userId: string, dto: RequestCommissionWithdrawalDto) {
     const db = this.firebaseService.getFirestore();
 
-    // 1. Validate affiliator program active
+    // 1. Validasi program aktif
     const programSnapshot = await db
       .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
       .where('userId', '==', userId)
@@ -449,33 +491,33 @@ export class AffiliateProgramService {
       .get();
 
     if (programSnapshot.empty) {
-      throw new ForbiddenException('You do not have an active affiliator program');
+      throw new ForbiddenException('Kamu tidak memiliki program affiliator yang aktif');
     }
 
     const program = programSnapshot.docs[0].data() as AffiliatorProgram;
 
     if (!program.isCommissionUnlocked) {
       throw new BadRequestException(
-        `Commission balance is still locked. Invite at least ${program.unlockThreshold} users who deposit to unlock.`,
+        `Komisi masih terkunci. Undang minimal ${program.unlockThreshold} pengguna yang deposit untuk membukanya.`,
       );
     }
 
     if (dto.amount < COMMISSION_WITHDRAWAL_CONFIG.MIN_AMOUNT) {
       throw new BadRequestException(
-        `Minimum withdrawal amount is Rp ${COMMISSION_WITHDRAWAL_CONFIG.MIN_AMOUNT.toLocaleString('id-ID')}`,
+        `Minimal penarikan adalah Rp ${COMMISSION_WITHDRAWAL_CONFIG.MIN_AMOUNT.toLocaleString('id-ID')}`,
       );
     }
 
     if (dto.amount > program.commissionBalance) {
       throw new BadRequestException(
-        `Insufficient commission balance. Available: Rp ${program.commissionBalance.toLocaleString('id-ID')}, Requested: Rp ${dto.amount.toLocaleString('id-ID')}`,
+        `Saldo komisi tidak cukup. Tersedia: Rp ${program.commissionBalance.toLocaleString('id-ID')}, Diminta: Rp ${dto.amount.toLocaleString('id-ID')}`,
       );
     }
 
-    // 2. Validate user has a bank account
+    // 2. Validasi rekening bank
     const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
     if (!userDoc.exists) {
-      throw new NotFoundException('User not found');
+      throw new NotFoundException('User tidak ditemukan');
     }
     const user = userDoc.data() as User;
 
@@ -490,7 +532,7 @@ export class AffiliateProgramService {
       );
     }
 
-    // 3. Check no pending request already exists
+    // 3. Cek tidak ada request pending
     const pendingSnapshot = await db
       .collection(COLLECTIONS.AFFILIATE_COMMISSION_WITHDRAWALS)
       .where('affiliatorId', '==', userId)
@@ -500,11 +542,11 @@ export class AffiliateProgramService {
 
     if (!pendingSnapshot.empty) {
       throw new ConflictException(
-        'You already have a pending commission withdrawal request. Please wait for it to be processed.',
+        'Kamu sudah memiliki request penarikan komisi yang sedang menunggu. Tunggu sampai diproses.',
       );
     }
 
-    // 4. Create withdrawal request
+    // 4. Buat withdrawal request
     const withdrawalId = await this.firebaseService.generateId(
       COLLECTIONS.AFFILIATE_COMMISSION_WITHDRAWALS,
     );
@@ -533,19 +575,18 @@ export class AffiliateProgramService {
       .doc(withdrawalId)
       .set(withdrawal);
 
-    // 5. Reserve (deduct) the amount from commissionBalance immediately
-    //    to prevent double-spending while request is pending
+    // 5. Reserve (kurangi) amount dari commissionBalance
     await programSnapshot.docs[0].ref.update({
       commissionBalance: program.commissionBalance - dto.amount,
       updatedAt: timestamp,
     });
 
     this.logger.log(
-      `✅ Commission withdrawal requested: affiliator ${userId}, amount Rp ${dto.amount.toLocaleString('id-ID')}, id: ${withdrawalId}`,
+      `✅ Penarikan komisi diajukan: affiliator ${userId}, Rp ${dto.amount.toLocaleString('id-ID')}, id: ${withdrawalId}`,
     );
 
     return {
-      message: 'Commission withdrawal request submitted successfully',
+      message: 'Request penarikan komisi berhasil diajukan',
       withdrawal: {
         id: withdrawalId,
         amount: dto.amount,
@@ -571,7 +612,7 @@ export class AffiliateProgramService {
       .get();
 
     if (programSnapshot.empty) {
-      throw new ForbiddenException('You do not have an affiliator program');
+      throw new ForbiddenException('Kamu tidak memiliki program affiliator');
     }
 
     const program = programSnapshot.docs[0].data() as AffiliatorProgram;
@@ -621,24 +662,24 @@ export class AffiliateProgramService {
       .get();
 
     if (!withdrawalDoc.exists) {
-      throw new NotFoundException('Withdrawal request not found');
+      throw new NotFoundException('Request penarikan tidak ditemukan');
     }
 
     const withdrawal = withdrawalDoc.data() as AffiliateCommissionWithdrawal;
 
     if (withdrawal.affiliatorId !== userId) {
-      throw new ForbiddenException('You do not own this withdrawal request');
+      throw new ForbiddenException('Request ini bukan milikmu');
     }
 
     if (withdrawal.status !== COMMISSION_WITHDRAWAL_STATUS.PENDING) {
       throw new BadRequestException(
-        `Cannot cancel a withdrawal that is already ${withdrawal.status}`,
+        `Tidak bisa membatalkan request yang sudah ${withdrawal.status}`,
       );
     }
 
     const timestamp = new Date().toISOString();
 
-    // Restore commissionBalance
+    // Kembalikan commissionBalance
     const programDoc = await db
       .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
       .doc(withdrawal.programId)
@@ -654,15 +695,15 @@ export class AffiliateProgramService {
 
     await withdrawalDoc.ref.update({
       status: COMMISSION_WITHDRAWAL_STATUS.REJECTED,
-      rejectionReason: 'Cancelled by affiliator',
+      rejectionReason: 'Dibatalkan oleh affiliator',
       updatedAt: timestamp,
     });
 
     this.logger.log(
-      `↩️ Commission withdrawal cancelled: ${withdrawalId} by affiliator ${userId}`,
+      `↩️ Penarikan komisi dibatalkan: ${withdrawalId} oleh affiliator ${userId}`,
     );
 
-    return { message: 'Withdrawal request cancelled successfully' };
+    return { message: 'Request penarikan berhasil dibatalkan' };
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -738,14 +779,14 @@ export class AffiliateProgramService {
       .get();
 
     if (!withdrawalDoc.exists) {
-      throw new NotFoundException('Commission withdrawal request not found');
+      throw new NotFoundException('Request penarikan komisi tidak ditemukan');
     }
 
     const withdrawal = withdrawalDoc.data() as AffiliateCommissionWithdrawal;
 
     if (withdrawal.status !== COMMISSION_WITHDRAWAL_STATUS.PENDING) {
       throw new BadRequestException(
-        `This withdrawal request has already been ${withdrawal.status}`,
+        `Request ini sudah ${withdrawal.status}`,
       );
     }
 
@@ -753,9 +794,6 @@ export class AffiliateProgramService {
 
     if (dto.approve) {
       // ── APPROVE ─────────────────────────────────────────────────────────
-      // Create a balance record (affiliate_commission type) on REAL account
-      // so affiliator's real balance increases by the withdrawal amount.
-
       const balanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
 
       await db.collection(COLLECTIONS.BALANCE).doc(balanceId).set({
@@ -764,7 +802,7 @@ export class AffiliateProgramService {
         accountType: BALANCE_ACCOUNT_TYPE.REAL,
         type: BALANCE_TYPES.AFFILIATE_COMMISSION,
         amount: withdrawal.amount,
-        description: `Commission withdrawal approved — ${withdrawal.bankAccount.bankName} ${withdrawal.bankAccount.accountNumber}`,
+        description: `Penarikan komisi disetujui — ${withdrawal.bankAccount.bankName} ${withdrawal.bankAccount.accountNumber}`,
         createdAt: timestamp,
       });
 
@@ -772,11 +810,11 @@ export class AffiliateProgramService {
         status: COMMISSION_WITHDRAWAL_STATUS.COMPLETED,
         reviewedBy: adminId,
         reviewedAt: timestamp,
-        adminNotes: dto.adminNotes || 'Approved and processed',
+        adminNotes: dto.adminNotes || 'Disetujui dan diproses',
         updatedAt: timestamp,
       });
 
-      // Update totalCommissionWithdrawn on program
+      // Update totalCommissionWithdrawn pada program
       const programDoc = await db
         .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
         .doc(withdrawal.programId)
@@ -791,15 +829,15 @@ export class AffiliateProgramService {
       }
 
       this.logger.log(
-        `✅ Commission withdrawal APPROVED: ${withdrawalId}\n` +
+        `✅ Penarikan komisi DISETUJUI: ${withdrawalId}\n` +
         `   Affiliator: ${withdrawal.userEmail}\n` +
-        `   Amount: Rp ${withdrawal.amount.toLocaleString('id-ID')}\n` +
+        `   Jumlah: Rp ${withdrawal.amount.toLocaleString('id-ID')}\n` +
         `   Bank: ${withdrawal.bankAccount.bankName} - ${withdrawal.bankAccount.accountNumber}\n` +
         `   Admin: ${adminId}`,
       );
 
       return {
-        message: 'Commission withdrawal approved and processed successfully',
+        message: 'Penarikan komisi disetujui dan berhasil diproses',
         withdrawal: {
           id: withdrawalId,
           amount: withdrawal.amount,
@@ -814,11 +852,11 @@ export class AffiliateProgramService {
       // ── REJECT ──────────────────────────────────────────────────────────
       if (!dto.rejectionReason?.trim()) {
         throw new BadRequestException(
-          'Rejection reason is required when rejecting a withdrawal',
+          'Alasan penolakan wajib diisi saat menolak penarikan',
         );
       }
 
-      // Restore the reserved commissionBalance back to affiliator program
+      // Kembalikan saldo komisi yang di-reserve
       const programDoc = await db
         .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
         .doc(withdrawal.programId)
@@ -842,15 +880,15 @@ export class AffiliateProgramService {
       });
 
       this.logger.log(
-        `❌ Commission withdrawal REJECTED: ${withdrawalId}\n` +
+        `❌ Penarikan komisi DITOLAK: ${withdrawalId}\n` +
         `   Affiliator: ${withdrawal.userEmail}\n` +
-        `   Amount: Rp ${withdrawal.amount.toLocaleString('id-ID')}\n` +
-        `   Reason: ${dto.rejectionReason}\n` +
+        `   Jumlah: Rp ${withdrawal.amount.toLocaleString('id-ID')}\n` +
+        `   Alasan: ${dto.rejectionReason}\n` +
         `   Admin: ${adminId}`,
       );
 
       return {
-        message: 'Commission withdrawal rejected',
+        message: 'Penarikan komisi ditolak',
         withdrawal: {
           id: withdrawalId,
           amount: withdrawal.amount,
@@ -883,14 +921,14 @@ export class AffiliateProgramService {
         .get();
 
       if (programSnapshot.empty) {
-        this.logger.warn(`Invalid or inactive affiliate code: ${affiliateCode}`);
+        this.logger.warn(`Kode affiliate tidak valid atau tidak aktif: ${affiliateCode}`);
         return { registered: false };
       }
 
       const program = programSnapshot.docs[0].data() as AffiliatorProgram;
 
       if (program.userId === inviteeId) {
-        this.logger.warn(`User ${inviteeId} tried to use their own affiliate code`);
+        this.logger.warn(`User ${inviteeId} mencoba menggunakan kode affiliate sendiri`);
         return { registered: false };
       }
 
@@ -901,7 +939,7 @@ export class AffiliateProgramService {
         .get();
 
       if (!existingInviteSnapshot.empty) {
-        this.logger.warn(`User ${inviteeId} already has an affiliator invite`);
+        this.logger.warn(`User ${inviteeId} sudah memiliki affiliate invite`);
         return { registered: false };
       }
 
@@ -928,7 +966,7 @@ export class AffiliateProgramService {
       });
 
       this.logger.log(
-        `✅ Affiliate invite created: affiliator ${program.userId} → invitee ${inviteeEmail} (code: ${affiliateCode})`
+        `✅ Invite affiliasi dibuat: affiliator ${program.userId} → invitee ${inviteeEmail} (kode: ${affiliateCode})`
       );
 
       return { registered: true, affiliatorId: program.userId };
@@ -993,21 +1031,21 @@ export class AffiliateProgramService {
           updates.commissionBalance = program.commissionBalance + program.lockedCommissionBalance;
           updates.lockedCommissionBalance = 0;
           this.logger.log(
-            `🔓 Commission balance UNLOCKED for affiliator ${program.userId}! ` +
-            `Previously locked balance (${program.lockedCommissionBalance}) is now available.`
+            `🔓 Saldo komisi TERBUKA untuk affiliator ${program.userId}! ` +
+            `Saldo terkunci (${program.lockedCommissionBalance}) kini tersedia.`
           );
         }
 
         this.logger.log(
-          `🎉 Commission UNLOCKED for affiliator ${program.userId} after ${newDepositedCount} depositing invites!`
+          `🎉 Komisi TERBUKA untuk affiliator ${program.userId} setelah ${newDepositedCount} undangan deposit!`
         );
       }
 
       await programDoc.ref.update(updates);
 
       this.logger.log(
-        `✅ Deposit registered for invitee ${payload.userId} under affiliator ${program.userId}. ` +
-        `Deposited count: ${newDepositedCount}/${program.unlockThreshold}`
+        `✅ Deposit terdaftar untuk invitee ${payload.userId} di bawah affiliator ${program.userId}. ` +
+        `Jumlah deposit: ${newDepositedCount}/${program.unlockThreshold}`
       );
     } catch (error) {
       this.logger.error(`❌ handleUserDeposited error: ${error.message}`);
@@ -1043,8 +1081,8 @@ export class AffiliateProgramService {
 
       if (!program.isActive || !program.isCommissionUnlocked) return;
 
-      // The first N invitees who unlocked the commission do NOT generate commissions.
-      // Only post-unlock invitees do.
+      // N undangan pertama yang membuka komisi TIDAK menghasilkan komisi.
+      // Hanya undangan setelah unlock yang menghasilkan komisi.
       if (invite.isCountedForUnlock) return;
 
       const lossAmount = Math.abs(order.profit || order.amount);
@@ -1077,8 +1115,8 @@ export class AffiliateProgramService {
       });
 
       this.logger.log(
-        `💰 Commission awarded to affiliator ${program.userId}: ` +
-        `Rp ${commissionAmount.toLocaleString()} (${program.revenueSharePercentage}% of Rp ${lossAmount.toLocaleString()} loss by invitee ${order.user_id})`
+        `💰 Komisi diberikan ke affiliator ${program.userId}: ` +
+        `Rp ${commissionAmount.toLocaleString()} (${program.revenueSharePercentage}% dari Rp ${lossAmount.toLocaleString()} kerugian invitee ${order.user_id})`
       );
     } catch (error) {
       this.logger.error(`❌ handleOrderLost error: ${error.message}`);
@@ -1088,6 +1126,29 @@ export class AffiliateProgramService {
   // ─────────────────────────────────────────────────────────────────────────
   // HELPERS
   // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Generate kode unik dengan retry hingga 5x jika collision.
+   */
+  private async generateUniqueAffiliateCode(): Promise<string> {
+    const db = this.firebaseService.getFirestore();
+
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const code = this.generateAffiliateCode();
+
+      const snap = await db
+        .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
+        .where('affiliateCode', '==', code)
+        .limit(1)
+        .get();
+
+      if (snap.empty) return code;
+
+      this.logger.warn(`Collision pada attempt ke-${attempt + 1}: ${code}`);
+    }
+
+    throw new Error('Gagal generate kode affiliate unik setelah 5 percobaan');
+  }
 
   private generateAffiliateCode(): string {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
