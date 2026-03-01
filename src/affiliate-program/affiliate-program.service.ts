@@ -1124,6 +1124,43 @@ export class AffiliateProgramService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
+  // PUBLIC: Get affiliator display name by affiliate code (no auth required)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  async getAffiliatorPublicInfo(affiliateCode: string): Promise<{ name: string }> {
+    const db = this.firebaseService.getFirestore();
+
+    // Cari program berdasarkan kode
+    const programSnapshot = await db
+      .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
+      .where('affiliateCode', '==', affiliateCode.toUpperCase())
+      .where('isActive', '==', true)
+      .limit(1)
+      .get();
+
+    if (programSnapshot.empty) {
+      throw new NotFoundException(`Kode affiliate tidak ditemukan`);
+    }
+
+    const program = programSnapshot.docs[0].data() as AffiliatorProgram;
+
+    // Ambil profil user untuk mendapatkan fullName
+    const userDoc = await db.collection(COLLECTIONS.USERS).doc(program.userId).get();
+    if (!userDoc.exists) {
+      throw new NotFoundException(`User tidak ditemukan`);
+    }
+
+    const user = userDoc.data() as any;
+    // Prioritas: fullName → nama depan dari email
+    const fullName = user?.profile?.fullName;
+    const name = fullName
+      ? fullName
+      : program.userEmail.split('@')[0];
+
+    return { name };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
   // HELPERS
   // ─────────────────────────────────────────────────────────────────────────
 

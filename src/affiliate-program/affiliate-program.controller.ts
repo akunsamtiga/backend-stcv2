@@ -11,14 +11,32 @@ import { RequestCommissionWithdrawalDto } from './dto/affiliate-commission-withd
 
 @ApiTags('affiliate-program')
 @Controller('affiliate-program')
-@UseGuards(JwtAuthGuard)
-@ApiBearerAuth()
 export class AffiliateProgramController {
   constructor(private affiliateProgramService: AffiliateProgramService) {}
 
-  // ── Dashboard ─────────────────────────────────────────────────────────────
+  // ── Public (no auth) ──────────────────────────────────────────────────────
+
+  @Get('public/:code')
+  @ApiOperation({
+    summary: 'Get affiliator display name by affiliate code (public)',
+    description: 'Digunakan halaman registrasi untuk menampilkan nama pengundang. Tidak memerlukan autentikasi.',
+  })
+  @ApiParam({ name: 'code', description: 'Affiliate code' })
+  @ApiResponse({
+    status: 200,
+    description: 'Nama affiliator',
+    schema: { example: { success: true, data: { name: 'John Doe' } } },
+  })
+  @ApiResponse({ status: 404, description: 'Kode affiliate tidak ditemukan' })
+  getAffiliatorPublicInfo(@Param('code') code: string) {
+    return this.affiliateProgramService.getAffiliatorPublicInfo(code);
+  }
+
+  // ── Dashboard (auth required) ─────────────────────────────────────────────
 
   @Get('my-program')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @ApiOperation({
     summary: 'Get my affiliator program dashboard',
     description: `Returns the current user's affiliator program info, including:
@@ -70,6 +88,8 @@ export class AffiliateProgramController {
   // ── Invites ───────────────────────────────────────────────────────────────
 
   @Get('my-invites')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @ApiOperation({
     summary: 'Get list of users I invited',
     description: 'Returns all users who registered using your affiliate code, with deposit status. Email addresses are masked for privacy.',
@@ -107,6 +127,8 @@ export class AffiliateProgramController {
   // ── Commission Balance ────────────────────────────────────────────────────
 
   @Get('my-commissions')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @ApiOperation({
     summary: 'Get my commission balance and history',
     description: `Returns detailed commission information:
@@ -152,6 +174,8 @@ export class AffiliateProgramController {
   // ── Commission Withdrawal ─────────────────────────────────────────────────
 
   @Post('commission-withdrawals')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @ApiOperation({
     summary: 'Request commission withdrawal',
     description: `Submit a withdrawal request for your affiliate commission balance.
@@ -201,6 +225,8 @@ export class AffiliateProgramController {
   }
 
   @Get('commission-withdrawals')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @ApiOperation({
     summary: 'Get my commission withdrawal history',
     description: 'Menampilkan semua riwayat request penarikan komisi beserta status terkini.',
@@ -241,6 +267,8 @@ export class AffiliateProgramController {
   }
 
   @Delete('commission-withdrawals/:withdrawalId/cancel')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @ApiOperation({
     summary: 'Cancel a pending commission withdrawal request',
     description: `Batalkan request penarikan komisi yang masih berstatus pending.
