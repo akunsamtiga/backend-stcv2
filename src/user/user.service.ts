@@ -811,7 +811,23 @@ export class UserService {
         );
       }
 
-      // 5. Update profil user
+      // 5. Cek apakah nomor HP sudah dipakai user lain
+      const existingQuery = await db
+        .collection(COLLECTIONS.USERS)
+        .where('profile.phoneNumber', '==', phoneNumber)
+        .limit(1)
+        .get();
+
+      if (!existingQuery.empty) {
+        const existingUserId = existingQuery.docs[0].id;
+        if (existingUserId !== userId) {
+          throw new BadRequestException(
+            'Nomor telepon ini sudah terdaftar pada akun lain. Gunakan nomor yang berbeda.',
+          );
+        }
+      }
+
+      // 6. Update profil user
       const user = userDoc.data() as User;
       const currentProfile = user.profile || {};
       const currentVerification = currentProfile.verification || this.getDefaultVerification();
@@ -1175,13 +1191,10 @@ export class UserService {
       const db = this.firebaseService.getFirestore();
       const logId = await this.firebaseService.generateId('profile_update_history');
 
-      // Serialize to plain object — Firestore rejects class instances with custom prototypes
-      const plainUpdates = JSON.parse(JSON.stringify(updateData));
-
       await db.collection('profile_update_history').doc(logId).set({
         id: logId,
         user_id: userId,
-        updates: plainUpdates,
+        updates: JSON.parse(JSON.stringify(updateData)),
         updatedAt: new Date().toISOString(),
       });
     } catch (error) {
