@@ -84,12 +84,26 @@ export class UserService {
         };
       }
 
+      // ✅ FIX: Normalisasi dan simpan phoneNumber jika dikirim.
+      // Nomor disimpan dengan phoneVerified: false sampai user verifikasi OTP
+      // via POST /user/verify-phone. Ini konsisten dengan alur saat register.
+      let updatedPhoneNumber = currentProfile.phoneNumber;
+      let phoneVerifiedStatus = currentProfile.verification?.phoneVerified ?? false;
+
+      if (updateProfileDto.phoneNumber) {
+        const normalized = this.normalizePhoneNumber(updateProfileDto.phoneNumber);
+        // Jika nomor HP berubah, reset status verifikasi
+        if (normalized !== currentProfile.phoneNumber) {
+          updatedPhoneNumber = normalized;
+          phoneVerifiedStatus = false;
+          this.logger.log(`📱 Phone updated for user ${userId}: ${updateProfileDto.phoneNumber} → ${normalized} (phoneVerified reset to false)`);
+        }
+      }
+
       const updatedProfile: UserProfile = {
         ...currentProfile,
         fullName: updateProfileDto.fullName || currentProfile.fullName,
-        // ✅ FIX: phoneNumber TIDAK diupdate di sini.
-        // Nomor HP hanya boleh diupdate melalui verifyPhone() yang memverifikasi
-        // Firebase ID Token (OTP). Lihat endpoint POST /user/verify-phone.
+        phoneNumber: updatedPhoneNumber,
         dateOfBirth: updateProfileDto.dateOfBirth || currentProfile.dateOfBirth,
         gender: (updateProfileDto.gender as 'male' | 'female' | 'other') || currentProfile.gender,
         nationality: updateProfileDto.nationality || currentProfile.nationality,
@@ -104,6 +118,12 @@ export class UserService {
         settings: updateProfileDto.settings
           ? { ...currentProfile.settings, ...updateProfileDto.settings }
           : currentProfile.settings,
+
+        // ✅ Update verification status jika nomor HP berubah
+        verification: {
+          ...(currentProfile.verification || {}),
+          phoneVerified: phoneVerifiedStatus,
+        },
       };
 
       await db.collection(COLLECTIONS.USERS).doc(userId).update({
@@ -1027,6 +1047,15 @@ export class UserService {
   // ============================================
   // HELPER METHODS
   // ============================================
+
+  private normalizePhoneNumber(phone: string | undefined): string | undefined {
+    if (!phone) return undefined;
+    const cleaned = phone.trim();
+    if (cleaned.startsWith('+62')) return cleaned;
+    if (cleaned.startsWith('62')) return `+${cleaned}`;
+    if (cleaned.startsWith('0')) return `+62${cleaned.slice(1)}`;
+    return cleaned;
+  }
 
   private async getOrders(userId: string, db: FirebaseFirestore.Firestore): Promise<BinaryOrder[]> {
     try {

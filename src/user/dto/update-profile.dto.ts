@@ -241,12 +241,6 @@ export class SettingsDto {
 // ============================================
 
 export class UpdateProfileDto {
-  // Personal Information
-  // ✅ FIX: phoneNumber DIHAPUS dari sini.
-  // Nomor HP hanya boleh diupdate melalui endpoint POST /user/verify-phone
-  // yang memverifikasi Firebase ID Token (OTP) secara kriptografis.
-  // Menerima phoneNumber di sini memungkinkan user bypass verifikasi OTP.
-
   @ApiPropertyOptional({ 
     example: 'John Doe',
     description: 'Full name (3-100 characters)'
@@ -258,6 +252,24 @@ export class UpdateProfileDto {
     message: 'Full name can only contain letters, spaces, dots, hyphens, and apostrophes' 
   })
   fullName?: string;
+
+  // ✅ FIX: phoneNumber dikembalikan ke UpdateProfileDto.
+  // Nomor HP BOLEH disimpan lewat update profile, namun statusnya tetap
+  // phoneVerified: false sampai user menyelesaikan verifikasi OTP via
+  // endpoint POST /user/verify-phone.
+  // Ini konsisten dengan alur register yang juga menyimpan nomor HP tanpa OTP.
+  @ApiPropertyOptional({ 
+    example: '081234567890',
+    description: 'Nomor HP Indonesia. Format yang diterima: 081234567890 | +6281234567890 | 6281234567890. ' +
+                 'Nomor akan disimpan namun statusnya belum terverifikasi (phoneVerified: false) ' +
+                 'sampai user menyelesaikan verifikasi OTP via POST /user/verify-phone.'
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(/^(\+62|62|0)[0-9]{8,12}$/, {
+    message: 'Nomor HP harus format Indonesia yang valid: 081234567890, +6281234567890, atau 6281234567890',
+  })
+  phoneNumber?: string;
 
   @ApiPropertyOptional({ 
     example: '1990-01-01',
@@ -425,7 +437,7 @@ export class UploadSelfieDto {
 // 1. Frontend kirim OTP via Firebase signInWithPhoneNumber()
 // 2. User konfirmasi OTP → Firebase Auth menghasilkan idToken
 // 3. Frontend kirim idToken ke POST /user/verify-phone
-// 4. Backend verifikasi via admin.auth().verifyIdToken() → update phoneNumber
+// 4. Backend verifikasi via admin.auth().verifyIdToken() → update phoneVerified: true
 export class VerifyPhoneDto {
   @ApiProperty({
     example: 'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...',
