@@ -1175,10 +1175,13 @@ export class UserService {
       const db = this.firebaseService.getFirestore();
       const logId = await this.firebaseService.generateId('profile_update_history');
 
+      // Serialize to plain object — Firestore rejects class instances with custom prototypes
+      const plainUpdates = JSON.parse(JSON.stringify(updateData));
+
       await db.collection('profile_update_history').doc(logId).set({
         id: logId,
         user_id: userId,
-        updates: updateData,
+        updates: plainUpdates,
         updatedAt: new Date().toISOString(),
       });
     } catch (error) {
