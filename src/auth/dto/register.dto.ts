@@ -55,14 +55,21 @@ export class RegisterDto {
   fullName?: string;
 
   @ApiPropertyOptional({ 
-    example: '+6281234567890',
-    description: 'Phone number in E.164 format (optional)',
+    example: '081234567890',
+    description: 'Nomor HP Indonesia. Format yang diterima: 081234567890 | +6281234567890 | 6281234567890',
     required: false
   })
   @IsOptional()
   @IsString()
-  @Matches(/^\+?[1-9]\d{1,14}$/, {
-    message: 'Phone number must be in valid format (E.164)'
+  // ✅ FIX: Regex sebelumnya /^\+?[1-9]\d{1,14}$/ menolak angka 0 di awal,
+  // sehingga format umum Indonesia seperti 081234567890 selalu gagal validasi.
+  // Regex baru menerima tiga format nomor HP Indonesia:
+  //   - 081234567890       (format lokal, diawali 0)
+  //   - +6281234567890     (format E.164 dengan +)
+  //   - 6281234567890      (format E.164 tanpa +)
+  // Panjang digit setelah kode negara/awalan: 8–12 digit (provider Indonesia)
+  @Matches(/^(\+62|62|0)[0-9]{8,12}$/, {
+    message: 'Nomor HP harus format Indonesia yang valid: 081234567890, +6281234567890, atau 6281234567890',
   })
   phoneNumber?: string;
 

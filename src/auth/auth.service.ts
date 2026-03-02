@@ -170,6 +170,32 @@ export class AuthService implements OnModuleInit {
     }
   }
 
+  // ✅ FIX: Normalisasi nomor HP ke format E.164 (+62xxxxxxxxx) sebelum disimpan ke database.
+  // Ini memastikan format konsisten terlepas dari input user (081x, 62x, atau +62x).
+  private normalizePhoneNumber(phone: string | undefined): string | undefined {
+    if (!phone) return undefined;
+
+    const cleaned = phone.trim();
+
+    // Sudah format E.164 lengkap: +6281234567890
+    if (cleaned.startsWith('+62')) {
+      return cleaned;
+    }
+
+    // Format tanpa plus: 6281234567890 → +6281234567890
+    if (cleaned.startsWith('62')) {
+      return `+${cleaned}`;
+    }
+
+    // Format lokal Indonesia: 081234567890 → +6281234567890
+    if (cleaned.startsWith('0')) {
+      return `+62${cleaned.slice(1)}`;
+    }
+
+    // Fallback: kembalikan apa adanya (tidak seharusnya terjadi karena sudah divalidasi di DTO)
+    return cleaned;
+  }
+
   async register(registerDto: RegisterDto) {
     const startTime = Date.now();
     const db = this.firebaseService.getFirestore();
@@ -208,9 +234,17 @@ export class AuthService implements OnModuleInit {
       const timestamp = new Date().toISOString();
       const newUserReferralCode = this.generateReferralCode();
 
+      // ✅ FIX: Normalisasi nomor HP sebelum disimpan.
+      // Contoh: "081234567890" → "+6281234567890"
+      const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
+
+      if (phoneNumber && normalizedPhone) {
+        this.logger.log(`📱 Phone normalized: ${phoneNumber} → ${normalizedPhone}`);
+      }
+
       const initialProfile: UserProfile = {
         fullName: fullName || undefined,
-        phoneNumber: phoneNumber || undefined,
+        phoneNumber: normalizedPhone,   // ✅ Simpan nomor yang sudah dinormalisasi
         dateOfBirth: dateOfBirth || undefined,
         gender: gender as any || undefined,
         nationality: nationality || undefined,
@@ -224,7 +258,7 @@ export class AuthService implements OnModuleInit {
         },
         verification: {
           emailVerified: true,
-          phoneVerified: false,
+          phoneVerified: false,         // Nomor belum terverifikasi OTP saat register
           identityVerified: false,
           bankVerified: false,
           verificationLevel: 'unverified',
@@ -319,7 +353,7 @@ export class AuthService implements OnModuleInit {
 
       let profileCompletion = 10;
       if (fullName) profileCompletion += 10;
-      if (phoneNumber) profileCompletion += 10;
+      if (normalizedPhone) profileCompletion += 10;
       if (dateOfBirth) profileCompletion += 5;
       if (gender) profileCompletion += 5;
 
