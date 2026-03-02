@@ -831,10 +831,13 @@ export class UserService {
         );
       }
 
-      // 5. Cek apakah nomor HP sudah dipakai user lain
+      // 5. Cek apakah nomor HP sudah di-verified oleh akun lain.
+      // Nomor yang sudah tersimpan tapi BELUM verified (phoneVerified: false)
+      // tidak dianggap sah, sehingga akun lain boleh mengklaimnya via OTP.
       const existingQuery = await db
         .collection(COLLECTIONS.USERS)
         .where('profile.phoneNumber', '==', phoneNumber)
+        .where('profile.verification.phoneVerified', '==', true)
         .limit(1)
         .get();
 
@@ -842,7 +845,7 @@ export class UserService {
         const existingUserId = existingQuery.docs[0].id;
         if (existingUserId !== userId) {
           throw new BadRequestException(
-            'Nomor telepon ini sudah terdaftar pada akun lain. Gunakan nomor yang berbeda.',
+            'Nomor telepon ini sudah terverifikasi pada akun lain. Gunakan nomor yang berbeda.',
           );
         }
       }
