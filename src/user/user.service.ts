@@ -87,7 +87,9 @@ export class UserService {
       const updatedProfile: UserProfile = {
         ...currentProfile,
         fullName: updateProfileDto.fullName || currentProfile.fullName,
-        phoneNumber: updateProfileDto.phoneNumber || currentProfile.phoneNumber,
+        // ✅ FIX: phoneNumber TIDAK diupdate di sini.
+        // Nomor HP hanya boleh diupdate melalui verifyPhone() yang memverifikasi
+        // Firebase ID Token (OTP). Lihat endpoint POST /user/verify-phone.
         dateOfBirth: updateProfileDto.dateOfBirth || currentProfile.dateOfBirth,
         gender: (updateProfileDto.gender as 'male' | 'female' | 'other') || currentProfile.gender,
         nationality: updateProfileDto.nationality || currentProfile.nationality,

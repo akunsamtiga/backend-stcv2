@@ -242,6 +242,11 @@ export class SettingsDto {
 
 export class UpdateProfileDto {
   // Personal Information
+  // ✅ FIX: phoneNumber DIHAPUS dari sini.
+  // Nomor HP hanya boleh diupdate melalui endpoint POST /user/verify-phone
+  // yang memverifikasi Firebase ID Token (OTP) secara kriptografis.
+  // Menerima phoneNumber di sini memungkinkan user bypass verifikasi OTP.
+
   @ApiPropertyOptional({ 
     example: 'John Doe',
     description: 'Full name (3-100 characters)'
@@ -253,17 +258,6 @@ export class UpdateProfileDto {
     message: 'Full name can only contain letters, spaces, dots, hyphens, and apostrophes' 
   })
   fullName?: string;
-
-  @ApiPropertyOptional({ 
-    example: '+6281234567890',
-    description: 'Phone number in E.164 format (e.g., +6281234567890)'
-  })
-  @IsOptional()
-  @IsString()
-  @Matches(/^\+?[1-9]\d{1,14}$/, {
-    message: 'Phone number must be in valid E.164 format (e.g., +6281234567890)'
-  })
-  phoneNumber?: string;
 
   @ApiPropertyOptional({ 
     example: '1990-01-01',
@@ -427,9 +421,11 @@ export class UploadSelfieDto {
 // VERIFICATION DTOs
 // ============================================
 
-// ✅ FIXED: Ganti phoneNumber + verificationCode dengan Firebase idToken
-// Alur: Frontend kirim OTP via Firebase Auth → user konfirmasi → dapat idToken
-//       Frontend kirim idToken ke backend → backend verifikasi via admin.auth().verifyIdToken()
+// ✅ Alur verifikasi nomor HP yang benar:
+// 1. Frontend kirim OTP via Firebase signInWithPhoneNumber()
+// 2. User konfirmasi OTP → Firebase Auth menghasilkan idToken
+// 3. Frontend kirim idToken ke POST /user/verify-phone
+// 4. Backend verifikasi via admin.auth().verifyIdToken() → update phoneNumber
 export class VerifyPhoneDto {
   @ApiProperty({
     example: 'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...',
