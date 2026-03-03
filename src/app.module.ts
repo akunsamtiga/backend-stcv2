@@ -23,6 +23,7 @@ import { OrderScheduleModule } from './order-schedule/order-schedule.module';
 import { InformationModule } from './information/information.module';
 import { AutoLoseSystemModule } from './auto-lose-system/auto-lose-system.module';
 import { AffiliateProgramModule } from './affiliate-program/affiliate-program.module';
+import { FastTradeModule } from './fast-trade/fast-trade.module';
 
 @Module({
   imports: [
@@ -64,6 +65,7 @@ import { AffiliateProgramModule } from './affiliate-program/affiliate-program.mo
     InformationModule,
     AutoLoseSystemModule,
     AffiliateProgramModule,
+    FastTradeModule
   ],
   controllers: [HealthController],
 })
