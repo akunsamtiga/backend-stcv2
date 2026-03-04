@@ -142,11 +142,13 @@ export class FastTradeExecutorService {
 
     const tfSeconds = TIMEFRAME_SECONDS_MAP[session.timeframe];
 
-    // Check if we've reached the next candle boundary (with 2s tolerance)
+    // Fire 3 seconds AFTER the candle boundary.
+    // This gives the simulator time to write the just-completed candle to RTDB
+    // before we read it. Firing at exactly t=0 risks reading the previous candle.
+    // distanceToCandle < 0 means we're past the boundary.
+    // e.g. nextCandleAt=12:24:00, fire at 12:24:03 → distanceToCandle = -3
     const distanceToCandle = session.nextCandleAt - nowSec;
-
-    // Fire when we're within 1 second of the boundary (or past it)
-    if (distanceToCandle > 1) return;
+    if (distanceToCandle > -3) return;
 
     // Lock this session
     this.processingLock.add(session.id);
