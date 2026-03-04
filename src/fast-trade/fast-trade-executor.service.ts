@@ -98,7 +98,7 @@ export class FastTradeExecutorService {
   //   Checks pending FastTrade executions and resolves them
   // ══════════════════════════════════════════════════════════════════════════
 
-  @Cron('*/5 * * * * *')
+  @Cron('* * * * * *')
   async checkPendingResults(): Promise<void> {
     let pending: FastTradeExecution[];
     try {

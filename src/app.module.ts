@@ -24,6 +24,7 @@ import { InformationModule } from './information/information.module';
 import { AutoLoseSystemModule } from './auto-lose-system/auto-lose-system.module';
 import { AffiliateProgramModule } from './affiliate-program/affiliate-program.module';
 import { FastTradeModule } from './fast-trade/fast-trade.module';
+import { CtcModule } from './ctc/ctc.module';
 
 @Module({
   imports: [
@@ -65,7 +66,8 @@ import { FastTradeModule } from './fast-trade/fast-trade.module';
     InformationModule,
     AutoLoseSystemModule,
     AffiliateProgramModule,
-    FastTradeModule
+    FastTradeModule,
+    CtcModule
   ],
   controllers: [HealthController],
 })
