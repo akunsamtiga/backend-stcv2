@@ -300,7 +300,7 @@ export class FastTradeService {
       const snapshot = await this.rtdb
         .ref(ohlcPath)
         .orderByKey()
-        .limitToLast(3)
+        .limitToLast(2)
         .once('value');
 
       if (!snapshot.exists()) {
@@ -337,26 +337,18 @@ export class FastTradeService {
         return { direction: 'neutral', candle: null };
       }
 
-      // The most recent bar may still be forming — use second-to-last
-      const lastCompleted = candles[candles.length - 2];
+      // Simulator only writes candles that are already CLOSED to RTDB.
+      // So the most recent bar in the snapshot IS the last completed candle.
+      // Use candles[n-1] (latest), not candles[n-2].
+      const lastCompleted = candles[candles.length - 1];
 
       let direction: CandleDirection;
-      // Use a small threshold (0.0001%) so floating-point candles are not stuck as neutral.
-      // For simulator assets where o and c are exactly equal the difference is truly 0,
-      // but for real/relay assets tiny fp differences should still count as directional.
-      const priceDiff     = lastCompleted.c - lastCompleted.o;
-      const threshold     = lastCompleted.o * 0.000001; // 0.0001% of open price
+      // Small threshold to handle floating-point precision issues
+      const priceDiff = lastCompleted.c - lastCompleted.o;
+      const threshold = lastCompleted.o * 0.000001; // 0.0001% of open price
       if      (priceDiff >  threshold) direction = 'bullish';
       else if (priceDiff < -threshold) direction = 'bearish';
-      else {
-        // Truly neutral — try to use the LAST bar if second-to-last is flat
-        // (happens when simulator stalls or OHLC path has stale data)
-        const lastBar = candles[candles.length - 1];
-        const lastDiff = lastBar.c - lastBar.o;
-        if      (lastDiff >  threshold) direction = 'bullish';
-        else if (lastDiff < -threshold) direction = 'bearish';
-        else                             direction = 'neutral';
-      }
+      else                              direction = 'neutral';
 
       this.logger.debug(
         `📊 OHLC [${asset.symbol}/${timeframe}] ` +
