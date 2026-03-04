@@ -142,13 +142,9 @@ export class FastTradeExecutorService {
 
     const tfSeconds = TIMEFRAME_SECONDS_MAP[session.timeframe];
 
-    // Fire 3 seconds AFTER the candle boundary.
-    // This gives the simulator time to write the just-completed candle to RTDB
-    // before we read it. Firing at exactly t=0 risks reading the previous candle.
-    // distanceToCandle < 0 means we're past the boundary.
-    // e.g. nextCandleAt=12:24:00, fire at 12:24:03 → distanceToCandle = -3
+    // Fire when we reach the candle boundary (within 2s window)
     const distanceToCandle = session.nextCandleAt - nowSec;
-    if (distanceToCandle > -3) return;
+    if (distanceToCandle > 1) return;
 
     // Lock this session
     this.processingLock.add(session.id);
@@ -163,9 +159,13 @@ export class FastTradeExecutorService {
       // ── Phase 1: Read candle direction ──────────────────────────────────
       await this.fastTradeService.markReadingCandle(session.id);
 
+      // Pass the exact candle timestamp we expect (the one that just closed).
+      // getCandleDirection will query that key directly — instant, no blanket delay.
+      const expectedCandleTs = session.nextCandleAt - tfSeconds;
       const { direction, candle } = await this.fastTradeService.getCandleDirection(
         session.assetId,
         session.timeframe,
+        expectedCandleTs,
       );
 
       this.logger.log(

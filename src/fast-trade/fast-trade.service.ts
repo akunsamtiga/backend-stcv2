@@ -286,17 +286,80 @@ export class FastTradeService {
   async getCandleDirection(
     assetId: string,
     timeframe: FastTradeTimeframe,
+    expectedCandleTs?: number,  // unix seconds of candle to read (nextCandleAt - tfSeconds)
   ): Promise<{ direction: CandleDirection; candle: OhlcCandle | null }> {
     try {
       const assetDoc = await this.db.collection(COL_ASSETS).doc(assetId).get();
       if (!assetDoc.exists) throw new Error(`Asset ${assetId} not found`);
 
-      const asset   = assetDoc.data() as any;
-      const rtpRaw  = asset.realtimeDbPath as string;
-      const rtPath  = rtpRaw.startsWith('/') ? rtpRaw : `/${rtpRaw}`;
+      const asset    = assetDoc.data() as any;
+      const rtpRaw   = asset.realtimeDbPath as string;
+      const rtPath   = rtpRaw.startsWith('/') ? rtpRaw : `/${rtpRaw}`;
       const ohlcPath = `${rtPath}/ohlc_${timeframe}`;
 
-      // Fetch last 3 bars — we need the SECOND-TO-LAST as the confirmed complete candle
+      const parseCandle = (key: string, v: any): OhlcCandle | null => {
+        const open  = v?.o ?? v?.open;
+        const high  = v?.h ?? v?.high;
+        const low   = v?.l ?? v?.low;
+        const close = v?.c ?? v?.close;
+        if (typeof open !== 'number' || typeof close !== 'number') return null;
+        return {
+          t: parseInt(key, 10),
+          o: open,
+          h: high ?? open,
+          l: low  ?? open,
+          c: close,
+          v: v?.v ?? v?.volume ?? 0,
+        };
+      };
+
+      const directionOf = (candle: OhlcCandle): CandleDirection => {
+        const diff      = candle.c - candle.o;
+        const threshold = candle.o * 0.000001;
+        if      (diff >  threshold) return 'bullish';
+        else if (diff < -threshold) return 'bearish';
+        else                        return 'neutral';
+      };
+
+      // ── Strategy 1: query exact timestamp (instant, no delay needed) ──────
+      // We know exactly which candle just closed: the one that started at
+      // (nextCandleAt - tfSeconds). Query that key directly.
+      if (expectedCandleTs) {
+        const MAX_ATTEMPTS = 4;
+        const RETRY_MS     = 300; // retry every 300ms if simulator hasn't written yet
+
+        for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+          const snap = await this.rtdb
+            .ref(`${ohlcPath}/${expectedCandleTs}`)
+            .once('value');
+
+          if (snap.exists()) {
+            const candle = parseCandle(String(expectedCandleTs), snap.val());
+            if (candle) {
+              const direction = directionOf(candle);
+              this.logger.debug(
+                `📊 [exact-key] ${asset.symbol}/${timeframe} ` +
+                `t=${candle.t} O:${candle.o} C:${candle.c} → ${direction.toUpperCase()} ` +
+                `(attempt ${attempt + 1})`,
+              );
+              return { direction, candle };
+            }
+          }
+
+          if (attempt < MAX_ATTEMPTS - 1) {
+            this.logger.debug(
+              `⏳ Candle t=${expectedCandleTs} not yet in RTDB, retry ${attempt + 1}/${MAX_ATTEMPTS - 1} in ${RETRY_MS}ms`,
+            );
+            await new Promise(r => setTimeout(r, RETRY_MS));
+          }
+        }
+
+        this.logger.warn(
+          `⚠️ Exact candle t=${expectedCandleTs} not found after ${MAX_ATTEMPTS} attempts — falling back to limitToLast`,
+        );
+      }
+
+      // ── Strategy 2: fallback — limitToLast(2), use most recent closed bar ──
       const snapshot = await this.rtdb
         .ref(ohlcPath)
         .orderByKey()
@@ -310,48 +373,22 @@ export class FastTradeService {
 
       const candles: OhlcCandle[] = [];
       snapshot.forEach(child => {
-        const v = child.val();
-        // Support both short format (o/h/l/c from InitializeAssetCandlesHelper)
-        // and long format (open/high/low/close from simulator index.js)
-        const open  = v?.o  ?? v?.open;
-        const high  = v?.h  ?? v?.high;
-        const low   = v?.l  ?? v?.low;
-        const close = v?.c  ?? v?.close;
-        if (v && typeof open === 'number' && typeof close === 'number') {
-          candles.push({
-            t: parseInt(child.key!, 10),
-            o: open,
-            h: high  ?? open,
-            l: low   ?? open,
-            c: close,
-            v: v.v   ?? v.volume ?? 0,
-          });
-        }
+        const c = parseCandle(child.key!, child.val());
+        if (c) candles.push(c);
       });
 
-      // Sort ascending
       candles.sort((a, b) => a.t - b.t);
 
-      if (candles.length < 2) {
-        this.logger.warn(`⚠️ Not enough OHLC bars for ${asset.symbol}/${timeframe} (got ${candles.length})`);
+      if (candles.length < 1) {
+        this.logger.warn(`⚠️ Not enough OHLC bars for ${asset.symbol}/${timeframe}`);
         return { direction: 'neutral', candle: null };
       }
 
-      // Simulator only writes candles that are already CLOSED to RTDB.
-      // So the most recent bar in the snapshot IS the last completed candle.
-      // Use candles[n-1] (latest), not candles[n-2].
       const lastCompleted = candles[candles.length - 1];
-
-      let direction: CandleDirection;
-      // Small threshold to handle floating-point precision issues
-      const priceDiff = lastCompleted.c - lastCompleted.o;
-      const threshold = lastCompleted.o * 0.000001; // 0.0001% of open price
-      if      (priceDiff >  threshold) direction = 'bullish';
-      else if (priceDiff < -threshold) direction = 'bearish';
-      else                              direction = 'neutral';
+      const direction     = directionOf(lastCompleted);
 
       this.logger.debug(
-        `📊 OHLC [${asset.symbol}/${timeframe}] ` +
+        `📊 [limitToLast] ${asset.symbol}/${timeframe} ` +
         `t=${lastCompleted.t} O:${lastCompleted.o} C:${lastCompleted.c} → ${direction.toUpperCase()}`,
       );
 
