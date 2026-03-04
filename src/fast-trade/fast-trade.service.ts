@@ -448,7 +448,7 @@ export class FastTradeService {
     settledAmount: number,   // final profit or loss amount (always positive)
     candleTimestamp: number,
     tfSeconds: number,
-  ): Promise<{ session: FastTradeSession; shouldStop: boolean; stopReason?: string }> {
+  ): Promise<{ session: FastTradeSession; shouldStop: boolean; stopReason?: string; isMartingaleRetry: boolean; retryDirection?: 'CALL' | 'PUT' }> {
     const session = await this.getSessionById(sessionId);
 
     let {
@@ -467,15 +467,20 @@ export class FastTradeService {
       martingaleMultiplier,
       stopProfit,
       stopLoss,
+      lastDirection,
     } = session;
 
     totalOrders++;
+
+    // Track whether this loss triggers an immediate martingale retry
+    let isMartingaleRetry = false;
+    let retryDirection: 'CALL' | 'PUT' | undefined;
 
     if (result === 'won') {
       wins++;
       totalProfit       += settledAmount;
       totalPnL          += settledAmount;
-      // Reset martingale
+      // Reset martingale — next cycle reads fresh candle
       currentStep        = 0;
       consecutiveLosses  = 0;
       currentAmount      = baseAmount;
@@ -495,10 +500,13 @@ export class FastTradeService {
             `Amount: ${(Math.round(baseAmount * Math.pow(martingaleMultiplier, currentStep - 1))).toLocaleString('id-ID')} → ` +
             `${currentAmount.toLocaleString('id-ID')}`,
           );
+          // Flag: executor must immediately retry with SAME direction — no candle read
+          isMartingaleRetry = true;
+          retryDirection    = lastDirection;  // same direction as the losing order
         } else {
-          // Max step reached — reset
+          // Max step reached — reset and wait for next fresh candle
           this.logger.warn(
-            `⚠️ [${sessionId.slice(-8)}] Martingale MAX step ${martingaleMaxStep} reached — resetting`,
+            `⚠️ [${sessionId.slice(-8)}] Martingale MAX step ${martingaleMaxStep} reached — resetting to normal`,
           );
           currentStep        = 0;
           consecutiveLosses  = 0;
@@ -507,7 +515,7 @@ export class FastTradeService {
       }
     }
 
-    // Calc next candle
+    // Calc next candle (used when NOT doing martingale retry)
     const nextCandleAt = this.calcNextCandleBoundary(tfSeconds);
 
     // Check stop conditions
@@ -560,7 +568,7 @@ export class FastTradeService {
     const updated = { ...session, ...updates } as FastTradeSession;
     this.sessionCache.set(sessionId, updated);
 
-    return { session: updated, shouldStop, stopReason };
+    return { session: updated, shouldStop, stopReason, isMartingaleRetry, retryDirection };
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -591,6 +599,7 @@ export class FastTradeService {
     sessionId: string,
     orderId: string,
     executionId: string,
+    direction?: 'CALL' | 'PUT',
   ): Promise<void> {
     const ts = this.now();
     await this.db.collection(COL_SESSIONS).doc(sessionId).update({
@@ -598,6 +607,7 @@ export class FastTradeService {
       pendingOrderId:      orderId,
       pendingOrderPlacedAt: ts,
       pendingExecutionId:  executionId,
+      ...(direction ? { lastDirection: direction } : {}),
       updatedAt:           ts,
     });
     const c = this.sessionCache.get(sessionId);

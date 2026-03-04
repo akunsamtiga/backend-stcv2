@@ -69,6 +69,9 @@ export interface FastTradeSession {
   pendingOrderPlacedAt?: string;
   pendingExecutionId?: string;
 
+  // Martingale direction tracking
+  lastDirection?: "CALL" | "PUT";
+
   // Stop reason
   stopReason?: string;
 

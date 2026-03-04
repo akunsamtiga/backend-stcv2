@@ -220,8 +220,8 @@ export class FastTradeExecutorService {
         return;
       }
 
-      // ── Phase 3: Mark waiting result ────────────────────────────────────
-      await this.fastTradeService.markWaitingResult(session.id, orderId, executionId!);
+      // ── Phase 3: Mark waiting result (save direction for martingale retry) ──
+      await this.fastTradeService.markWaitingResult(session.id, orderId, executionId!, binaryDirection);
 
       this.totalOrdersPlaced++;
 
@@ -561,7 +561,7 @@ export class FastTradeExecutorService {
       }
 
       const tfSeconds = TIMEFRAME_SECONDS_MAP[session.timeframe];
-      const { shouldStop, stopReason, session: updated } =
+      const { shouldStop, stopReason, session: updated, isMartingaleRetry, retryDirection } =
         await this.fastTradeService.applyOrderResult(
           exec.sessionId,
           result,
@@ -592,6 +592,53 @@ export class FastTradeExecutorService {
         this.logger.log(
           `🏁 [${exec.sessionId.slice(-8)}] Session completed: ${stopReason}`,
         );
+        return;
+      }
+
+      // ── Martingale retry: immediately place order in SAME direction ────────
+      // (no candle read — direction follows the original losing trade)
+      if (isMartingaleRetry && retryDirection) {
+        this.logger.log(
+          `🔄 [${exec.sessionId.slice(-8)}] Martingale retry step ${updated.currentStep} | ` +
+          `Direction: ${retryDirection} (same as losing trade) | ` +
+          `Amount: ${updated.currentAmount.toLocaleString('id-ID')}`,
+        );
+
+        try {
+          await this.fastTradeService.markPlacingOrder(exec.sessionId);
+
+          const { orderId: newOrderId, entryPrice: newEntry, executionId: newExecId, error: retryError } =
+            await this.placeBinaryOrder(
+              updated,            // session now has updated currentStep + currentAmount
+              retryDirection,     // SAME direction as the losing order
+              exec.candleTimestamp,
+              exec.candleDirection,
+            );
+
+          if (retryError || !newOrderId) {
+            this.logger.error(`❌ [${exec.sessionId.slice(-8)}] Martingale retry failed: ${retryError}`);
+            await this.rescheduleSession(exec.sessionId);
+            return;
+          }
+
+          await this.fastTradeService.markWaitingResult(
+            exec.sessionId,
+            newOrderId,
+            newExecId!,
+            retryDirection,   // keep tracking direction for further martingale
+          );
+
+          this.totalOrdersPlaced++;
+          this.logger.log(
+            `✅ [${exec.sessionId.slice(-8)}] Martingale order placed: ${newOrderId.slice(-8)} | ` +
+            `${retryDirection} @ ${newEntry} | Step: ${updated.currentStep}`,
+          );
+          this.emitSessionUpdate(updated);
+        } catch (retryErr) {
+          this.logger.error(`❌ Martingale retry error: ${retryErr.message}`);
+          await this.rescheduleSession(exec.sessionId);
+        }
+        return;
       }
 
     } catch (error) {
