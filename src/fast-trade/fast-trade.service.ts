@@ -311,14 +311,20 @@ export class FastTradeService {
       const candles: OhlcCandle[] = [];
       snapshot.forEach(child => {
         const v = child.val();
-        if (v && typeof v.o === 'number' && typeof v.c === 'number') {
+        // Support both short format (o/h/l/c from InitializeAssetCandlesHelper)
+        // and long format (open/high/low/close from simulator index.js)
+        const open  = v?.o  ?? v?.open;
+        const high  = v?.h  ?? v?.high;
+        const low   = v?.l  ?? v?.low;
+        const close = v?.c  ?? v?.close;
+        if (v && typeof open === 'number' && typeof close === 'number') {
           candles.push({
             t: parseInt(child.key!, 10),
-            o: v.o,
-            h: v.h,
-            l: v.l,
-            c: v.c,
-            v: v.v || 0,
+            o: open,
+            h: high  ?? open,
+            l: low   ?? open,
+            c: close,
+            v: v.v   ?? v.volume ?? 0,
           });
         }
       });
