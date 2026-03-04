@@ -8,7 +8,6 @@ import { OnEvent } from '@nestjs/event-emitter';
 import { FirebaseService } from '../firebase/firebase.service';
 import {
   COLLECTIONS,
-  AFFILIATOR_PROGRAM_STATUS,
   AFFILIATE_PROGRAM_CONFIG,
   BALANCE_ACCOUNT_TYPE,
   BALANCE_TYPES,
@@ -30,6 +29,22 @@ import {
   GetCommissionWithdrawalsQueryDto,
 } from './dto/affiliate-commission-withdrawal.dto';
 
+// ─── Detailed invitee stats (enriched per invitee) ───────────────────────────
+interface InviteeStats {
+  // Balance
+  totalDeposit: number;
+  totalWithdrawal: number;
+  currentRealBalance: number;
+  currentDemoBalance: number;
+  // Trading
+  totalRealOrders: number;
+  totalDemoOrders: number;
+  totalWin: number;
+  totalLose: number;
+  totalWinAmount: number;  // sum of profit from wins
+  totalLoseAmount: number; // sum of amount from loses (= commission base)
+}
+
 @Injectable()
 export class AffiliateProgramService {
   private readonly logger = new Logger(AffiliateProgramService.name);
@@ -43,14 +58,12 @@ export class AffiliateProgramService {
   async assignAffiliator(userId: string, dto: AssignAffiliatorDto, adminId: string) {
     const db = this.firebaseService.getFirestore();
 
-    // 1. Verifikasi user ada
     const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
     if (!userDoc.exists) {
       throw new NotFoundException(`User ${userId} tidak ditemukan`);
     }
     const user = userDoc.data() as User;
 
-    // 2. Cek apakah sudah menjadi affiliator
     const existingSnapshot = await db
       .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
       .where('userId', '==', userId)
@@ -61,14 +74,11 @@ export class AffiliateProgramService {
       throw new ConflictException(`User ${userId} sudah menjadi affiliator`);
     }
 
-    // 3. Resolve kode affiliate (kustom atau auto-generate)
     let affiliateCode: string;
 
     if (dto.customCode?.trim()) {
-      // Normalisasi ke huruf besar
       affiliateCode = dto.customCode.trim().toUpperCase();
 
-      // Cek keunikan di SEMUA program (aktif maupun tidak)
       const codeConflict = await db
         .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
         .where('affiliateCode', '==', affiliateCode)
@@ -80,15 +90,10 @@ export class AffiliateProgramService {
           `Kode affiliate "${affiliateCode}" sudah digunakan. Silakan pilih kode lain.`,
         );
       }
-
-      this.logger.log(`✅ Menggunakan kode kustom: ${affiliateCode}`);
     } else {
-      // Auto-generate kode unik
       affiliateCode = await this.generateUniqueAffiliateCode();
-      this.logger.log(`✅ Kode otomatis digenerate: ${affiliateCode}`);
     }
 
-    // 4. Buat program affiliator
     const programId = await this.firebaseService.generateId(COLLECTIONS.AFFILIATOR_PROGRAMS);
     const timestamp = new Date().toISOString();
 
@@ -104,8 +109,8 @@ export class AffiliateProgramService {
       revenueSharePercentage,
       unlockThreshold,
       commissionBalance: 0,
-      lockedCommissionBalance: 0,
-      isCommissionUnlocked: false,
+      lockedCommissionBalance: 0, // kept for schema compatibility, always 0 in new logic
+      isCommissionUnlocked: false, // unlocked when totalInvitedDeposited >= unlockThreshold
       totalInvited: 0,
       totalInvitedDeposited: 0,
       totalCommissionEarned: 0,
@@ -118,7 +123,6 @@ export class AffiliateProgramService {
 
     await db.collection(COLLECTIONS.AFFILIATOR_PROGRAMS).doc(programId).set(program);
 
-    // 5. Update flag di user
     await db.collection(COLLECTIONS.USERS).doc(userId).update({
       isAffiliator: true,
       affiliatorProgramId: programId,
@@ -126,7 +130,7 @@ export class AffiliateProgramService {
     });
 
     this.logger.log(
-      `✅ User ${user.email} dijadikan affiliator (kode: ${affiliateCode}, share: ${revenueSharePercentage}%) oleh admin ${adminId}`
+      `✅ User ${user.email} dijadikan affiliator (kode: ${affiliateCode}, share: ${revenueSharePercentage}%, unlock threshold: ${unlockThreshold}) oleh admin ${adminId}`
     );
 
     return {
@@ -195,6 +199,7 @@ export class AffiliateProgramService {
       throw new NotFoundException(`Program affiliator ${programId} tidak ditemukan`);
     }
 
+    const program = programDoc.data() as AffiliatorProgram;
     const updates: any = { updatedAt: new Date().toISOString(), updatedBy: adminId };
 
     if (dto.revenueSharePercentage !== undefined) {
@@ -202,6 +207,9 @@ export class AffiliateProgramService {
     }
     if (dto.unlockThreshold !== undefined) {
       updates.unlockThreshold = dto.unlockThreshold;
+      // Re-evaluate unlock status with new threshold
+      const newIsUnlocked = program.totalInvitedDeposited >= dto.unlockThreshold;
+      updates.isCommissionUnlocked = newIsUnlocked;
     }
     if (dto.isActive !== undefined) {
       updates.isActive = dto.isActive;
@@ -237,10 +245,16 @@ export class AffiliateProgramService {
     const start = (page - 1) * limit;
     const paginated = programs.slice(start, start + limit);
 
-    // Tambahkan shareLink ke setiap program
     const programsWithLink = paginated.map(p => ({
       ...p,
       shareLink: `https://stouch.id/ref/${p.affiliateCode}`,
+      // Pending invites = totalInvited - totalInvitedDeposited
+      pendingInvites: Math.max(0, (p.totalInvited || 0) - (p.totalInvitedDeposited || 0)),
+      unlockProgress: {
+        current: Math.min(p.totalInvitedDeposited || 0, p.unlockThreshold),
+        required: p.unlockThreshold,
+        isUnlocked: p.isCommissionUnlocked,
+      },
     }));
 
     return {
@@ -255,7 +269,7 @@ export class AffiliateProgramService {
         totalAffiliators: total,
         activeAffiliators: programs.filter(p => p.isActive).length,
         unlockedPrograms: programs.filter(p => p.isCommissionUnlocked).length,
-        totalCommissionPaid: programs.reduce((s, p) => s + p.totalCommissionEarned, 0),
+        totalCommissionPaid: programs.reduce((s, p) => s + (p.totalCommissionEarned || 0), 0),
       },
     };
   }
@@ -300,9 +314,10 @@ export class AffiliateProgramService {
       (d: FirebaseFirestore.QueryDocumentSnapshot) => d.data() as AffiliateCommissionLog
     );
 
-    const pendingInvites = invites.filter(i => !i.hasDeposited);
     const depositedInvites = invites.filter(i => i.hasDeposited);
-    const unlockCount = depositedInvites.filter(i => i.isCountedForUnlock).length;
+    const pendingInvites = invites.filter(i => !i.hasDeposited);
+    const unlockCount = Math.min(depositedInvites.length, program.unlockThreshold);
+    const isUnlocked = depositedInvites.length >= program.unlockThreshold;
 
     return {
       program: {
@@ -311,18 +326,15 @@ export class AffiliateProgramService {
       },
       stats: {
         totalInvited: invites.length,
+        registeredNoDeposit: pendingInvites.length,
         depositedInvites: depositedInvites.length,
-        pendingInvites: pendingInvites.length,
-        invitesCountedForUnlock: unlockCount,
-        invitesAfterUnlock: Math.max(0, depositedInvites.length - program.unlockThreshold),
+        unlockProgress: `${unlockCount} / ${program.unlockThreshold}`,
+        isCommissionUnlocked: isUnlocked,
         commissionBalance: program.commissionBalance,
-        lockedCommissionBalance: program.lockedCommissionBalance,
-        isCommissionUnlocked: program.isCommissionUnlocked,
         totalCommissionEarned: program.totalCommissionEarned,
         totalCommissionWithdrawn: program.totalCommissionWithdrawn || 0,
         revenueSharePercentage: program.revenueSharePercentage,
         unlockThreshold: program.unlockThreshold,
-        unlockProgress: `${Math.min(unlockCount, program.unlockThreshold)} / ${program.unlockThreshold}`,
       },
       recentInvites: invites.slice(0, 20),
       recentCommissions: commissionLogs,
@@ -360,37 +372,45 @@ export class AffiliateProgramService {
     const invites: AffiliatorInvite[] = invitesSnapshot.docs.map(
       (d: FirebaseFirestore.QueryDocumentSnapshot) => d.data() as AffiliatorInvite
     );
+
     const depositedCount = invites.filter(i => i.hasDeposited).length;
-    const unlockProgress = Math.min(depositedCount, program.unlockThreshold);
+    const noDepositCount = invites.filter(i => !i.hasDeposited).length;
+    const unlockCount = Math.min(depositedCount, program.unlockThreshold);
+    const isUnlocked = depositedCount >= program.unlockThreshold;
+    const remaining = Math.max(0, program.unlockThreshold - depositedCount);
 
     return {
       affiliateCode: program.affiliateCode,
       shareLink: `https://stouch.id/ref/${program.affiliateCode}`,
-      isCommissionUnlocked: program.isCommissionUnlocked,
+      isCommissionUnlocked: isUnlocked,
       revenueSharePercentage: program.revenueSharePercentage,
       balances: {
         commissionBalance: program.commissionBalance,
-        lockedCommissionBalance: program.lockedCommissionBalance,
-        isLocked: !program.isCommissionUnlocked,
+        isWithdrawable: isUnlocked,
       },
       unlockProgress: {
-        current: unlockProgress,
+        current: unlockCount,
         required: program.unlockThreshold,
-        percentage: Math.round((unlockProgress / program.unlockThreshold) * 100),
-        isUnlocked: program.isCommissionUnlocked,
-        message: program.isCommissionUnlocked
-          ? '🎉 Komisi kamu sudah terbuka! Kamu mendapat komisi dari trading loss pengguna undanganmu.'
-          : `Undang ${program.unlockThreshold - unlockProgress} pengguna lagi yang sudah deposit untuk membuka komisi.`,
+        percentage: Math.round((unlockCount / program.unlockThreshold) * 100),
+        isUnlocked,
+        message: isUnlocked
+          ? `🎉 Syarat terpenuhi! Kamu bisa menarik komisi kapan saja. Terus undang lebih banyak user untuk komisi lebih besar.`
+          : `Butuh ${remaining} undangan lagi yang sudah deposit untuk bisa menarik komisi. Kamu sudah mendapat komisi, tapi belum bisa ditarik.`,
       },
       stats: {
         totalInvited: invites.length,
         depositedInvites: depositedCount,
-        pendingInvites: invites.filter(i => !i.hasDeposited).length,
+        registeredNoDeposit: noDepositCount,
         totalCommissionEarned: program.totalCommissionEarned,
         totalCommissionWithdrawn: program.totalCommissionWithdrawn || 0,
+        commissionPending: program.commissionBalance,
       },
     };
   }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // AFFILIATOR USER: Get own invites with detailed stats
+  // ─────────────────────────────────────────────────────────────────────────
 
   async getMyInvites(userId: string) {
     const db = this.firebaseService.getFirestore();
@@ -405,6 +425,8 @@ export class AffiliateProgramService {
       throw new ForbiddenException('Kamu bukan affiliator');
     }
 
+    const program = programSnapshot.docs[0].data() as AffiliatorProgram;
+
     const invitesSnapshot = await db
       .collection(COLLECTIONS.AFFILIATOR_INVITES)
       .where('affiliatorId', '==', userId)
@@ -415,21 +437,77 @@ export class AffiliateProgramService {
       (d: FirebaseFirestore.QueryDocumentSnapshot) => d.data() as AffiliatorInvite
     );
 
+    // Fetch detailed stats for each invitee in parallel
+    const enrichedInvites = await Promise.all(
+      invites.map(async (invite) => {
+        const stats = await this.getInviteeStats(invite.inviteeId);
+
+        return {
+          id: invite.id,
+          inviteeId: invite.inviteeId,
+          inviteeEmail: this.maskEmail(invite.inviteeEmail),
+          // Registration & deposit status
+          hasDeposited: invite.hasDeposited,
+          isCountedForUnlock: invite.isCountedForUnlock,
+          firstDepositAt: invite.firstDepositAt,
+          firstDepositAmount: invite.firstDepositAmount,
+          registeredAt: invite.createdAt,
+          // Balance info
+          balance: {
+            totalDeposit: stats.totalDeposit,
+            totalWithdrawal: stats.totalWithdrawal,
+            currentRealBalance: stats.currentRealBalance,
+            currentDemoBalance: stats.currentDemoBalance,
+          },
+          // Trading stats
+          trading: {
+            totalRealOrders: stats.totalRealOrders,
+            totalDemoOrders: stats.totalDemoOrders,
+            totalOrders: stats.totalRealOrders + stats.totalDemoOrders,
+            win: stats.totalWin,
+            lose: stats.totalLose,
+            winAmount: stats.totalWinAmount,
+            loseAmount: stats.totalLoseAmount,
+            winRate: (stats.totalRealOrders + stats.totalDemoOrders) > 0
+              ? Math.round((stats.totalWin / (stats.totalRealOrders + stats.totalDemoOrders)) * 100)
+              : 0,
+          },
+        };
+      })
+    );
+
+    const depositedInvites = enrichedInvites.filter(i => i.hasDeposited);
+    const noDepositInvites = enrichedInvites.filter(i => !i.hasDeposited);
+    const depositedCount = depositedInvites.length;
+    const isUnlocked = depositedCount >= program.unlockThreshold;
+
     return {
-      invites: invites.map(i => ({
+      // Summary
+      summary: {
+        totalInvited: invites.length,
+        depositedInvites: depositedCount,
+        registeredNoDeposit: noDepositInvites.length,
+        unlockProgress: {
+          current: Math.min(depositedCount, program.unlockThreshold),
+          required: program.unlockThreshold,
+          isUnlocked,
+        },
+      },
+      // All invitees (with deposit)
+      depositedUsers: depositedInvites,
+      // Users registered but haven't deposited yet
+      pendingUsers: noDepositInvites.map(i => ({
         id: i.id,
-        inviteeId: i.inviteeId,
-        inviteeEmail: this.maskEmail(i.inviteeEmail),
-        hasDeposited: i.hasDeposited,
-        firstDepositAt: i.firstDepositAt,
-        isCountedForUnlock: i.isCountedForUnlock,
-        createdAt: i.createdAt,
+        inviteeEmail: i.inviteeEmail,
+        registeredAt: i.registeredAt,
+        hasDeposited: false,
       })),
-      total: invites.length,
-      deposited: invites.filter(i => i.hasDeposited).length,
-      pending: invites.filter(i => !i.hasDeposited).length,
     };
   }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // AFFILIATOR USER: Get own commission balance & logs
+  // ─────────────────────────────────────────────────────────────────────────
 
   async getMyCommissions(userId: string) {
     const db = this.firebaseService.getFirestore();
@@ -457,13 +535,23 @@ export class AffiliateProgramService {
       (d: FirebaseFirestore.QueryDocumentSnapshot) => d.data() as AffiliateCommissionLog
     );
 
+    const depositedInvitesCount = program.totalInvitedDeposited || 0;
+    const isUnlocked = depositedInvitesCount >= program.unlockThreshold;
+
     return {
       commissionBalance: program.commissionBalance,
-      lockedCommissionBalance: program.lockedCommissionBalance,
-      isCommissionUnlocked: program.isCommissionUnlocked,
+      isWithdrawable: isUnlocked,
       totalEarned: program.totalCommissionEarned,
       totalWithdrawn: program.totalCommissionWithdrawn || 0,
       revenueSharePercentage: program.revenueSharePercentage,
+      unlockStatus: {
+        depositedInvites: depositedInvitesCount,
+        required: program.unlockThreshold,
+        isUnlocked,
+        message: isUnlocked
+          ? 'Kamu sudah bisa menarik komisi.'
+          : `Butuh ${program.unlockThreshold - depositedInvitesCount} undangan lagi yang deposit agar komisi bisa ditarik.`,
+      },
       commissionLogs: logs.map(l => ({
         id: l.id,
         orderAmount: l.orderAmount,
@@ -482,7 +570,6 @@ export class AffiliateProgramService {
   async requestCommissionWithdrawal(userId: string, dto: RequestCommissionWithdrawalDto) {
     const db = this.firebaseService.getFirestore();
 
-    // 1. Validasi program aktif
     const programSnapshot = await db
       .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
       .where('userId', '==', userId)
@@ -496,9 +583,15 @@ export class AffiliateProgramService {
 
     const program = programSnapshot.docs[0].data() as AffiliatorProgram;
 
-    if (!program.isCommissionUnlocked) {
+    // ✅ NEW LOGIC: unlock = depositedInvites >= unlockThreshold (can withdraw)
+    const depositedCount = program.totalInvitedDeposited || 0;
+    const isUnlocked = depositedCount >= program.unlockThreshold;
+
+    if (!isUnlocked) {
+      const remaining = program.unlockThreshold - depositedCount;
       throw new BadRequestException(
-        `Komisi masih terkunci. Undang minimal ${program.unlockThreshold} pengguna yang deposit untuk membukanya.`,
+        `Kamu belum memenuhi syarat penarikan. Butuh ${remaining} undangan lagi yang deposit ` +
+        `(${depositedCount}/${program.unlockThreshold} terpenuhi). Komisi tetap berjalan dan akan bisa ditarik setelah syarat terpenuhi.`,
       );
     }
 
@@ -514,7 +607,6 @@ export class AffiliateProgramService {
       );
     }
 
-    // 2. Validasi rekening bank
     const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
     if (!userDoc.exists) {
       throw new NotFoundException('User tidak ditemukan');
@@ -532,7 +624,6 @@ export class AffiliateProgramService {
       );
     }
 
-    // 3. Cek tidak ada request pending
     const pendingSnapshot = await db
       .collection(COLLECTIONS.AFFILIATE_COMMISSION_WITHDRAWALS)
       .where('affiliatorId', '==', userId)
@@ -546,7 +637,6 @@ export class AffiliateProgramService {
       );
     }
 
-    // 4. Buat withdrawal request
     const withdrawalId = await this.firebaseService.generateId(
       COLLECTIONS.AFFILIATE_COMMISSION_WITHDRAWALS,
     );
@@ -575,7 +665,7 @@ export class AffiliateProgramService {
       .doc(withdrawalId)
       .set(withdrawal);
 
-    // 5. Reserve (kurangi) amount dari commissionBalance
+    // Reserve amount
     await programSnapshot.docs[0].ref.update({
       commissionBalance: program.commissionBalance - dto.amount,
       updatedAt: timestamp,
@@ -631,9 +721,11 @@ export class AffiliateProgramService {
       .filter(w => w.status === COMMISSION_WITHDRAWAL_STATUS.COMPLETED)
       .reduce((sum, w) => sum + w.amount, 0);
 
+    const isUnlocked = (program.totalInvitedDeposited || 0) >= program.unlockThreshold;
+
     return {
       commissionBalance: program.commissionBalance,
-      isCommissionUnlocked: program.isCommissionUnlocked,
+      isWithdrawable: isUnlocked,
       totalWithdrawn,
       withdrawals: withdrawals.map(w => ({
         id: w.id,
@@ -679,7 +771,6 @@ export class AffiliateProgramService {
 
     const timestamp = new Date().toISOString();
 
-    // Kembalikan commissionBalance
     const programDoc = await db
       .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
       .doc(withdrawal.programId)
@@ -698,10 +789,6 @@ export class AffiliateProgramService {
       rejectionReason: 'Dibatalkan oleh affiliator',
       updatedAt: timestamp,
     });
-
-    this.logger.log(
-      `↩️ Penarikan komisi dibatalkan: ${withdrawalId} oleh affiliator ${userId}`,
-    );
 
     return { message: 'Request penarikan berhasil dibatalkan' };
   }
@@ -785,15 +872,12 @@ export class AffiliateProgramService {
     const withdrawal = withdrawalDoc.data() as AffiliateCommissionWithdrawal;
 
     if (withdrawal.status !== COMMISSION_WITHDRAWAL_STATUS.PENDING) {
-      throw new BadRequestException(
-        `Request ini sudah ${withdrawal.status}`,
-      );
+      throw new BadRequestException(`Request ini sudah ${withdrawal.status}`);
     }
 
     const timestamp = new Date().toISOString();
 
     if (dto.approve) {
-      // ── APPROVE ─────────────────────────────────────────────────────────
       const balanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
 
       await db.collection(COLLECTIONS.BALANCE).doc(balanceId).set({
@@ -814,7 +898,6 @@ export class AffiliateProgramService {
         updatedAt: timestamp,
       });
 
-      // Update totalCommissionWithdrawn pada program
       const programDoc = await db
         .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
         .doc(withdrawal.programId)
@@ -829,11 +912,7 @@ export class AffiliateProgramService {
       }
 
       this.logger.log(
-        `✅ Penarikan komisi DISETUJUI: ${withdrawalId}\n` +
-        `   Affiliator: ${withdrawal.userEmail}\n` +
-        `   Jumlah: Rp ${withdrawal.amount.toLocaleString('id-ID')}\n` +
-        `   Bank: ${withdrawal.bankAccount.bankName} - ${withdrawal.bankAccount.accountNumber}\n` +
-        `   Admin: ${adminId}`,
+        `✅ Penarikan komisi DISETUJUI: ${withdrawalId} | Affiliator: ${withdrawal.userEmail} | Rp ${withdrawal.amount.toLocaleString('id-ID')}`
       );
 
       return {
@@ -849,14 +928,10 @@ export class AffiliateProgramService {
         },
       };
     } else {
-      // ── REJECT ──────────────────────────────────────────────────────────
       if (!dto.rejectionReason?.trim()) {
-        throw new BadRequestException(
-          'Alasan penolakan wajib diisi saat menolak penarikan',
-        );
+        throw new BadRequestException('Alasan penolakan wajib diisi saat menolak penarikan');
       }
 
-      // Kembalikan saldo komisi yang di-reserve
       const programDoc = await db
         .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
         .doc(withdrawal.programId)
@@ -878,14 +953,6 @@ export class AffiliateProgramService {
         adminNotes: dto.adminNotes || dto.rejectionReason,
         updatedAt: timestamp,
       });
-
-      this.logger.log(
-        `❌ Penarikan komisi DITOLAK: ${withdrawalId}\n` +
-        `   Affiliator: ${withdrawal.userEmail}\n` +
-        `   Jumlah: Rp ${withdrawal.amount.toLocaleString('id-ID')}\n` +
-        `   Alasan: ${dto.rejectionReason}\n` +
-        `   Admin: ${adminId}`,
-      );
 
       return {
         message: 'Penarikan komisi ditolak',
@@ -978,6 +1045,11 @@ export class AffiliateProgramService {
 
   // ─────────────────────────────────────────────────────────────────────────
   // DEPOSIT HOOK: Called when an invited user makes their first real deposit
+  //
+  // ✅ NEW LOGIC:
+  //  - All invitees contribute to unlock threshold count
+  //  - isCommissionUnlocked is purely a withdrawal gate (totalDeposited >= threshold)
+  //  - No more lockedCommissionBalance — commissions always earned freely
   // ─────────────────────────────────────────────────────────────────────────
 
   @OnEvent('affiliate.user.deposited')
@@ -992,14 +1064,13 @@ export class AffiliateProgramService {
         .limit(1)
         .get();
 
-      if (inviteSnapshot.empty) {
-        return;
-      }
+      if (inviteSnapshot.empty) return;
 
       const inviteDoc = inviteSnapshot.docs[0];
       const invite = inviteDoc.data() as AffiliatorInvite;
       const timestamp = new Date().toISOString();
 
+      // Mark invitee as deposited
       await inviteDoc.ref.update({
         hasDeposited: true,
         firstDepositAt: timestamp,
@@ -1007,45 +1078,42 @@ export class AffiliateProgramService {
         updatedAt: timestamp,
       });
 
-      const programDoc = await db.collection(COLLECTIONS.AFFILIATOR_PROGRAMS).doc(invite.programId).get();
+      const programDoc = await db
+        .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
+        .doc(invite.programId)
+        .get();
+
       if (!programDoc.exists) return;
 
       const program = programDoc.data() as AffiliatorProgram;
       const newDepositedCount = (program.totalInvitedDeposited || 0) + 1;
 
-      const updates: any = {
-        totalInvitedDeposited: newDepositedCount,
-        updatedAt: timestamp,
-      };
-
-      const shouldCountForUnlock = !program.isCommissionUnlocked && newDepositedCount <= program.unlockThreshold;
-
-      if (shouldCountForUnlock) {
+      // Mark whether this invite counts toward threshold (informational, first N)
+      const isCountedForUnlock = newDepositedCount <= program.unlockThreshold;
+      if (isCountedForUnlock) {
         await inviteDoc.ref.update({ isCountedForUnlock: true, updatedAt: timestamp });
       }
 
-      if (!program.isCommissionUnlocked && newDepositedCount >= program.unlockThreshold) {
-        updates.isCommissionUnlocked = true;
+      // ✅ NEW: unlock = can withdraw = enough deposited invites
+      const nowUnlocked = newDepositedCount >= program.unlockThreshold;
+      const justUnlocked = !program.isCommissionUnlocked && nowUnlocked;
 
-        if (program.lockedCommissionBalance > 0) {
-          updates.commissionBalance = program.commissionBalance + program.lockedCommissionBalance;
-          updates.lockedCommissionBalance = 0;
-          this.logger.log(
-            `🔓 Saldo komisi TERBUKA untuk affiliator ${program.userId}! ` +
-            `Saldo terkunci (${program.lockedCommissionBalance}) kini tersedia.`
-          );
-        }
+      await programDoc.ref.update({
+        totalInvitedDeposited: newDepositedCount,
+        isCommissionUnlocked: nowUnlocked,
+        updatedAt: timestamp,
+      });
 
+      if (justUnlocked) {
         this.logger.log(
-          `🎉 Komisi TERBUKA untuk affiliator ${program.userId} setelah ${newDepositedCount} undangan deposit!`
+          `🎉 Syarat penarikan TERPENUHI untuk affiliator ${program.userId}! ` +
+          `${newDepositedCount}/${program.unlockThreshold} undangan sudah deposit. Komisi sekarang bisa ditarik.`
         );
       }
 
-      await programDoc.ref.update(updates);
-
       this.logger.log(
-        `✅ Deposit terdaftar untuk invitee ${payload.userId} di bawah affiliator ${program.userId}. ` +
-        `Jumlah deposit: ${newDepositedCount}/${program.unlockThreshold}`
+        `✅ Deposit invitee ${payload.userId} tercatat di bawah affiliator ${program.userId}. ` +
+        `Progress: ${newDepositedCount}/${program.unlockThreshold}${nowUnlocked ? ' ✅ UNLOCK' : ''}`
       );
     } catch (error) {
       this.logger.error(`❌ handleUserDeposited error: ${error.message}`);
@@ -1054,6 +1122,11 @@ export class AffiliateProgramService {
 
   // ─────────────────────────────────────────────────────────────────────────
   // ORDER LOST HOOK: Called when an invited user loses a real order
+  //
+  // ✅ NEW LOGIC:
+  //  - ALL invitees generate commission when they lose (including the first N)
+  //  - isCountedForUnlock no longer gates commission earning
+  //  - Commission is always added to commissionBalance directly
   // ─────────────────────────────────────────────────────────────────────────
 
   @OnEvent('affiliate.order.lost')
@@ -1074,21 +1147,21 @@ export class AffiliateProgramService {
 
       const invite = inviteSnapshot.docs[0].data() as AffiliatorInvite;
 
-      const programDoc = await db.collection(COLLECTIONS.AFFILIATOR_PROGRAMS).doc(invite.programId).get();
+      const programDoc = await db
+        .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
+        .doc(invite.programId)
+        .get();
+
       if (!programDoc.exists) return;
 
       const program = programDoc.data() as AffiliatorProgram;
 
-      if (!program.isActive || !program.isCommissionUnlocked) return;
-
-      // N undangan pertama yang membuka komisi TIDAK menghasilkan komisi.
-      // Hanya undangan setelah unlock yang menghasilkan komisi.
-      if (invite.isCountedForUnlock) return;
+      if (!program.isActive) return;
 
       const lossAmount = Math.abs(order.profit || order.amount);
       const commissionAmount = (lossAmount * program.revenueSharePercentage) / 100;
 
-      if (commissionAmount <= 0) return;
+      if (commissionAmount < AFFILIATE_PROGRAM_CONFIG.MIN_LOSS_AMOUNT_FOR_COMMISSION) return;
 
       const logId = await this.firebaseService.generateId(COLLECTIONS.AFFILIATE_COMMISSION_LOGS);
       const timestamp = new Date().toISOString();
@@ -1108,6 +1181,7 @@ export class AffiliateProgramService {
 
       await db.collection(COLLECTIONS.AFFILIATE_COMMISSION_LOGS).doc(logId).set(log);
 
+      // ✅ Always add to commissionBalance directly (no locking)
       await programDoc.ref.update({
         commissionBalance: program.commissionBalance + commissionAmount,
         totalCommissionEarned: (program.totalCommissionEarned || 0) + commissionAmount,
@@ -1115,8 +1189,9 @@ export class AffiliateProgramService {
       });
 
       this.logger.log(
-        `💰 Komisi diberikan ke affiliator ${program.userId}: ` +
-        `Rp ${commissionAmount.toLocaleString()} (${program.revenueSharePercentage}% dari Rp ${lossAmount.toLocaleString()} kerugian invitee ${order.user_id})`
+        `💰 Komisi → affiliator ${program.userId}: ` +
+        `Rp ${commissionAmount.toLocaleString()} (${program.revenueSharePercentage}% dari Rp ${lossAmount.toLocaleString()} loss invitee ${order.user_id})` +
+        (invite.isCountedForUnlock ? ' [unlock-period invitee]' : '')
       );
     } catch (error) {
       this.logger.error(`❌ handleOrderLost error: ${error.message}`);
@@ -1130,7 +1205,6 @@ export class AffiliateProgramService {
   async getAffiliatorPublicInfo(affiliateCode: string): Promise<{ name: string }> {
     const db = this.firebaseService.getFirestore();
 
-    // Cari program berdasarkan kode
     const programSnapshot = await db
       .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
       .where('affiliateCode', '==', affiliateCode.toUpperCase())
@@ -1144,28 +1218,119 @@ export class AffiliateProgramService {
 
     const program = programSnapshot.docs[0].data() as AffiliatorProgram;
 
-    // Ambil profil user untuk mendapatkan fullName
     const userDoc = await db.collection(COLLECTIONS.USERS).doc(program.userId).get();
     if (!userDoc.exists) {
       throw new NotFoundException(`User tidak ditemukan`);
     }
 
     const user = userDoc.data() as any;
-    // Prioritas: fullName → nama depan dari email
     const fullName = user?.profile?.fullName;
-    const name = fullName
-      ? fullName
-      : program.userEmail.split('@')[0];
+    const name = fullName ? fullName : program.userEmail.split('@')[0];
 
     return { name };
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // HELPERS
+  // PRIVATE HELPERS
   // ─────────────────────────────────────────────────────────────────────────
 
   /**
-   * Generate kode unik dengan retry hingga 5x jika collision.
+   * Fetch detailed balance and trading stats for a single invitee.
+   * Used in getMyInvites to enrich each invitee row.
+   */
+  private async getInviteeStats(inviteeId: string): Promise<InviteeStats> {
+    const db = this.firebaseService.getFirestore();
+
+    const stats: InviteeStats = {
+      totalDeposit: 0,
+      totalWithdrawal: 0,
+      currentRealBalance: 0,
+      currentDemoBalance: 0,
+      totalRealOrders: 0,
+      totalDemoOrders: 0,
+      totalWin: 0,
+      totalLose: 0,
+      totalWinAmount: 0,
+      totalLoseAmount: 0,
+    };
+
+    try {
+      // Fetch balance entries and orders in parallel
+      const [balanceSnap, ordersSnap] = await Promise.all([
+        db.collection(COLLECTIONS.BALANCE)
+          .where('user_id', '==', inviteeId)
+          .get(),
+        db.collection(COLLECTIONS.ORDERS)
+          .where('user_id', '==', inviteeId)
+          .get(),
+      ]);
+
+      // ── Balance calculations ────────────────────────────────────────────
+      balanceSnap.forEach(doc => {
+        const b = doc.data();
+        const amt: number = b.amount || 0;
+        const type: string = b.type || '';
+        const accountType: string = b.accountType || '';
+
+        // Total deposits (real only)
+        if (type === BALANCE_TYPES.DEPOSIT && accountType === BALANCE_ACCOUNT_TYPE.REAL) {
+          stats.totalDeposit += amt;
+        }
+        // Total withdrawals (real only)
+        if (type === BALANCE_TYPES.WITHDRAWAL && accountType === BALANCE_ACCOUNT_TYPE.REAL) {
+          stats.totalWithdrawal += amt;
+        }
+
+        // Running balance per accountType
+        const isIncome =
+          type === BALANCE_TYPES.DEPOSIT ||
+          type === BALANCE_TYPES.ORDER_PROFIT ||
+          type === BALANCE_TYPES.WIN ||
+          type === BALANCE_TYPES.VOUCHER_BONUS ||
+          type === BALANCE_TYPES.AFFILIATE_COMMISSION;
+
+        const isExpense =
+          type === BALANCE_TYPES.WITHDRAWAL ||
+          type === BALANCE_TYPES.ORDER_DEBIT ||
+          type === BALANCE_TYPES.LOSE;
+
+        if (accountType === BALANCE_ACCOUNT_TYPE.REAL) {
+          if (isIncome) stats.currentRealBalance += amt;
+          if (isExpense) stats.currentRealBalance -= amt;
+        }
+        if (accountType === BALANCE_ACCOUNT_TYPE.DEMO) {
+          if (isIncome) stats.currentDemoBalance += amt;
+          if (isExpense) stats.currentDemoBalance -= amt;
+        }
+      });
+
+      // ── Order calculations ──────────────────────────────────────────────
+      ordersSnap.forEach(doc => {
+        const o = doc.data();
+        const status: string = o.status || '';
+        const accountType: string = o.accountType || '';
+
+        if (accountType === BALANCE_ACCOUNT_TYPE.REAL) stats.totalRealOrders++;
+        if (accountType === BALANCE_ACCOUNT_TYPE.DEMO) stats.totalDemoOrders++;
+
+        if (status === 'WON') {
+          stats.totalWin++;
+          stats.totalWinAmount += Math.abs(o.profit || 0);
+        }
+        if (status === 'LOST') {
+          stats.totalLose++;
+          stats.totalLoseAmount += o.amount || 0;
+        }
+      });
+    } catch (error) {
+      this.logger.warn(`⚠️ getInviteeStats partial fail for ${inviteeId}: ${error.message}`);
+    }
+
+    return stats;
+  }
+
+  /**
+   * Generate a unique affiliate code with up to 5 retry attempts on collision.
    */
   private async generateUniqueAffiliateCode(): Promise<string> {
     const db = this.firebaseService.getFirestore();
