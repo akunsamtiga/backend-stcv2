@@ -179,14 +179,14 @@ export class FastTradeExecutorService {
         const nextCandleAt = this.fastTradeService.calcNextCandleBoundary(tfSeconds);
         await this.fastTradeService.markWaiting(session.id, nextCandleAt);
 
-        // Log skipped execution
+        // Log skipped execution — no binary direction for neutral candle
         await this.fastTradeService.saveExecution({
           sessionId:        session.id,
           userId:           session.userId,
           candleTimestamp:  candle?.t ?? nowSec,
           candleDirection:  direction,
           timeframe:        session.timeframe,
-          direction:        'CALL',
+          direction:        'CALL',   // placeholder; candleDirection=neutral is the truth
           amount:           session.currentAmount,
           martingaleStep:   session.currentStep,
           accountType:      session.accountType,
