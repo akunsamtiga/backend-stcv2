@@ -142,9 +142,11 @@ export class FastTradeExecutorService {
 
     const tfSeconds = TIMEFRAME_SECONDS_MAP[session.timeframe];
 
-    // Fire when we reach the candle boundary (within 2s window)
+    // Fire ONLY at or after the boundary — never before.
+    // distanceToCandle <= 0 means boundary has passed, candle is confirmed closed.
+    // Firing at distanceToCandle = 1 (1s early) would read a candle still forming.
     const distanceToCandle = session.nextCandleAt - nowSec;
-    if (distanceToCandle > 1) return;
+    if (distanceToCandle > 0) return;
 
     // Lock this session
     this.processingLock.add(session.id);
