@@ -14,6 +14,7 @@ import { AssetsModule } from './assets/assets.module';
 import { BinaryOrdersModule } from './binary-orders/binary-orders.module';
 import { AdminModule } from './admin/admin.module';
 import { FirebaseModule } from './firebase/firebase.module';
+import { EmailModule } from './email/email.module';
 import { WebSocketModule } from './websocket/websocket.module';
 import { HealthController } from './health.controller';
 import { PaymentModule } from './payment/payment.module';
@@ -52,6 +53,7 @@ import { CtcModule } from './ctc/ctc.module';
       ignoreErrors: false,
     }),
     FirebaseModule,
+    EmailModule,       // ← Global email module
     AuthModule,
     UserModule,
     BalanceModule,
@@ -67,7 +69,7 @@ import { CtcModule } from './ctc/ctc.module';
     AutoLoseSystemModule,
     AffiliateProgramModule,
     FastTradeModule,
-    CtcModule
+    CtcModule,
   ],
   controllers: [HealthController],
 })

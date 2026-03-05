@@ -45,13 +45,13 @@ export const USER_STATUS = {
 export const STATUS_REQUIREMENTS = {
   STANDARD: {
     minDeposit: 0,
-    maxDeposit: 160000,
+    maxDeposit: 200000,
     profitBonus: 0,
     label: 'Standard',
-    color: '#6B7280',
+    color: '#9e6111',
   },
   GOLD: {
-    minDeposit: 160000,
+    minDeposit: 200000,
     maxDeposit: 1600000,
     profitBonus: 5,
     label: 'Gold',
@@ -62,7 +62,7 @@ export const STATUS_REQUIREMENTS = {
     maxDeposit: Infinity,
     profitBonus: 10,
     label: 'VIP',
-    color: '#8B5CF6',
+    color: '#9e9e9e',
   },
 } as const;
 

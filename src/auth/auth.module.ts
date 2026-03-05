@@ -1,4 +1,5 @@
 // src/auth/auth.module.ts
+
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
@@ -7,9 +8,11 @@ import { AuthService } from './auth.service';
 import { GoogleAuthService } from './auth.service.google';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { RolesGuard } from './guards/roles.guard';
+import { EmailModule } from '../email/email.module';
 
 @Module({
   imports: [
+    EmailModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -24,8 +27,5 @@ import { RolesGuard } from './guards/roles.guard';
   controllers: [AuthController],
   providers: [AuthService, GoogleAuthService, JwtAuthGuard, RolesGuard],
   exports: [JwtAuthGuard, RolesGuard, JwtModule, AuthService, GoogleAuthService],
-  // ✅ NOTE: AffiliateProgramService di-inject via @Optional() di AuthService dan GoogleAuthService,
-  // sehingga tidak perlu di-import di sini (menghindari circular dependency).
-  // AffiliateProgramModule yang akan inject service-nya saat runtime via ModuleRef.
 })
 export class AuthModule {}

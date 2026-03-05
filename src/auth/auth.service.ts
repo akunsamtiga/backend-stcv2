@@ -1,13 +1,21 @@
 // src/auth/auth.service.ts
 
-import { Injectable, UnauthorizedException, ConflictException, Logger, OnModuleInit, BadRequestException, Optional } from '@nestjs/common';
+import {
+  Injectable, UnauthorizedException, ConflictException, Logger,
+  OnModuleInit, BadRequestException, Optional, NotFoundException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
+import * as crypto from 'crypto';
 import { FirebaseService } from '../firebase/firebase.service';
+import { EmailService } from '../email/email.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
-import { COLLECTIONS, BALANCE_TYPES, BALANCE_ACCOUNT_TYPE, USER_ROLES, USER_STATUS, AFFILIATE_STATUS } from '../common/constants';
+import {
+  COLLECTIONS, BALANCE_TYPES, BALANCE_ACCOUNT_TYPE,
+  USER_ROLES, USER_STATUS, AFFILIATE_STATUS,
+} from '../common/constants';
 import { User, UserProfile } from '../common/interfaces';
 
 // Lazy import to avoid circular dependency — resolved at runtime via Optional()
@@ -22,8 +30,12 @@ export class AuthService implements OnModuleInit {
   private tokenCache: Map<string, { token: string; timestamp: number }> = new Map();
   private readonly TOKEN_CACHE_TTL = 300000;
 
+  // Email verification token TTL: 24 jam
+  private readonly EMAIL_VERIFY_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+
   constructor(
     private firebaseService: FirebaseService,
+    private emailService: EmailService,
     private jwtService: JwtService,
     private configService: ConfigService,
     @Optional() public affiliateProgramService?: AffiliateProgramService,
@@ -112,7 +124,7 @@ export class AuthService implements OnModuleInit {
             timezone: 'Asia/Jakarta',
           },
           verification: {
-            emailVerified: true,
+            emailVerified: true, // Super admin langsung verified
             phoneVerified: false,
             identityVerified: false,
             bankVerified: false,
@@ -170,36 +182,136 @@ export class AuthService implements OnModuleInit {
     }
   }
 
-  // ✅ FIX: Normalisasi nomor HP ke format E.164 (+62xxxxxxxxx) sebelum disimpan ke database.
-  // Ini memastikan format konsisten terlepas dari input user (081x, 62x, atau +62x).
+  // ─── Email Verification ────────────────────────────────────────────────────
+
+  private generateEmailVerificationToken(): string {
+    return crypto.randomBytes(32).toString('hex');
+  }
+
+  async sendVerificationEmail(userId: string, email: string): Promise<void> {
+    const db = this.firebaseService.getFirestore();
+    const token = this.generateEmailVerificationToken();
+    const expiresAt = new Date(Date.now() + this.EMAIL_VERIFY_TOKEN_TTL_MS).toISOString();
+
+    // Simpan token ke Firestore
+    await db.collection(COLLECTIONS.USERS).doc(userId).update({
+      emailVerificationToken: token,
+      emailVerificationTokenExpiresAt: expiresAt,
+    });
+
+    // Kirim email (non-blocking, tidak throw jika gagal)
+    try {
+      await this.emailService.sendEmailVerification(email, token);
+    } catch (error) {
+      this.logger.error(`⚠️ Email send failed (non-blocking): ${error.message}`);
+    }
+  }
+
+  async verifyEmail(token: string): Promise<{ message: string }> {
+    if (!token || token.trim().length === 0) {
+      throw new BadRequestException('Token verifikasi tidak valid');
+    }
+
+    const db = this.firebaseService.getFirestore();
+
+    const snapshot = await db.collection(COLLECTIONS.USERS)
+      .where('emailVerificationToken', '==', token)
+      .limit(1)
+      .get();
+
+    if (snapshot.empty) {
+      throw new BadRequestException('Token verifikasi tidak valid atau sudah digunakan');
+    }
+
+    const userDoc = snapshot.docs[0];
+    const userData = userDoc.data();
+
+    // Cek apakah sudah verified
+    if (userData.profile?.verification?.emailVerified === true) {
+      return { message: 'Email sudah terverifikasi sebelumnya' };
+    }
+
+    // Cek expiry token
+    const expiresAt = new Date(userData.emailVerificationTokenExpiresAt);
+    if (new Date() > expiresAt) {
+      throw new BadRequestException('Token verifikasi sudah kadaluarsa. Silakan minta kirim ulang.');
+    }
+
+    // Update status verified & hapus token
+    await userDoc.ref.update({
+      'profile.verification.emailVerified': true,
+      'profile.verification.verificationLevel': 'basic',
+      emailVerificationToken: null,
+      emailVerificationTokenExpiresAt: null,
+      updatedAt: new Date().toISOString(),
+    });
+
+    // Invalidate cache
+    this.userCache.delete(userDoc.id);
+
+    this.logger.log(`✅ Email verified for user: ${userData.email}`);
+
+    return { message: 'Email berhasil diverifikasi' };
+  }
+
+  async resendVerificationEmail(userId: string): Promise<{ message: string }> {
+    const db = this.firebaseService.getFirestore();
+    const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
+
+    if (!userDoc.exists) {
+      throw new NotFoundException('User tidak ditemukan');
+    }
+
+    const userData = userDoc.data();
+
+    if (!userData) {
+      throw new NotFoundException('User tidak ditemukan');
+    }
+
+    // Cek apakah sudah verified
+    if (userData.profile?.verification?.emailVerified === true) {
+      throw new BadRequestException('Email sudah terverifikasi');
+    }
+
+    // Rate limiting: cek apakah token yang ada belum expired lebih dari 1 menit
+    if (userData.emailVerificationTokenExpiresAt) {
+      const expiresAt = new Date(userData.emailVerificationTokenExpiresAt);
+      const tokenAge = (expiresAt.getTime() - Date.now());
+      const maxAge = this.EMAIL_VERIFY_TOKEN_TTL_MS;
+      const minWaitMs = 60 * 1000; // 1 menit
+
+      if (tokenAge > (maxAge - minWaitMs)) {
+        throw new BadRequestException(
+          'Tunggu 1 menit sebelum meminta kirim ulang email verifikasi'
+        );
+      }
+    }
+
+    await this.sendVerificationEmail(userId, userData.email);
+
+    this.logger.log(`✅ Verification email resent to: ${userData.email}`);
+
+    return { message: 'Email verifikasi telah dikirim ulang. Periksa inbox Anda.' };
+  }
+
+  // ─── Register ─────────────────────────────────────────────────────────────
+
   private normalizePhoneNumber(phone: string | undefined): string | undefined {
     if (!phone) return undefined;
-
     const cleaned = phone.trim();
-
-    // Sudah format E.164 lengkap: +6281234567890
-    if (cleaned.startsWith('+62')) {
-      return cleaned;
-    }
-
-    // Format tanpa plus: 6281234567890 → +6281234567890
-    if (cleaned.startsWith('62')) {
-      return `+${cleaned}`;
-    }
-
-    // Format lokal Indonesia: 081234567890 → +6281234567890
-    if (cleaned.startsWith('0')) {
-      return `+62${cleaned.slice(1)}`;
-    }
-
-    // Fallback: kembalikan apa adanya (tidak seharusnya terjadi karena sudah divalidasi di DTO)
+    if (cleaned.startsWith('+62')) return cleaned;
+    if (cleaned.startsWith('62')) return `+${cleaned}`;
+    if (cleaned.startsWith('0')) return `+62${cleaned.slice(1)}`;
     return cleaned;
   }
 
   async register(registerDto: RegisterDto) {
     const startTime = Date.now();
     const db = this.firebaseService.getFirestore();
-    const { email, password, referralCode, affiliateCode, fullName, phoneNumber, dateOfBirth, gender, nationality } = registerDto;
+    const {
+      email, password, referralCode, affiliateCode,
+      fullName, phoneNumber, dateOfBirth, gender, nationality,
+    } = registerDto;
 
     try {
       const usersSnapshot = await db.collection(COLLECTIONS.USERS)
@@ -233,9 +345,6 @@ export class AuthService implements OnModuleInit {
       const userId = await this.firebaseService.generateId(COLLECTIONS.USERS);
       const timestamp = new Date().toISOString();
       const newUserReferralCode = this.generateReferralCode();
-
-      // ✅ FIX: Normalisasi nomor HP sebelum disimpan.
-      // Contoh: "081234567890" → "+6281234567890"
       const normalizedPhone = this.normalizePhoneNumber(phoneNumber);
 
       if (phoneNumber && normalizedPhone) {
@@ -244,7 +353,7 @@ export class AuthService implements OnModuleInit {
 
       const initialProfile: UserProfile = {
         fullName: fullName || undefined,
-        phoneNumber: normalizedPhone,   // ✅ Simpan nomor yang sudah dinormalisasi
+        phoneNumber: normalizedPhone,
         dateOfBirth: dateOfBirth || undefined,
         gender: gender as any || undefined,
         nationality: nationality || undefined,
@@ -257,13 +366,19 @@ export class AuthService implements OnModuleInit {
           timezone: 'Asia/Jakarta',
         },
         verification: {
-          emailVerified: true,
-          phoneVerified: false,         // Nomor belum terverifikasi OTP saat register
+          emailVerified: false,       // ← false, perlu verifikasi dulu
+          phoneVerified: false,
           identityVerified: false,
           bankVerified: false,
           verificationLevel: 'unverified',
         },
       };
+
+      // Generate token verifikasi
+      const verificationToken = this.generateEmailVerificationToken();
+      const verificationTokenExpiresAt = new Date(
+        Date.now() + this.EMAIL_VERIFY_TOKEN_TTL_MS
+      ).toISOString();
 
       const userData = {
         id: userId,
@@ -280,6 +395,8 @@ export class AuthService implements OnModuleInit {
         createdAt: timestamp,
         updatedAt: timestamp,
         loginCount: 0,
+        emailVerificationToken: verificationToken,
+        emailVerificationTokenExpiresAt: verificationTokenExpiresAt,
       };
 
       await db.collection(COLLECTIONS.USERS).doc(userId).set(userData);
@@ -321,15 +438,14 @@ export class AuthService implements OnModuleInit {
             updatedAt: timestamp,
           });
           this.logger.log(
-            `🎁 Affiliate record created: ${referrerUser.email} referred ${email} (Commission pending first deposit)`,
+            `🎁 Affiliate record created: ${referrerUser.email} referred ${email}`,
           );
         } catch (affiliateError) {
           this.logger.error(`⚠️ Failed to create affiliate record: ${affiliateError.message}`);
-          this.logger.error(affiliateError.stack);
         }
       }
 
-      // ─── Affiliate Program invite hook ────────────────────────────────────
+      // Affiliate program hook
       let affiliateProgramResult: any = null;
       if (affiliateCode?.trim() && this.affiliateProgramService) {
         try {
@@ -341,15 +457,16 @@ export class AuthService implements OnModuleInit {
           if (result.registered) {
             affiliateProgramResult = result;
             this.logger.log(`✅ Affiliate program invite created via code: ${affiliateCode}`);
-          } else {
-            this.logger.warn(`⚠️ Affiliate program invite not registered for code: ${affiliateCode}`);
           }
         } catch (affProgError) {
-          // Non-blocking — registration must still succeed
           this.logger.error(`⚠️ Affiliate program hook failed: ${affProgError.message}`);
         }
       }
-      // ─────────────────────────────────────────────────────────────────────
+
+      // Kirim email verifikasi (non-blocking)
+      this.emailService.sendEmailVerification(email, verificationToken).catch(err => {
+        this.logger.error(`⚠️ Failed to send verification email: ${err.message}`);
+      });
 
       let profileCompletion = 10;
       if (fullName) profileCompletion += 10;
@@ -357,19 +474,11 @@ export class AuthService implements OnModuleInit {
       if (dateOfBirth) profileCompletion += 5;
       if (gender) profileCompletion += 5;
 
-      this.logger.log(
-        `✅ User registered: ${email} (Status: STANDARD, Profile: ${profileCompletion}%, Real: Rp 0, Demo: Rp 10,000,000)`,
-      );
-
-      if (referrerUserId && referrerUser) {
-        this.logger.log(`   Referred by: ${referrerUser.email} (ID: ${referrerUserId})`);
-      }
-
       const token = this.generateToken(userId, email, USER_ROLES.USER);
-      this.cacheUser(userId, userData as User);
+      this.cacheUser(userId, userData as unknown as User);
 
       const duration = Date.now() - startTime;
-      this.logger.log(`✅ Registration completed in ${duration}ms`);
+      this.logger.log(`✅ Registration completed in ${duration}ms: ${email}`);
 
       return {
         message: 'Registration successful with real and demo accounts',
@@ -383,10 +492,15 @@ export class AuthService implements OnModuleInit {
           isNewUser: true,
           tutorialCompleted: false,
           loginCount: 0,
+          emailVerified: false,
         },
         initialBalances: {
           real: 0,
           demo: 10000000,
+        },
+        emailVerification: {
+          required: true,
+          message: 'Email verifikasi telah dikirim ke ' + email + '. Silakan cek inbox Anda.',
         },
         affiliate: referrerUserId && referrerUser
           ? {
@@ -407,23 +521,14 @@ export class AuthService implements OnModuleInit {
     } catch (error) {
       const duration = Date.now() - startTime;
       this.logger.error(`❌ Registration failed after ${duration}ms: ${error.message}`);
-      if (error instanceof ConflictException) {
-        throw error;
-      }
+      if (error instanceof ConflictException) throw error;
       throw new BadRequestException(
         error.message || 'Registration failed. Please check your input and try again.',
       );
     }
   }
 
-  private generateReferralCode(): string {
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    let code = '';
-    for (let i = 0; i < 8; i++) {
-      code += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return code;
-  }
+  // ─── Login ────────────────────────────────────────────────────────────────
 
   async login(loginDto: LoginDto) {
     const startTime = Date.now();
@@ -453,10 +558,7 @@ export class AuthService implements OnModuleInit {
 
     const loginCount = (user.loginCount || 0) + 1;
     const lastLoginAt = new Date().toISOString();
-    const updates: any = {
-      lastLoginAt,
-      loginCount,
-    };
+    const updates: any = { lastLoginAt, loginCount };
 
     if (loginCount >= 3 && user.tutorialCompleted === false) {
       updates.tutorialCompleted = true;
@@ -464,8 +566,11 @@ export class AuthService implements OnModuleInit {
     }
 
     await db.collection(COLLECTIONS.USERS).doc(user.id).update(updates);
+
     const token = this.generateToken(user.id, user.email, user.role);
     this.cacheUser(user.id, user);
+
+    const emailVerified = user.profile?.verification?.emailVerified ?? false;
 
     const duration = Date.now() - startTime;
     this.logger.log(
@@ -483,32 +588,46 @@ export class AuthService implements OnModuleInit {
         tutorialCompleted: user.tutorialCompleted || false,
         loginCount,
         lastLoginAt,
+        emailVerified,
       },
+      // Tampilkan reminder jika belum verifikasi
+      emailVerification: !emailVerified
+        ? {
+            required: false,
+            message: 'Email Anda belum diverifikasi. Silakan cek inbox atau minta kirim ulang.',
+          }
+        : null,
       token,
     };
   }
 
+  // ─── Helpers ──────────────────────────────────────────────────────────────
+
+  private generateReferralCode(): string {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let code = '';
+    for (let i = 0; i < 8; i++) {
+      code += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return code;
+  }
+
   private generateToken(userId: string, email: string, role: string): string {
     const payload = { sub: userId, email, role };
-    const token = this.jwtService.sign(payload, {
+    return this.jwtService.sign(payload, {
       secret: this.configService.get('jwt.secret'),
       expiresIn: this.configService.get('jwt.expiresIn'),
     });
-    return token;
   }
 
   private cacheUser(userId: string, user: User): void {
-    this.userCache.set(userId, {
-      user,
-      timestamp: Date.now(),
-    });
+    this.userCache.set(userId, { user, timestamp: Date.now() });
   }
 
   private getCachedUser(userId: string): User | null {
     const cached = this.userCache.get(userId);
     if (!cached) return null;
-    const age = Date.now() - cached.timestamp;
-    if (age > this.USER_CACHE_TTL) {
+    if (Date.now() - cached.timestamp > this.USER_CACHE_TTL) {
       this.userCache.delete(userId);
       return null;
     }
@@ -518,27 +637,19 @@ export class AuthService implements OnModuleInit {
   private cleanupCache(): void {
     const now = Date.now();
     for (const [userId, cached] of this.userCache.entries()) {
-      if (now - cached.timestamp > this.USER_CACHE_TTL) {
-        this.userCache.delete(userId);
-      }
+      if (now - cached.timestamp > this.USER_CACHE_TTL) this.userCache.delete(userId);
     }
     for (const [key, cached] of this.tokenCache.entries()) {
-      if (now - cached.timestamp > this.TOKEN_CACHE_TTL) {
-        this.tokenCache.delete(key);
-      }
+      if (now - cached.timestamp > this.TOKEN_CACHE_TTL) this.tokenCache.delete(key);
     }
   }
 
   async getUserById(userId: string): Promise<User | null> {
     const cached = this.getCachedUser(userId);
-    if (cached) {
-      return cached;
-    }
+    if (cached) return cached;
     const db = this.firebaseService.getFirestore();
     const userDoc = await db.collection(COLLECTIONS.USERS).doc(userId).get();
-    if (!userDoc.exists) {
-      return null;
-    }
+    if (!userDoc.exists) return null;
     const user = userDoc.data() as User;
     this.cacheUser(userId, user);
     return user;
