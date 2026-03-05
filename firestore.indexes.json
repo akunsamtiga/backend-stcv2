@@ -411,6 +411,20 @@
       ]
     },
     {
+      "collectionGroup": "binary_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "user_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "balance",
       "queryScope": "COLLECTION",
       "fields": [
@@ -426,20 +440,6 @@
     },
     {
       "collectionGroup": "balance",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "user_id",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "createdAt",
-          "order": "DESCENDING"
-        }
-      ]
-    },
-    {
-      "collectionGroup": "binary_orders",
       "queryScope": "COLLECTION",
       "fields": [
         {
@@ -619,6 +619,20 @@
       ]
     },
     {
+      "collectionGroup": "affiliator_invites",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "programId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "hasDeposited",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "affiliate_commission_logs",
       "queryScope": "COLLECTION",
       "fields": [
@@ -927,6 +941,42 @@
           "order": "DESCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "binary_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "user_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "accountType",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "affiliator_invites",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "programId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "hasDeposited",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": [
@@ -1015,6 +1065,20 @@
       ]
     },
     {
+      "collectionGroup": "binary_orders",
+      "fieldPath": "createdAt",
+      "indexes": [
+        {
+          "order": "ASCENDING",
+          "queryScope": "COLLECTION"
+        },
+        {
+          "order": "DESCENDING",
+          "queryScope": "COLLECTION"
+        }
+      ]
+    },
+    {
       "collectionGroup": "balance",
       "fieldPath": "createdAt",
       "indexes": [
@@ -1044,6 +1108,20 @@
     },
     {
       "collectionGroup": "affiliator_programs",
+      "fieldPath": "createdAt",
+      "indexes": [
+        {
+          "order": "ASCENDING",
+          "queryScope": "COLLECTION"
+        },
+        {
+          "order": "DESCENDING",
+          "queryScope": "COLLECTION"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "affiliator_invites",
       "fieldPath": "createdAt",
       "indexes": [
         {

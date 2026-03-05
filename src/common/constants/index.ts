@@ -1,4 +1,5 @@
 // src/common/constants/index.ts
+// ─── PERUBAHAN: Tambah AFFILIATE_COMMISSION_TIERS untuk sistem komisi dinamis ─
 
 export const BALANCE_TYPES = {
   DEPOSIT: 'deposit',
@@ -82,10 +83,45 @@ export const AFFILIATE_CONFIG = {
 } as const;
 
 export const AFFILIATE_PROGRAM_CONFIG = {
-  DEFAULT_REVENUE_SHARE: 50,         // 50% of invitee's trading loss
-  DEFAULT_UNLOCK_THRESHOLD: 5,       // 5 invited users must deposit to unlock
-  MIN_LOSS_AMOUNT_FOR_COMMISSION: 1, // Minimum loss amount to generate commission
+  DEFAULT_REVENUE_SHARE: 80,         // Default awal = 80% (fase baru)
+  DEFAULT_UNLOCK_THRESHOLD: 5,       // 5 invited users harus deposit dulu
+  MIN_LOSS_AMOUNT_FOR_COMMISSION: 1, // Minimum loss untuk generate komisi
 } as const;
+
+// ─── Sistem Komisi Dinamis ────────────────────────────────────────────────────
+//
+// FASE 1 — Affiliator Baru (< NEW_AFFILIATE_MONTHS bulan sejak assignedAt):
+//   Komisi flat NEW_AFFILIATE_RATE% dari semua loss invitee yang sudah deposit.
+//
+// FASE 2 — Affiliator Lama (>= NEW_AFFILIATE_MONTHS bulan sejak assignedAt):
+//   Komisi berdasarkan jumlah invitee AKTIF bulan ini (transaksi real dalam 30 hari):
+//     TIERS diurutkan dari TERBESAR → terkecil (untuk matching pertama yang valid).
+//
+//   Contoh:
+//     0–50   user aktif → 50%
+//    51–70   user aktif → 60%
+//    71–100  user aktif → 70%
+//   101+     user aktif → 80%
+//
+export const AFFILIATE_COMMISSION_TIERS = {
+  // ── Fase 1 config ──────────────────────────────────────────────────────
+  NEW_AFFILIATE_MONTHS: 2,   // Berapa bulan fase "baru" berlaku (dihitung dari assignedAt)
+  NEW_AFFILIATE_RATE: 80,    // Flat rate selama fase baru (%)
+
+  // ── Fase 2 config — diurutkan dari minActive TERBESAR ke terkecil ──────
+  // Format: { minActive: N, rate: R } artinya "jika activeUsers >= N → rate R%"
+  TIERS: [
+    { minActive: 100, rate: 80 },  // 100+ user aktif → 80%
+    { minActive: 70,  rate: 70 },  // 70–99 user aktif → 70%
+    { minActive: 50,  rate: 60 },  // 50–69 user aktif → 60%
+    { minActive: 0,   rate: 50 },  // 0–49 user aktif  → 50%
+  ],
+
+  // ── Definisi "user aktif" ──────────────────────────────────────────────
+  ACTIVE_USER_WINDOW_DAYS: 30,  // User dianggap aktif jika ada order real dalam 30 hari terakhir
+} as const;
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 export const AFFILIATOR_PROGRAM_STATUS = {
   ACTIVE: 'active',
@@ -106,8 +142,6 @@ export const WITHDRAWAL_CONFIG = {
   REQUIRE_BANK_ACCOUNT: true,
 } as const;
 
-// ─── Affiliate Commission Withdrawal ─────────────────────────────────────────
-
 export const COMMISSION_WITHDRAWAL_STATUS = {
   PENDING: 'pending',
   APPROVED: 'approved',
@@ -116,10 +150,8 @@ export const COMMISSION_WITHDRAWAL_STATUS = {
 } as const;
 
 export const COMMISSION_WITHDRAWAL_CONFIG = {
-  MIN_AMOUNT: 50000, // Minimum penarikan komisi Rp 50.000
+  MIN_AMOUNT: 50000,
 } as const;
-
-// ─────────────────────────────────────────────────────────────────────────────
 
 export const COLLECTIONS = {
   USERS: 'users',
@@ -130,7 +162,6 @@ export const COLLECTIONS = {
   WITHDRAWAL_REQUESTS: 'withdrawal_requests',
   VOUCHERS: 'vouchers',
   VOUCHER_USAGES: 'voucher_usages',
-  // Affiliate Program (separate from referral system)
   AFFILIATOR_PROGRAMS: 'affiliator_programs',
   AFFILIATOR_INVITES: 'affiliator_invites',
   AFFILIATE_COMMISSION_LOGS: 'affiliate_commission_logs',
