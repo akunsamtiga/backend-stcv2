@@ -8,6 +8,7 @@ import { OrderScheduleController } from './order-schedule.controller';
 import { FirebaseModule } from '../firebase/firebase.module';
 import { AuthModule } from '../auth/auth.module';
 import { AssetsModule } from '../assets/assets.module';
+import { BalanceModule } from '../balance/balance.module'; // ✅ FIX: tambah BalanceModule
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { AssetsModule } from '../assets/assets.module';
     FirebaseModule,
     AuthModule,
     forwardRef(() => AssetsModule),
+    BalanceModule, 
   ],
   controllers: [OrderScheduleController],
   providers: [

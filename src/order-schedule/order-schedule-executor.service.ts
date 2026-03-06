@@ -8,6 +8,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { FirebaseService } from '../firebase/firebase.service';
 import { OrderScheduleService } from './order-schedule.service';
 import { PriceFetcherService } from '../assets/services/price-fetcher.service';
+import { BalanceService } from '../balance/balance.service'; // ✅ FIX: import BalanceService
+import { BALANCE_TYPES } from '../common/constants'; // ✅ FIX: import BALANCE_TYPES
 import { ScheduleStatus, TrendType } from './dto/create-order-schedule.dto';
 import { OrderSchedule, ScheduleExecution, OrderMartingaleState } from './entities/order-schedule.entity';
 
@@ -30,7 +32,7 @@ export class OrderScheduleExecutorService {
   // ✅ Track schedules yang sudah selesai semua (untuk auto-delete)
   private completedSchedules: Set<string> = new Set();
   
-    // ✅ Track martingale recovery yang sedang berjalan (untuk mencegah duplicate)
+  // ✅ Track martingale recovery yang sedang berjalan (untuk mencegah duplicate)
   // Key: "scheduleId:scheduledTime"
   private activeRecoveries: Set<string> = new Set();
 
@@ -41,6 +43,7 @@ export class OrderScheduleExecutorService {
     private firebaseService: FirebaseService,
     private orderScheduleService: OrderScheduleService,
     private priceFetcherService: PriceFetcherService,
+    private balanceService: BalanceService, // ✅ FIX: inject BalanceService
   ) {
     this.logger.log('✅ OrderScheduleExecutorService initialized');
     this.logger.log('🎯 MODE: 1 Schedule = 1 Hari (Auto-delete setelah selesai)');
@@ -207,6 +210,7 @@ export class OrderScheduleExecutorService {
       this.logger.error(`❌ Error checking/deleting completed schedule: ${error.message}`);
     }
   }
+
   // ============================================================================
   // CRON: Check order results setiap 10 detik
   // ============================================================================
@@ -444,7 +448,7 @@ export class OrderScheduleExecutorService {
           `Step=${orderState.currentStep} → Final=${amount.toLocaleString()}`
         );
 
-        // Check balance untuk real account
+        // ✅ FIX: Check balance untuk real account menggunakan BalanceService
         if (latestSchedule.accountType === 'real') {
           const hasBalance = await this.checkUserBalance(latestSchedule.userId, amount);
           
@@ -682,6 +686,26 @@ export class OrderScheduleExecutorService {
       }
       
       this.logger.log(`✅ Order ${orderId.slice(-8)} verified in Firestore`);
+
+      // ✅ FIX: Debit balance untuk akun real setelah order berhasil dibuat
+      // Sebelumnya tidak ada debit sama sekali, sehingga saldo tidak berkurang
+      if (schedule.accountType === 'real') {
+        try {
+          await this.balanceService.createBalanceEntry(schedule.userId, {
+            accountType: 'real',
+            type: BALANCE_TYPES.ORDER_DEBIT, // ✅ FIX: field wajib di CreateBalanceDto
+            amount: -amount, // negatif = debit
+            description: `[REAL] Scheduled Order #${orderId.slice(-8)} - ${schedule.assetSymbol} ${direction}`,
+          });
+          this.balanceService.clearUserCache(schedule.userId);
+          this.logger.log(`💸 Balance debited ${amount.toLocaleString()} for scheduled order ${orderId.slice(-8)}`);
+        } catch (debitError) {
+          // Rollback: hapus order jika debit gagal agar tidak ada order tanpa debit
+          this.logger.error(`❌ Failed to debit balance, rolling back order: ${debitError.message}`);
+          await this.db.collection(this.ordersCollection).doc(orderId).delete();
+          throw new Error(`Failed to debit balance: ${debitError.message}`);
+        }
+      }
       
       return orderId;
       
@@ -847,6 +871,7 @@ export class OrderScheduleExecutorService {
           `✅ Schedule ${scheduleId.slice(-8)} updated for ${orderScheduledTime}: ` +
           `Order ${orderId.slice(-8)} ${mappedResult.toUpperCase()} ${profit > 0 ? '+' : ''}${profit.toFixed(0)}`
         );
+
         // ✅ TRIGGER MARTINGALE RECOVERY: Jika loss dan masih bisa recovery, eksekusi langsung
         if (recoveryInfo.shouldRecover && recoveryInfo.trend) {
           const recoveryKey = `${scheduleId}:${orderScheduledTime}`;
@@ -904,7 +929,6 @@ export class OrderScheduleExecutorService {
       }
     }
   }
-
 
   // ============================================================================
   // ✅ UPDATE AFTER EXECUTION dengan Recovery Info
@@ -1066,7 +1090,7 @@ export class OrderScheduleExecutorService {
           `Step=${martingaleStep} → Final=${amount.toLocaleString()}`
         );
 
-        // Check balance untuk real account
+        // ✅ FIX: Check balance untuk real account menggunakan BalanceService
         if (latestSchedule.accountType === 'real') {
           const hasBalance = await this.checkUserBalance(latestSchedule.userId, amount);
 
@@ -1215,26 +1239,19 @@ export class OrderScheduleExecutorService {
   }
 
   // ============================================================================
-  // Helper: Check User Balance
+  // ✅ FIX: Helper: Check User Balance — pakai BalanceService bukan query langsung
+  // 
+  // BUG SEBELUMNYA:
+  //   Query langsung ke collection 'balance' ambil dokumen pertama tanpa filter
+  //   accountType, lalu baca field 'real_balance' yang tidak ada di dokumen
+  //   (dokumen menyimpan 'amount' + 'accountType' per transaksi).
+  //   Akibatnya: undefined >= requiredAmount → selalu false → selalu gagal.
   // ============================================================================
   private async checkUserBalance(userId: string, requiredAmount: number): Promise<boolean> {
     try {
-      const balanceSnapshot = await this.db
-        .collection('balance')
-        .where('user_id', '==', userId)
-        .limit(1)
-        .get();
-
-      if (balanceSnapshot.empty) {
-        this.logger.warn(`⚠️ No balance record for user: ${userId}`);
-        return false;
-      }
-
-      const balance = balanceSnapshot.docs[0].data();
-      const hasEnough = balance.real_balance >= requiredAmount;
-      
-      this.logger.debug(`💰 Balance check: ${balance.real_balance} vs ${requiredAmount} = ${hasEnough}`);
-      
+      const balance = await this.balanceService.getCurrentBalanceStrict(userId, 'real');
+      const hasEnough = balance >= requiredAmount;
+      this.logger.debug(`💰 Balance check: ${balance.toLocaleString()} vs ${requiredAmount.toLocaleString()} = ${hasEnough}`);
       return hasEnough;
     } catch (error) {
       this.logger.error(`❌ Error checking balance: ${error.message}`);
