@@ -410,9 +410,12 @@ export class AffiliateProgramService {
       affiliateCode: program.affiliateCode,
       shareLink: `https://stouch.id/ref/${program.affiliateCode}`,
       isCommissionUnlocked: isUnlocked,
+      revenueSharePercentage: program.revenueSharePercentage,
       commissionPhase: phaseInfo,
       balances: {
         commissionBalance: program.commissionBalance,
+        lockedCommissionBalance: program.lockedCommissionBalance ?? 0,
+        isLocked: !isUnlocked,
         isWithdrawable: isUnlocked,
       },
       unlockProgress: {
@@ -427,6 +430,7 @@ export class AffiliateProgramService {
       stats: {
         totalInvited: invites.length,
         depositedInvites: depositedCount,
+        pendingInvites: noDepositCount,
         registeredNoDeposit: noDepositCount,
         totalCommissionEarned: program.totalCommissionEarned,
         totalCommissionWithdrawn: program.totalCommissionWithdrawn || 0,
