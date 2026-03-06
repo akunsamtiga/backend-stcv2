@@ -410,7 +410,6 @@ export class AffiliateProgramService {
       affiliateCode: program.affiliateCode,
       shareLink: `https://stouch.id/ref/${program.affiliateCode}`,
       isCommissionUnlocked: isUnlocked,
-      revenueSharePercentage: phaseInfo.commissionRate,  // ✅ FIX: rate aktual dinamis
       commissionPhase: phaseInfo,
       balances: {
         commissionBalance: program.commissionBalance,
