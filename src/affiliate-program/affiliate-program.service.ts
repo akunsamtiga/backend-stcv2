@@ -569,7 +569,9 @@ export class AffiliateProgramService {
 
     return {
       commissionBalance: program.commissionBalance,
+      isCommissionUnlocked: isUnlocked,
       isWithdrawable: isUnlocked,
+      revenueSharePercentage: program.revenueSharePercentage,
       totalEarned: program.totalCommissionEarned,
       totalWithdrawn: program.totalCommissionWithdrawn || 0,
       commissionPhase: phaseInfo,
