@@ -111,7 +111,7 @@ export class AuthService implements OnModuleInit {
 
       if (snapshot.empty) {
         const hashedPassword = await bcrypt.hash(password, this.BCRYPT_ROUNDS);
-        const userId = await this.firebaseService.generateId(COLLECTIONS.USERS);
+        const userId = await this.firebaseService.generateNumericId(COLLECTIONS.USERS); // ✅ CHANGED: numeric random 8-digit ID
         const timestamp = new Date().toISOString();
 
         const defaultProfile: UserProfile = {
@@ -342,7 +342,8 @@ export class AuthService implements OnModuleInit {
       }
 
       const hashedPassword = await bcrypt.hash(password, this.BCRYPT_ROUNDS);
-      const userId = await this.firebaseService.generateId(COLLECTIONS.USERS);
+      // ✅ CHANGED: generateNumericId untuk user (ID berupa angka: "1", "2", "3", ...)
+      const userId = await this.firebaseService.generateNumericId(COLLECTIONS.USERS);
       const timestamp = new Date().toISOString();
       const newUserReferralCode = this.generateReferralCode();
       const normalizedPhone = this.normalizePhoneNumber(phoneNumber);

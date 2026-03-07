@@ -212,10 +212,6 @@ export class FirebaseService implements OnModuleInit {
       
       this.logger.log(`✅ Optimized REST pool created (${this.POOL_SIZE} connections)`);
 
-      // ✅ FIX: Inisialisasi Admin SDK meskipun REST sudah berhasil.
-      // SimulatorPriceRelayService membutuhkan Admin SDK untuk RTDB persistent listener
-      // (.on('value', ...)) karena push-based listener tidak bisa menggunakan REST API.
-      // REST pool tetap dipakai untuk write (lebih efisien), Admin SDK khusus untuk listener.
       try {
         this.realtimeDbAdmin = admin.database();
         this.logger.log('✅ Realtime DB Admin SDK initialized (for persistent listeners)');
@@ -274,8 +270,7 @@ export class FirebaseService implements OnModuleInit {
         this.logger.warn(`⚠️ No optimal connections (using best available: ${bestIndex}, score: ${bestScore})`);
       }
       
-      for (let i = 0; i < this.restConnectionPool.length; i++) {
-        const health = this.connectionHealth.restConnections.get(i);
+      for (const [index, health] of this.connectionHealth.restConnections) {
         if (health && health.failures > 0) {
           health.failures = Math.max(0, health.failures - 1);
         }
@@ -746,7 +741,6 @@ export class FirebaseService implements OnModuleInit {
     fileName?: string,
   ): Promise<{ url: string; path: string; size: number }> {
     try {
-      // Validate file type
       const allowedMimeTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
       if (!allowedMimeTypes.includes(file.mimetype)) {
         throw new BadRequestException(
@@ -754,7 +748,6 @@ export class FirebaseService implements OnModuleInit {
         );
       }
 
-      // Validate file size (max 5MB)
       const maxSize = 5 * 1024 * 1024;
       if (file.size > maxSize) {
         throw new BadRequestException('File size must be less than 5MB');
@@ -785,13 +778,11 @@ export class FirebaseService implements OnModuleInit {
         this.logger.warn(`Could not get bucket metadata, using fallback: ${bucketName}`);
       }
 
-      // Generate unique filename
       const timestamp = Date.now();
       const randomString = Math.random().toString(36).substring(2, 15);
       const extension = file.originalname.split('.').pop()?.toLowerCase() || 'jpg';
       const finalFileName = fileName || `${timestamp}_${randomString}.${extension}`;
       
-      // Construct storage path
       const storagePath = `${folder}/${finalFileName}`;
       const fileUpload = bucket.file(storagePath);
 
@@ -838,7 +829,6 @@ export class FirebaseService implements OnModuleInit {
           }
         });
 
-        // Write file buffer
         blobStream.end(file.buffer);
       });
 
@@ -892,9 +882,58 @@ export class FirebaseService implements OnModuleInit {
   // END OF STORAGE METHODS
   // ============================================================================
 
+  // ============================================================================
+  // ID GENERATION METHODS
+  // ============================================================================
+
+  /**
+   * Generate Firestore auto alphanumeric ID (original method — digunakan untuk
+   * collection selain users, e.g. balance, orders, affiliates, dll.)
+   */
   async generateId(collection: string): Promise<string> {
     return this.getFirestore().collection(collection).doc().id;
   }
+
+  /**
+   * Generate numeric auto-increment ID menggunakan Firestore transaction counter.
+   * ID disimpan sebagai string ("1", "2", "3", ...) agar kompatibel dengan
+   * Firestore document ID (yang harus string).
+   *
+   * Counter disimpan di collection `_counters`, satu dokumen per collection.
+   * Contoh: `_counters/users` → { count: 42 }
+   *
+   * Digunakan untuk collection `users` agar ID user berupa angka yang
+   * mudah dibaca dan dirujuk (misal: user ID 1, 2, 3, ...).
+   *
+   * @param collection - Nama collection yang akan di-generate ID-nya
+   * @returns ID numerik dalam bentuk string (e.g. "1", "2", "42")
+   */
+  async generateNumericId(collection: string): Promise<string> {
+    const db = this.getFirestore();
+
+    // Generate random 8-digit numeric ID (10000000–99999999)
+    // Cek duplikat — ulangi jika ID sudah dipakai
+    const min = 10000000;
+    const max = 99999999;
+
+    for (let attempts = 0; attempts < 10; attempts++) {
+      const randomId = String(Math.floor(Math.random() * (max - min + 1)) + min);
+
+      const existing = await db.collection(collection).doc(randomId).get();
+      if (!existing.exists) {
+        this.logger.debug(`🔢 Generated numeric ID for [${collection}]: ${randomId}`);
+        return randomId;
+      }
+
+      this.logger.warn(`⚠️ ID collision [${collection}]: ${randomId}, retrying... (${attempts + 1}/10)`);
+    }
+
+    throw new Error(`Failed to generate unique numeric ID for [${collection}] after 10 attempts`);
+  }
+
+  // ============================================================================
+  // END OF ID GENERATION METHODS
+  // ============================================================================
 
   async createWithTimestamp(collection: string, data: any): Promise<string> {
     const id = await this.generateId(collection);

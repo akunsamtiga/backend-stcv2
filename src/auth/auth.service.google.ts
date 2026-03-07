@@ -70,7 +70,7 @@ export class GoogleAuthService {
           displayName,
           photoURL,
           googleLoginDto.referralCode,
-          googleLoginDto.affiliateCode, // ✅ FIX: teruskan affiliateCode
+          googleLoginDto.affiliateCode,
         );
         isNewUser = true;
 
@@ -168,7 +168,7 @@ export class GoogleAuthService {
     displayName: string,
     photoURL: string,
     referralCode?: string,
-    affiliateCode?: string, // ✅ FIX: tambah parameter
+    affiliateCode?: string,
   ): Promise<User> {
     const db = this.firebaseService.getFirestore();
 
@@ -191,7 +191,8 @@ export class GoogleAuthService {
     const googlePassword = await this.generateGoogleUserPassword(googleUid, email);
     const hashedPassword = await bcrypt.hash(googlePassword, 10);
 
-    const userId = await this.firebaseService.generateId(COLLECTIONS.USERS);
+    // ✅ CHANGED: generateNumericId untuk user (ID berupa angka: "1", "2", "3", ...)
+    const userId = await this.firebaseService.generateNumericId(COLLECTIONS.USERS);
     const timestamp = new Date().toISOString();
     const newUserReferralCode = this.generateReferralCode();
 
@@ -288,7 +289,7 @@ export class GoogleAuthService {
       }
     }
 
-    // ── ✅ FIX: Affiliate Program invite hook ─────────────────────────────
+    // ── Affiliate Program invite hook ─────────────────────────────────────
     if (affiliateCode?.trim() && this.affiliateProgramService) {
       try {
         const result = await this.affiliateProgramService.handleNewRegistration(
@@ -309,7 +310,7 @@ export class GoogleAuthService {
     // ─────────────────────────────────────────────────────────────────────
 
     this.logger.log(
-      `Google user created: ${email} (Status: STANDARD, Real: Rp 0, Demo: Rp 10,000,000)`
+      `Google user created: ${email} (ID: ${userId}, Status: STANDARD, Real: Rp 0, Demo: Rp 10,000,000)`
     );
 
     if (referrerUser) {

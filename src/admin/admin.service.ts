@@ -399,7 +399,7 @@ export class AdminService {
     }
 
     const hashedPassword = await bcrypt.hash(createUserDto.password, 10);
-    const userId = await this.firebaseService.generateId(COLLECTIONS.USERS);
+    const userId = await this.firebaseService.generateNumericId(COLLECTIONS.USERS); // ✅ CHANGED: numeric random 8-digit ID
     const timestamp = new Date().toISOString();
 
     const userData = {
