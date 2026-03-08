@@ -43,7 +43,10 @@ export class AffiliateProgramAdminController {
     - Receive a unique affiliate code to share with new users
     - Start tracking invited users who register using that code
     - Have their commission balance locked until unlockThreshold invited users deposit
-    - Earn revenueSharePercentage% of losses from post-unlock invited users`,
+    - Earn revenueSharePercentage% of losses from post-unlock invited users
+    
+    **Optional:** Jika \`initialRealBalance\` diisi, saldo sejumlah tersebut akan langsung 
+    ditambahkan ke akun real user pada saat assign.`,
   })
   @ApiParam({ name: 'userId', description: 'ID of the user to make an affiliator' })
   @ApiResponse({
@@ -53,17 +56,29 @@ export class AffiliateProgramAdminController {
       example: {
         success: true,
         data: {
-          message: 'User successfully assigned as affiliator',
+          message: 'User berhasil dijadikan affiliator',
           program: {
             id: 'prog_123',
             userId: 'user_456',
             userEmail: 'user@example.com',
             affiliateCode: 'AFFAB12CD34',
-            revenueSharePercentage: 50,
             unlockThreshold: 5,
             isActive: true,
             isCommissionUnlocked: false,
             assignedAt: '2024-01-01T00:00:00.000Z',
+            shareLink: 'https://stouch.id/ref/AFFAB12CD34',
+            commissionSystem: {
+              currentPhase: 'new',
+              description: 'Fase Baru: 80% flat dari semua loss selama 2 bulan pertama.',
+              afterNewPhase: 'Fase Lama: komisi berbasis jumlah user aktif per bulan (50%–80%).',
+            },
+          },
+          initialBalance: {
+            added: true,
+            amount: 500000,
+            balanceId: 'balance_789',
+            accountType: 'real',
+            message: 'Rp 500.000 berhasil ditambahkan ke akun real',
           },
         },
       },

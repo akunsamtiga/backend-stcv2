@@ -70,6 +70,18 @@ export class AssignAffiliatorDto {
   @IsInt()
   @Min(1)
   unlockThreshold?: number = 5;
+
+  @ApiPropertyOptional({
+    example: 500000,
+    description: `Saldo awal akun REAL yang langsung ditambahkan saat assign affiliator (opsional).
+    Jika diisi, sistem akan membuat entri balance dengan type 'deposit' di akun real user.
+    Minimal: Rp 1. Jika tidak diisi atau 0, tidak ada saldo yang ditambahkan.`,
+    minimum: 1,
+  })
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  initialRealBalance?: number;
 }
 
 /** Super Admin: update affiliator program config */

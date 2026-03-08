@@ -138,6 +138,30 @@ export class AffiliateProgramService {
       updatedAt: timestamp,
     });
 
+    // ── Tambah saldo awal akun real jika diminta ──────────────────────────
+    let initialBalanceEntry: { id: string; amount: number } | null = null;
+
+    if (dto.initialRealBalance && dto.initialRealBalance > 0) {
+      const balanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
+
+      await db.collection(COLLECTIONS.BALANCE).doc(balanceId).set({
+        id: balanceId,
+        user_id: userId,
+        accountType: BALANCE_ACCOUNT_TYPE.REAL,
+        type: BALANCE_TYPES.DEPOSIT,
+        amount: dto.initialRealBalance,
+        description: `Saldo awal dari penugasan affiliator oleh admin ${adminId}`,
+        createdAt: timestamp,
+      });
+
+      initialBalanceEntry = { id: balanceId, amount: dto.initialRealBalance };
+
+      this.logger.log(
+        `💰 Saldo awal Rp ${dto.initialRealBalance.toLocaleString('id-ID')} ditambahkan ke akun real ${user.email} (balance id: ${balanceId})`
+      );
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
     this.logger.log(
       `✅ User ${user.email} dijadikan affiliator (kode: ${affiliateCode}, unlock: ${unlockThreshold}) oleh admin ${adminId}. ` +
       `Fase awal: NEW (80% flat selama ${AFFILIATE_COMMISSION_TIERS.NEW_AFFILIATE_MONTHS} bulan pertama)`
@@ -161,6 +185,15 @@ export class AffiliateProgramService {
           afterNewPhase: 'Fase Lama: komisi berbasis jumlah user aktif per bulan (50%–80%).',
         },
       },
+      ...(initialBalanceEntry && {
+        initialBalance: {
+          added: true,
+          amount: initialBalanceEntry.amount,
+          balanceId: initialBalanceEntry.id,
+          accountType: 'real',
+          message: `Rp ${initialBalanceEntry.amount.toLocaleString('id-ID')} berhasil ditambahkan ke akun real`,
+        },
+      }),
     };
   }
 
