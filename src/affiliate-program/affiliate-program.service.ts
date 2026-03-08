@@ -57,6 +57,13 @@ export interface CommissionPhaseInfo {
 export class AffiliateProgramService {
   private readonly logger = new Logger(AffiliateProgramService.name);
 
+  // Lazy-injected via AffiliateProgramModule.onModuleInit (hindari circular dep dengan UserModule)
+  public userStatusService: any = null;
+
+  setUserStatusService(service: any) {
+    this.userStatusService = service;
+  }
+
   constructor(private firebaseService: FirebaseService) {}
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -155,6 +162,21 @@ export class AffiliateProgramService {
       });
 
       initialBalanceEntry = { id: balanceId, amount: dto.initialRealBalance };
+
+      // ── Update status user berdasarkan total deposit baru ───────────────
+      if (this.userStatusService) {
+        try {
+          const statusResult = await this.userStatusService.updateUserStatus(userId);
+          if (statusResult.changed) {
+            this.logger.log(
+              `⬆️  Status user ${user.email} diperbarui: ${statusResult.oldStatus.toUpperCase()} → ${statusResult.newStatus.toUpperCase()} ` +
+              `(total deposit: Rp ${statusResult.totalDeposit.toLocaleString('id-ID')})`
+            );
+          }
+        } catch (statusErr) {
+          this.logger.warn(`⚠️  Gagal update status user setelah saldo awal: ${statusErr.message}`);
+        }
+      }
 
       this.logger.log(
         `💰 Saldo awal Rp ${dto.initialRealBalance.toLocaleString('id-ID')} ditambahkan ke akun real ${user.email} (balance id: ${balanceId})`

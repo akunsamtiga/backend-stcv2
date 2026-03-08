@@ -62,6 +62,17 @@ export class AffiliateProgramModule implements OnModuleInit {
       } catch (error) {
         // Ignore if not available
       }
+
+      // ── Inject UserStatusService untuk auto-update status setelah saldo awal ──
+      try {
+        const { UserStatusService } = await import('../user/user-status.service');
+        const userStatusService = this.moduleRef.get(UserStatusService, { strict: false });
+        if (userStatusService) {
+          this.affiliateProgramService.setUserStatusService(userStatusService);
+        }
+      } catch (error) {
+        // Ignore if not available
+      }
     }, 500);
   }
 }
