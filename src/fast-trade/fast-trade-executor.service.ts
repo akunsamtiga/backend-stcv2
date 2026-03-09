@@ -75,13 +75,9 @@ export class FastTradeExecutorService {
   async handleCandleTick(): Promise<void> {
     this.totalCycles++;
 
-    let sessions: FastTradeSession[];
-    try {
-      sessions = await this.fastTradeService.getAllActiveSessions();
-    } catch (error) {
-      this.logger.error(`❌ Failed to fetch active sessions: ${error.message}`);
-      return;
-    }
+    // ✅ OPTIMIZED: getAllActiveSessions() sekarang sync dari in-memory registry
+    //   ZERO Firestore read — tidak ada try/catch karena tidak ada I/O
+    const sessions = this.fastTradeService.getAllActiveSessions();
 
     if (sessions.length === 0) return;
 
@@ -100,6 +96,8 @@ export class FastTradeExecutorService {
 
   @Cron('* * * * * *')
   async checkPendingResults(): Promise<void> {
+    // ✅ OPTIMIZED: getPendingExecutions() sekarang menggunakan activeSessionRegistry
+    //   Tidak lagi scan seluruh fast_trade_executions — hanya direct doc.get() per session
     let pending: FastTradeExecution[];
     try {
       pending = await this.fastTradeService.getPendingExecutions();

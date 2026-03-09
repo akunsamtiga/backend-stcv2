@@ -453,8 +453,6 @@ export class OrderScheduleExecutorService {
           const hasBalance = await this.checkUserBalance(latestSchedule.userId, amount);
           
           if (!hasBalance) {
-            this.logger.warn(`⚠️ Insufficient balance for ${scheduledTime}: required ${amount.toLocaleString()}`);
-            
             await this.recordExecution(
               executionId,
               latestSchedule,
@@ -463,8 +461,9 @@ export class OrderScheduleExecutorService {
               amount,
               orderState.currentStep,
               'failed',
-              'Insufficient balance'
+              'Insufficient balance',
             );
+            await this.autoStopInsufficientBalance(latestSchedule, scheduledTime, amount, 'order');
             return;
           }
         }
@@ -1095,8 +1094,6 @@ export class OrderScheduleExecutorService {
           const hasBalance = await this.checkUserBalance(latestSchedule.userId, amount);
 
           if (!hasBalance) {
-            this.logger.warn(`⚠️ Insufficient balance for recovery ${scheduledTime}: required ${amount.toLocaleString()}`);
-
             await this.recordRecoveryExecution(
               recoveryExecutionId,
               latestSchedule,
@@ -1105,8 +1102,9 @@ export class OrderScheduleExecutorService {
               amount,
               martingaleStep,
               'failed',
-              'Insufficient balance for recovery'
+              'Insufficient balance for recovery',
             );
+            await this.autoStopInsufficientBalance(latestSchedule, scheduledTime, amount, 'recovery');
             return;
           }
         }
@@ -1256,6 +1254,43 @@ export class OrderScheduleExecutorService {
     } catch (error) {
       this.logger.error(`❌ Error checking balance: ${error.message}`);
       return false;
+    }
+  }
+
+
+  private async autoStopInsufficientBalance(
+    schedule: any,
+    scheduledTime: string,
+    requiredAmount: number,
+    context: 'order' | 'recovery',
+  ): Promise<void> {
+    const label  = context === 'recovery' ? 'martingale recovery' : 'order';
+    const reason =
+      `Saldo ${schedule.accountType} tidak cukup untuk ${label} ` +
+      `jam ${scheduledTime}. ` +
+      `Dibutuhkan: Rp ${requiredAmount.toLocaleString('id-ID')}. ` +
+      `Schedule dihentikan otomatis.`;
+
+    this.logger.warn(
+      `[Auto-stop ${schedule.id.slice(-8)}] ${reason}`,
+    );
+
+    try {
+      await this.db.collection(this.schedulesCollection).doc(schedule.id).update({
+        status:    'paused',
+        isActive:  false,
+        pausedAt:  new Date(),
+        updatedAt: new Date(),
+        notes:     reason,
+      });
+
+      this.logger.log(
+        `[${schedule.id.slice(-8)}] Schedule auto-paused karena saldo tidak cukup`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `[${schedule.id.slice(-8)}] Gagal auto-stop schedule: ${error.message}`,
+      );
     }
   }
 

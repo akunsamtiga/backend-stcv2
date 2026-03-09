@@ -1,4 +1,10 @@
 // src/fast-trade/fast-trade.service.ts
+// ✅ OPTIMIZED: activeSessionRegistry menggantikan query Firestore tiap tick
+//   - onModuleInit: hydrate registry sekali dari Firestore
+//   - createSession: register ke memory
+//   - forceStopSession: unregister dari memory
+//   - getAllActiveSessions: return dari memory — ZERO Firestore read
+//   - getPendingExecutions: direct doc get per pendingExecutionId — bukan full collection scan
 
 import {
   Injectable,
@@ -6,6 +12,7 @@ import {
   NotFoundException,
   BadRequestException,
   ConflictException,
+  OnModuleInit,
 } from '@nestjs/common';
 import * as admin from 'firebase-admin';
 import { v4 as uuidv4 } from 'uuid';
@@ -32,15 +39,26 @@ const COL_EXECUTIONS = 'fast_trade_executions';
 const COL_ASSETS     = 'assets';
 
 @Injectable()
-export class FastTradeService {
+export class FastTradeService implements OnModuleInit {
   private readonly logger = new Logger(FastTradeService.name);
 
-  // In-memory cache — avoids Firestore reads on every cron tick
+  // ─────────────────────────────────────────────────────────────────────────
+  // ✅ IN-MEMORY ACTIVE SESSION REGISTRY
+  //
+  // Lifecycle:
+  //   onModuleInit    → hydrate dari Firestore (sekali saja)
+  //   createSession   → tambah ke registry
+  //   forceStopSession→ hapus dari registry
+  //   getAllActiveSessions → return dari registry (ZERO Firestore read)
+  //   getPendingExecutions→ iterasi registry, direct doc get per executionId
+  // ─────────────────────────────────────────────────────────────────────────
+  private activeSessionRegistry: Map<string, FastTradeSession> = new Map();
+
+  // sessionCache tetap ada untuk getSessionById
   private sessionCache: Map<string, FastTradeSession> = new Map();
 
   constructor(private readonly firebaseService: FirebaseService) {
     this.logger.log('✅ FastTradeService initialized');
-    // Cleanup cache every 5 min
     setInterval(() => this.cleanupCache(), 5 * 60 * 1000);
   }
 
@@ -48,16 +66,41 @@ export class FastTradeService {
   // Getters
   // ──────────────────────────────────────────────────────────────────────────
 
-  private get db() {
-    return this.firebaseService.getFirestore();
+  private get db() { return this.firebaseService.getFirestore(); }
+  private get rtdb(): admin.database.Database { return admin.database(); }
+  private now(): string { return TimezoneUtil.toISOString(); }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // ✅ MODULE INIT — hydrate registry dari Firestore (sekali saja)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  async onModuleInit(): Promise<void> {
+    await this.hydrateRegistry();
   }
 
-  private get rtdb(): admin.database.Database {
-    return admin.database();
-  }
+  private async hydrateRegistry(): Promise<void> {
+    try {
+      this.logger.log('🔄 Hydrating FastTrade activeSessionRegistry from Firestore...');
 
-  private now(): string {
-    return TimezoneUtil.toISOString();
+      const snap = await this.db
+        .collection(COL_SESSIONS)
+        .where('isActive', '==', true)
+        .get();
+
+      this.activeSessionRegistry.clear();
+
+      snap.docs.forEach(doc => {
+        const session = doc.data() as FastTradeSession;
+        this.activeSessionRegistry.set(session.id, session);
+        this.sessionCache.set(session.id, session);
+      });
+
+      this.logger.log(
+        `✅ FastTrade registry hydrated: ${this.activeSessionRegistry.size} active sessions`,
+      );
+    } catch (error) {
+      this.logger.error(`❌ Failed to hydrate FastTrade registry: ${error.message}`);
+    }
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -80,14 +123,10 @@ export class FastTradeService {
 
     // Validate asset
     const assetDoc = await this.db.collection(COL_ASSETS).doc(dto.assetId).get();
-    if (!assetDoc.exists) {
-      throw new NotFoundException(`Aset ${dto.assetId} tidak ditemukan`);
-    }
+    if (!assetDoc.exists) throw new NotFoundException(`Aset ${dto.assetId} tidak ditemukan`);
 
     const asset = assetDoc.data() as any;
-    if (!asset.isActive) {
-      throw new BadRequestException(`Aset ${asset.symbol} tidak aktif`);
-    }
+    if (!asset.isActive) throw new BadRequestException(`Aset ${asset.symbol} tidak aktif`);
 
     if (!asset.realtimeDbPath) {
       throw new BadRequestException(
@@ -96,8 +135,6 @@ export class FastTradeService {
       );
     }
 
-    // Validate timeframe duration is supported by this asset
-    // (some assets may restrict certain durations)
     const tfSeconds  = TIMEFRAME_SECONDS_MAP[dto.timeframe];
     const nextCandle = this.calcNextCandleBoundary(tfSeconds);
     const sessionId  = uuidv4();
@@ -143,13 +180,18 @@ export class FastTradeService {
     };
 
     await this.db.collection(COL_SESSIONS).doc(sessionId).set(session);
+
+    // ✅ Register ke kedua cache
+    this.activeSessionRegistry.set(sessionId, session);
     this.sessionCache.set(sessionId, session);
 
     this.logger.log(
       `✅ FastTrade session created: ${sessionId.slice(-8)} | ` +
       `User: ${userEmail} | Asset: ${asset.symbol} | TF: ${dto.timeframe} | ` +
       `Amount: ${dto.amount.toLocaleString('id-ID')} | ` +
-      `Martingale: ${dto.martingale.enabled ? `ON (max ${dto.martingale.maxStep} steps ×${dto.martingale.multiplier})` : 'OFF'} | ` +
+      `Martingale: ${dto.martingale.enabled
+        ? `ON (max ${dto.martingale.maxStep} steps ×${dto.martingale.multiplier})`
+        : 'OFF'} | ` +
       `NextCandle: ${new Date(nextCandle * 1000).toISOString()}`,
     );
 
@@ -166,11 +208,7 @@ export class FastTradeService {
     reason = 'Dihentikan manual oleh user',
   ): Promise<FastTradeSession> {
     const session = await this.getAndVerifyOwner(userId, sessionId);
-
-    if (!session.isActive) {
-      throw new BadRequestException('Sesi sudah dalam keadaan berhenti');
-    }
-
+    if (!session.isActive) throw new BadRequestException('Sesi sudah dalam keadaan berhenti');
     return this.forceStopSession(sessionId, reason, session);
   }
 
@@ -192,7 +230,11 @@ export class FastTradeService {
 
     await this.db.collection(COL_SESSIONS).doc(sessionId).update(updates);
     const updated = session ? { ...session, ...updates } : updates as FastTradeSession;
+
+    // ✅ Hapus dari activeSessionRegistry — executor tidak akan proses lagi
+    this.activeSessionRegistry.delete(sessionId);
     this.sessionCache.set(sessionId, updated as FastTradeSession);
+
     this.logger.log(`🛑 FastTrade session stopped: ${sessionId.slice(-8)} | Reason: ${reason}`);
     return updated as FastTradeSession;
   }
@@ -216,9 +258,7 @@ export class FastTradeService {
       .orderBy('createdAt', 'desc')
       .limit(50) as FirebaseFirestore.Query;
 
-    if (activeOnly) {
-      q = q.where('isActive', '==', true);
-    }
+    if (activeOnly) q = q.where('isActive', '==', true);
 
     const snap = await q.get();
     return snap.docs.map(d => d.data() as FastTradeSession);
@@ -229,6 +269,12 @@ export class FastTradeService {
   // ──────────────────────────────────────────────────────────────────────────
 
   async getUserActiveSession(userId: string): Promise<FastTradeSession | null> {
+    // ✅ Cek registry dulu sebelum ke Firestore
+    for (const session of this.activeSessionRegistry.values()) {
+      if (session.userId === userId) return session;
+    }
+
+    // Fallback ke Firestore (edge case: race condition saat startup)
     const snap = await this.db
       .collection(COL_SESSIONS)
       .where('userId', '==', userId)
@@ -236,26 +282,21 @@ export class FastTradeService {
       .limit(1)
       .get();
 
-    return snap.empty ? null : (snap.docs[0].data() as FastTradeSession);
+    if (snap.empty) return null;
+
+    const session = snap.docs[0].data() as FastTradeSession;
+    // Sync ke registry jika ditemukan di Firestore tapi tidak ada di memory
+    this.activeSessionRegistry.set(session.id, session);
+    this.sessionCache.set(session.id, session);
+    return session;
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // 6. GET ALL ACTIVE SESSIONS  (called by executor)
+  // ✅ 6. GET ALL ACTIVE SESSIONS — ZERO Firestore read
   // ──────────────────────────────────────────────────────────────────────────
 
-  async getAllActiveSessions(): Promise<FastTradeSession[]> {
-    const snap = await this.db
-      .collection(COL_SESSIONS)
-      .where('isActive', '==', true)
-      .get();
-
-    const sessions = snap.docs.map(d => {
-      const s = d.data() as FastTradeSession;
-      this.sessionCache.set(s.id, s);
-      return s;
-    });
-
-    return sessions;
+  getAllActiveSessions(): FastTradeSession[] {
+    return Array.from(this.activeSessionRegistry.values());
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -286,7 +327,7 @@ export class FastTradeService {
   async getCandleDirection(
     assetId: string,
     timeframe: FastTradeTimeframe,
-    expectedCandleTs?: number,  // unix seconds of candle to read (nextCandleAt - tfSeconds)
+    expectedCandleTs?: number,
   ): Promise<{ direction: CandleDirection; candle: OhlcCandle | null }> {
     try {
       const assetDoc = await this.db.collection(COL_ASSETS).doc(assetId).get();
@@ -321,12 +362,10 @@ export class FastTradeService {
         else                        return 'neutral';
       };
 
-      // ── Strategy 1: query exact timestamp (instant, no delay needed) ──────
-      // We know exactly which candle just closed: the one that started at
-      // (nextCandleAt - tfSeconds). Query that key directly.
+      // ── Strategy 1: query exact timestamp ─────────────────────────────────
       if (expectedCandleTs) {
         const MAX_ATTEMPTS = 4;
-        const RETRY_MS     = 300; // retry every 300ms if simulator hasn't written yet
+        const RETRY_MS     = 300;
 
         for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
           const snap = await this.rtdb
@@ -359,7 +398,7 @@ export class FastTradeService {
         );
       }
 
-      // ── Strategy 2: fallback — limitToLast(2), use most recent closed bar ──
+      // ── Strategy 2: fallback — limitToLast(2) ─────────────────────────────
       const snapshot = await this.rtdb
         .ref(ohlcPath)
         .orderByKey()
@@ -400,7 +439,7 @@ export class FastTradeService {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // 9. GET OHLC DATA (for REST endpoint /assets/:id/ohlc)
+  // 9. GET OHLC DATA (for REST endpoint)
   // ──────────────────────────────────────────────────────────────────────────
 
   async getOhlcData(
@@ -416,15 +455,17 @@ export class FastTradeService {
   }> {
     const VALID_TF = ['1s', '1m', '5m', '15m', '30m', '1h', '4h', '1d'];
     if (!VALID_TF.includes(timeframe)) {
-      throw new BadRequestException(`Timeframe tidak valid: ${timeframe}. Pilihan: ${VALID_TF.join(', ')}`);
+      throw new BadRequestException(
+        `Timeframe tidak valid: ${timeframe}. Pilihan: ${VALID_TF.join(', ')}`,
+      );
     }
 
     const assetDoc = await this.db.collection(COL_ASSETS).doc(assetId).get();
     if (!assetDoc.exists) throw new NotFoundException(`Aset ${assetId} tidak ditemukan`);
 
-    const asset   = assetDoc.data() as any;
-    const rtpRaw  = asset.realtimeDbPath as string;
-    const rtPath  = rtpRaw.startsWith('/') ? rtpRaw : `/${rtpRaw}`;
+    const asset     = assetDoc.data() as any;
+    const rtpRaw    = asset.realtimeDbPath as string;
+    const rtPath    = rtpRaw.startsWith('/') ? rtpRaw : `/${rtpRaw}`;
     const safeLimit = Math.min(Math.max(Number(limit) || 5, 2), 50);
     const ohlcPath  = `${rtPath}/ohlc_${timeframe}`;
 
@@ -439,14 +480,7 @@ export class FastTradeService {
       snapshot.forEach(child => {
         const v = child.val();
         if (v && typeof v.o === 'number') {
-          candles.push({
-            t: parseInt(child.key!, 10),
-            o: v.o,
-            h: v.h,
-            l: v.l,
-            c: v.c,
-            v: v.v || 0,
-          });
+          candles.push({ t: parseInt(child.key!, 10), o: v.o, h: v.h, l: v.l, c: v.c, v: v.v || 0 });
         }
       });
     }
@@ -468,16 +502,22 @@ export class FastTradeService {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // 10. UPDATE SESSION AFTER ORDER RESULT  (called by executor)
+  // 10. UPDATE SESSION AFTER ORDER RESULT
   // ──────────────────────────────────────────────────────────────────────────
 
   async applyOrderResult(
     sessionId: string,
     result: 'won' | 'lost',
-    settledAmount: number,   // final profit or loss amount (always positive)
+    settledAmount: number,
     candleTimestamp: number,
     tfSeconds: number,
-  ): Promise<{ session: FastTradeSession; shouldStop: boolean; stopReason?: string; isMartingaleRetry: boolean; retryDirection?: 'CALL' | 'PUT' }> {
+  ): Promise<{
+    session: FastTradeSession;
+    shouldStop: boolean;
+    stopReason?: string;
+    isMartingaleRetry: boolean;
+    retryDirection?: 'CALL' | 'PUT';
+  }> {
     const session = await this.getSessionById(sessionId);
 
     let {
@@ -501,7 +541,6 @@ export class FastTradeService {
 
     totalOrders++;
 
-    // Track whether this loss triggers an immediate martingale retry
     let isMartingaleRetry = false;
     let retryDirection: 'CALL' | 'PUT' | undefined;
 
@@ -509,12 +548,10 @@ export class FastTradeService {
       wins++;
       totalProfit       += settledAmount;
       totalPnL          += settledAmount;
-      // Reset martingale — next cycle reads fresh candle
       currentStep        = 0;
       consecutiveLosses  = 0;
       currentAmount      = baseAmount;
     } else {
-      // lost
       losses++;
       totalLoss         += currentAmount;
       totalPnL          -= currentAmount;
@@ -529,11 +566,9 @@ export class FastTradeService {
             `Amount: ${(Math.round(baseAmount * Math.pow(martingaleMultiplier, currentStep - 1))).toLocaleString('id-ID')} → ` +
             `${currentAmount.toLocaleString('id-ID')}`,
           );
-          // Flag: executor must immediately retry with SAME direction — no candle read
           isMartingaleRetry = true;
-          retryDirection    = lastDirection;  // same direction as the losing order
+          retryDirection    = lastDirection;
         } else {
-          // Max step reached — reset and wait for next fresh candle
           this.logger.warn(
             `⚠️ [${sessionId.slice(-8)}] Martingale MAX step ${martingaleMaxStep} reached — resetting to normal`,
           );
@@ -544,14 +579,12 @@ export class FastTradeService {
       }
     }
 
-    // Calc next candle (used when NOT doing martingale retry)
     const nextCandleAt = this.calcNextCandleBoundary(tfSeconds);
 
-    // Check stop conditions
     let shouldStop  = false;
     let stopReason: string | undefined;
     let newStatus: FastTradeSessionStatus = 'waiting';
-    let isActive = true;
+    let isActive  = true;
     let stoppedAt: string | undefined;
 
     if (stopProfit && totalPnL >= stopProfit) {
@@ -581,47 +614,46 @@ export class FastTradeService {
       wins,
       losses,
       totalOrders,
-      pendingOrderId:      undefined,
+      pendingOrderId:       undefined,
       pendingOrderPlacedAt: undefined,
-      pendingExecutionId:  undefined,
-      lastCandleTimestamp: candleTimestamp,
+      pendingExecutionId:   undefined,
+      lastCandleTimestamp:  candleTimestamp,
       nextCandleAt,
-      status:     newStatus,
+      status:    newStatus,
       isActive,
       stopReason,
       stoppedAt,
-      updatedAt:  ts,
+      updatedAt: ts,
     };
 
     await this.db.collection(COL_SESSIONS).doc(sessionId).update(updates);
     const updated = { ...session, ...updates } as FastTradeSession;
+
+    // ✅ Sync ke kedua cache
     this.sessionCache.set(sessionId, updated);
+    if (isActive) {
+      this.activeSessionRegistry.set(sessionId, updated);
+    } else {
+      this.activeSessionRegistry.delete(sessionId);
+    }
 
     return { session: updated, shouldStop, stopReason, isMartingaleRetry, retryDirection };
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // 11. STATUS TRANSITIONS  (called by executor)
+  // 11. STATUS TRANSITIONS
   // ──────────────────────────────────────────────────────────────────────────
 
   async markReadingCandle(sessionId: string): Promise<void> {
     const ts = this.now();
-    await this.db.collection(COL_SESSIONS).doc(sessionId).update({
-      status: 'reading_candle',
-      updatedAt: ts,
-    });
-    const c = this.sessionCache.get(sessionId);
-    if (c) { c.status = 'reading_candle'; c.updatedAt = ts; }
+    await this.db.collection(COL_SESSIONS).doc(sessionId).update({ status: 'reading_candle', updatedAt: ts });
+    this._syncStatusToCache(sessionId, { status: 'reading_candle', updatedAt: ts });
   }
 
   async markPlacingOrder(sessionId: string): Promise<void> {
     const ts = this.now();
-    await this.db.collection(COL_SESSIONS).doc(sessionId).update({
-      status: 'placing_order',
-      updatedAt: ts,
-    });
-    const c = this.sessionCache.get(sessionId);
-    if (c) { c.status = 'placing_order'; c.updatedAt = ts; }
+    await this.db.collection(COL_SESSIONS).doc(sessionId).update({ status: 'placing_order', updatedAt: ts });
+    this._syncStatusToCache(sessionId, { status: 'placing_order', updatedAt: ts });
   }
 
   async markWaitingResult(
@@ -631,47 +663,46 @@ export class FastTradeService {
     direction?: 'CALL' | 'PUT',
   ): Promise<void> {
     const ts = this.now();
-    await this.db.collection(COL_SESSIONS).doc(sessionId).update({
-      status:              'waiting_result',
-      pendingOrderId:      orderId,
+    const patch = {
+      status:               'waiting_result',
+      pendingOrderId:       orderId,
       pendingOrderPlacedAt: ts,
-      pendingExecutionId:  executionId,
+      pendingExecutionId:   executionId,
       ...(direction ? { lastDirection: direction } : {}),
-      updatedAt:           ts,
-    });
-    const c = this.sessionCache.get(sessionId);
-    if (c) {
-      c.status              = 'waiting_result';
-      c.pendingOrderId      = orderId;
-      c.pendingOrderPlacedAt = ts;
-      c.pendingExecutionId  = executionId;
-      c.updatedAt           = ts;
-    }
+      updatedAt:            ts,
+    };
+    await this.db.collection(COL_SESSIONS).doc(sessionId).update(patch);
+    this._syncStatusToCache(sessionId, patch as Partial<FastTradeSession>);
   }
 
   async markWaiting(sessionId: string, nextCandleAt: number): Promise<void> {
     const ts = this.now();
-    await this.db.collection(COL_SESSIONS).doc(sessionId).update({
-      status: 'waiting',
+    const patch = {
+      status:               'waiting',
       nextCandleAt,
-      pendingOrderId:      undefined,
+      pendingOrderId:       undefined,
       pendingOrderPlacedAt: undefined,
-      pendingExecutionId:  undefined,
-      updatedAt: ts,
-    });
+      pendingExecutionId:   undefined,
+      updatedAt:            ts,
+    };
+    await this.db.collection(COL_SESSIONS).doc(sessionId).update(patch);
+    this._syncStatusToCache(sessionId, patch as Partial<FastTradeSession>);
+  }
+
+  /** Sync patch ke sessionCache dan activeSessionRegistry */
+  private _syncStatusToCache(sessionId: string, patch: Partial<FastTradeSession>): void {
     const c = this.sessionCache.get(sessionId);
     if (c) {
-      c.status              = 'waiting';
-      c.nextCandleAt        = nextCandleAt;
-      c.pendingOrderId      = undefined;
-      c.pendingOrderPlacedAt = undefined;
-      c.pendingExecutionId  = undefined;
-      c.updatedAt           = ts;
+      Object.assign(c, patch);
+      this.sessionCache.set(sessionId, c);
+      if (this.activeSessionRegistry.has(sessionId)) {
+        this.activeSessionRegistry.set(sessionId, c);
+      }
     }
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // 12. EXECUTION LOG CRUD  (called by executor)
+  // 12. EXECUTION LOG CRUD
   // ──────────────────────────────────────────────────────────────────────────
 
   async saveExecution(
@@ -691,22 +722,35 @@ export class FastTradeService {
     });
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // 13. PENDING EXECUTIONS  (for result polling by executor)
-  // ──────────────────────────────────────────────────────────────────────────
-
+  // ✅ OPTIMIZED: Tidak lagi scan seluruh fast_trade_executions collection
+  //   Sebelum: WHERE status='placed' AND createdAt>=2hAgo → scan ratusan ribu doc
+  //   Sekarang: iterasi activeSessionRegistry → ambil hanya sesi yg waiting_result
+  //             → direct doc.get() per pendingExecutionId (1 read per sesi)
   async getPendingExecutions(): Promise<FastTradeExecution[]> {
-    const twoHoursAgo = new Date();
-    twoHoursAgo.setHours(twoHoursAgo.getHours() - 2);
+    const sessions = Array.from(this.activeSessionRegistry.values()).filter(
+      s => s.status === 'waiting_result' && s.pendingExecutionId,
+    );
 
-    const snap = await this.db
-      .collection(COL_EXECUTIONS)
-      .where('status', '==', 'placed')
-      .where('createdAt', '>=', twoHoursAgo.toISOString())
-      .limit(100)
-      .get();
+    if (sessions.length === 0) return [];
 
-    return snap.docs.map(d => d.data() as FastTradeExecution);
+    const results = await Promise.allSettled(
+      sessions.map(s =>
+        this.db.collection(COL_EXECUTIONS).doc(s.pendingExecutionId!).get(),
+      ),
+    );
+
+    const executions: FastTradeExecution[] = [];
+    results.forEach((r, idx) => {
+      if (r.status === 'fulfilled' && r.value.exists) {
+        executions.push(r.value.data() as FastTradeExecution);
+      } else if (r.status === 'rejected') {
+        this.logger.warn(
+          `⚠️ Failed to get execution for session ${sessions[idx].id.slice(-8)}: ${r.reason?.message}`,
+        );
+      }
+    });
+
+    return executions;
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -732,12 +776,8 @@ export class FastTradeService {
     return session;
   }
 
-  /**
-   * Returns unix timestamp (seconds) of the NEXT candle boundary.
-   * e.g. 1m at 12:22:45 → 12:23:00
-   */
   calcNextCandleBoundary(tfSeconds: number): number {
-    const nowSec    = TimezoneUtil.getCurrentTimestamp();
+    const nowSec     = TimezoneUtil.getCurrentTimestamp();
     const intoCandle = nowSec % tfSeconds;
     const remaining  = tfSeconds - intoCandle;
     return nowSec + remaining;
@@ -751,29 +791,49 @@ export class FastTradeService {
     for (const [id, s] of this.sessionCache.entries()) {
       if (!s.isActive) this.sessionCache.delete(id);
     }
-    this.logger.debug(`🧹 Session cache cleaned. Remaining: ${this.sessionCache.size}`);
+    this.logger.debug(
+      `🧹 FastTrade cache cleaned. sessionCache: ${this.sessionCache.size}, ` +
+      `activeRegistry: ${this.activeSessionRegistry.size}`,
+    );
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // ADMIN — cleanup old data
-  // ──────────────────────────────────────────────────────────────────────────
+  // ── Debug / monitoring ────────────────────────────────────────────────────
 
-  async cleanupOldExecutions(): Promise<number> {
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  getRegistryStats() {
+    const sessions = Array.from(this.activeSessionRegistry.values());
+    return {
+      totalActive:   sessions.length,
+      waitingResult: sessions.filter(s => s.status === 'waiting_result').length,
+      waiting:       sessions.filter(s => s.status === 'waiting').length,
+      placingOrder:  sessions.filter(s => s.status === 'placing_order').length,
+      readingCandle: sessions.filter(s => s.status === 'reading_candle').length,
+    };
+  }
 
-    const snap = await this.db
+  async cleanupOldExecutions(retentionDays = 7): Promise<number> {
+  try {
+    const cutoffMs  = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+    const cutoffISO = new Date(cutoffMs).toISOString();
+
+    const snapshot = await this.db
       .collection(COL_EXECUTIONS)
-      .where('createdAt', '<', thirtyDaysAgo.toISOString())
+      .where('createdAt', '<', cutoffISO)
+      .where('status', 'in', ['won', 'lost', 'error', 'skipped'])
       .limit(500)
       .get();
 
-    if (snap.empty) return 0;
+    if (snapshot.empty) return 0;
 
     const batch = this.db.batch();
-    snap.docs.forEach(d => batch.delete(d.ref));
+    snapshot.docs.forEach(doc => batch.delete(doc.ref));
     await batch.commit();
-    this.logger.log(`🧹 Deleted ${snap.size} old FastTrade executions`);
-    return snap.size;
+
+    this.logger.log(`🧹 cleanupOldExecutions: deleted ${snapshot.size} records older than ${retentionDays} days`);
+    return snapshot.size;
+
+  } catch (error) {
+    this.logger.error(`❌ cleanupOldExecutions error: ${error.message}`);
+    return 0;
   }
+}
 }

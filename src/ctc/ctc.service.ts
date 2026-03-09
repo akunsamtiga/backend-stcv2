@@ -1,4 +1,10 @@
 // src/ctc/ctc.service.ts
+// ✅ OPTIMIZED: activeSessionRegistry menggantikan query Firestore tiap tick
+//   - onModuleInit: hydrate registry sekali dari Firestore
+//   - createSession: register ke memory
+//   - forceStopSession: unregister dari memory
+//   - getAllActiveSessions: return dari memory — ZERO Firestore read
+//   - getPendingExecutions: direct doc get per pendingExecutionId — bukan full collection scan
 
 import {
   Injectable,
@@ -6,6 +12,7 @@ import {
   NotFoundException,
   BadRequestException,
   ConflictException,
+  OnModuleInit,
 } from '@nestjs/common';
 import * as admin from 'firebase-admin';
 import { v4 as uuidv4 } from 'uuid';
@@ -26,15 +33,26 @@ const COL_EXECUTIONS = 'ctc_executions';
 const COL_ASSETS     = 'assets';
 
 @Injectable()
-export class CtcService {
+export class CtcService implements OnModuleInit {
   private readonly logger = new Logger(CtcService.name);
 
-  // In-memory cache — mengurangi Firestore read pada setiap cron tick
+  // ─────────────────────────────────────────────────────────────────────────
+  // ✅ IN-MEMORY ACTIVE SESSION REGISTRY
+  //
+  // Lifecycle:
+  //   onModuleInit    → hydrate dari Firestore (sekali saja)
+  //   createSession   → tambah ke registry
+  //   forceStopSession→ hapus dari registry
+  //   getAllActiveSessions → return dari registry (ZERO Firestore read)
+  //   getPendingExecutions→ iterasi registry, direct doc get per executionId
+  // ─────────────────────────────────────────────────────────────────────────
+  private activeSessionRegistry: Map<string, CtcSession> = new Map();
+
+  // sessionCache tetap ada untuk getSessionById (tanpa perlu ke Firestore)
   private sessionCache: Map<string, CtcSession> = new Map();
 
   constructor(private readonly firebaseService: FirebaseService) {
     this.logger.log('✅ CtcService initialized');
-    // Cleanup cache setiap 5 menit
     setInterval(() => this.cleanupCache(), 5 * 60 * 1000);
   }
 
@@ -42,6 +60,39 @@ export class CtcService {
   private get db() { return this.firebaseService.getFirestore(); }
   private get rtdb(): admin.database.Database { return admin.database(); }
   private now(): string { return TimezoneUtil.toISOString(); }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // ✅ MODULE INIT — hydrate registry dari Firestore (sekali saja)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  async onModuleInit(): Promise<void> {
+    await this.hydrateRegistry();
+  }
+
+  private async hydrateRegistry(): Promise<void> {
+    try {
+      this.logger.log('🔄 Hydrating CTC activeSessionRegistry from Firestore...');
+
+      const snap = await this.db
+        .collection(COL_SESSIONS)
+        .where('isActive', '==', true)
+        .get();
+
+      this.activeSessionRegistry.clear();
+
+      snap.docs.forEach(doc => {
+        const session = doc.data() as CtcSession;
+        this.activeSessionRegistry.set(session.id, session);
+        this.sessionCache.set(session.id, session);
+      });
+
+      this.logger.log(
+        `✅ CTC registry hydrated: ${this.activeSessionRegistry.size} active sessions`,
+      );
+    } catch (error) {
+      this.logger.error(`❌ Failed to hydrate CTC registry: ${error.message}`);
+    }
+  }
 
   // ════════════════════════════════════════════════════════════════════════════
   // 1. CREATE SESSION
@@ -102,7 +153,7 @@ export class CtcService {
       currentStep:       0,
       currentAmount:     dto.amount,
       consecutiveLosses: 0,
-      nextDirection:     null,   // akan dibaca dari candle pertama
+      nextDirection:     null,
 
       totalPnL:    0,
       totalProfit: 0,
@@ -118,6 +169,9 @@ export class CtcService {
     };
 
     await this.db.collection(COL_SESSIONS).doc(sessionId).set(session);
+
+    // ✅ Register ke kedua cache
+    this.activeSessionRegistry.set(sessionId, session);
     this.sessionCache.set(sessionId, session);
 
     this.logger.log(
@@ -160,10 +214,16 @@ export class CtcService {
       stoppedAt:  ts,
       updatedAt:  ts,
     };
+
     await this.db.collection(COL_SESSIONS).doc(sessionId).update(updates);
+
     const session = cachedSession ?? this.sessionCache.get(sessionId);
     const updated = session ? { ...session, ...updates } : updates as CtcSession;
+
+    // ✅ Hapus dari activeSessionRegistry — executor tidak akan proses lagi
+    this.activeSessionRegistry.delete(sessionId);
     this.sessionCache.set(sessionId, updated as CtcSession);
+
     this.logger.log(`🛑 CTC session stopped: ${sessionId.slice(-8)} | Reason: ${reason}`);
     return updated as CtcSession;
   }
@@ -190,27 +250,31 @@ export class CtcService {
   }
 
   async getUserActiveSession(userId: string): Promise<CtcSession | null> {
+    // ✅ Cek registry dulu sebelum ke Firestore
+    for (const session of this.activeSessionRegistry.values()) {
+      if (session.userId === userId) return session;
+    }
+
+    // Fallback ke Firestore (edge case: race condition saat startup)
     const snap = await this.db
       .collection(COL_SESSIONS)
       .where('userId', '==', userId)
       .where('isActive', '==', true)
       .limit(1)
       .get();
-    return snap.empty ? null : (snap.docs[0].data() as CtcSession);
+
+    if (snap.empty) return null;
+
+    const session = snap.docs[0].data() as CtcSession;
+    // Sync ke registry jika ditemukan di Firestore tapi tidak ada di memory
+    this.activeSessionRegistry.set(session.id, session);
+    this.sessionCache.set(session.id, session);
+    return session;
   }
 
-  /** Dipanggil oleh executor setiap cron tick */
-  async getAllActiveSessions(): Promise<CtcSession[]> {
-    const snap = await this.db
-      .collection(COL_SESSIONS)
-      .where('isActive', '==', true)
-      .get();
-
-    return snap.docs.map(d => {
-      const s = d.data() as CtcSession;
-      this.sessionCache.set(s.id, s);
-      return s;
-    });
+  // ✅ OPTIMIZED: tidak lagi query Firestore — return dari in-memory registry
+  getAllActiveSessions(): CtcSession[] {
+    return Array.from(this.activeSessionRegistry.values());
   }
 
   async getExecutions(
@@ -289,7 +353,9 @@ export class CtcService {
           }
 
           if (attempt < MAX_ATTEMPTS - 1) {
-            this.logger.debug(`⏳ Candle t=${expectedCandleTs} belum ada, retry ${attempt + 1}/${MAX_ATTEMPTS - 1}`);
+            this.logger.debug(
+              `⏳ Candle t=${expectedCandleTs} belum ada, retry ${attempt + 1}/${MAX_ATTEMPTS - 1}`,
+            );
             await new Promise(r => setTimeout(r, RETRY_MS));
           }
         }
@@ -334,25 +400,13 @@ export class CtcService {
   }
 
   // ════════════════════════════════════════════════════════════════════════════
-  // 5. APPLY ORDER RESULT — Update session setelah order settle
-  //
-  //  CTC Direction Logic (BERBEDA dari FastTrade):
-  //  ┌─────────────────────────────────────────────────────────────────────┐
-  //  │  WIN  → nextDirection = arah yang baru menang (lanjut, tanpa baca  │
-  //  │         candle baru — "teruskan tanpa menunggu 1 menit")           │
-  //  │                                                                     │
-  //  │  LOSE → nextDirection = opposite(losingOrderDirection)             │
-  //  │         = arah candle yang menyebabkan kekalahan                   │
-  //  │         ("ikuti candle yang kalah")                                 │
-  //  │                                                                     │
-  //  │  LOSE di maxStep → reset, nextDirection = null (baca candle baru)  │
-  //  └─────────────────────────────────────────────────────────────────────┘
+  // 5. APPLY ORDER RESULT
   // ════════════════════════════════════════════════════════════════════════════
 
   async applyOrderResult(
     sessionId: string,
     result: 'won' | 'lost',
-    settledAmount: number,       // selalu positif
+    settledAmount: number,
     candleTimestamp: number,
     lastOrderDirection: 'CALL' | 'PUT',
   ): Promise<{
@@ -391,51 +445,44 @@ export class CtcService {
       currentStep        = 0;
       consecutiveLosses  = 0;
       currentAmount      = baseAmount;
-
-      // WIN → lanjutkan arah yang sama ("teruskan tanpa menunggu 1 menit")
-      nextDirection = lastOrderDirection;
+      nextDirection      = lastOrderDirection;
 
     } else {
-      // LOSE
       losses++;
       totalLoss         += currentAmount;
       totalPnL          -= currentAmount;
       consecutiveLosses++;
 
-      // Arah martingale = opposite dari bet yang kalah = candle yang kalah
       const loseFollowDir: 'CALL' | 'PUT' =
         lastOrderDirection === 'CALL' ? 'PUT' : 'CALL';
 
       if (martingaleEnabled && currentStep < martingaleMaxStep) {
         currentStep++;
         currentAmount = Math.round(baseAmount * Math.pow(martingaleMultiplier, currentStep));
-        nextDirection = loseFollowDir;   // ikuti candle yang kalah
+        nextDirection = loseFollowDir;
 
         this.logger.log(
           `📈 [${sessionId.slice(-8)}] Martingale step ↑ ${currentStep - 1}→${currentStep} | ` +
-          `Direction switch: ${lastOrderDirection} → ${loseFollowDir} (candle yg kalah) | ` +
+          `Direction switch: ${lastOrderDirection} → ${loseFollowDir} | ` +
           `Amount: ${currentAmount.toLocaleString('id-ID')}`,
         );
       } else if (martingaleEnabled && currentStep >= martingaleMaxStep) {
-        // Max step tercapai → reset, baca candle baru (null)
         this.logger.warn(
           `⚠️ [${sessionId.slice(-8)}] Martingale MAX step ${martingaleMaxStep} tercapai — reset`,
         );
         currentStep        = 0;
         consecutiveLosses  = 0;
         currentAmount      = baseAmount;
-        nextDirection      = null;       // baca candle baru
+        nextDirection      = null;
       } else {
-        // Martingale disabled → tetap follow candle (null = baca candle baru)
         nextDirection = null;
       }
     }
 
-    // Check stop conditions
     let shouldStop  = false;
     let stopReason: string | undefined;
     let newStatus: CtcSessionStatus = 'waiting';
-    let isActive = true;
+    let isActive  = true;
     let stoppedAt: string | undefined;
     const ts = this.now();
 
@@ -469,7 +516,7 @@ export class CtcService {
       losses,
       totalOrders,
       lastOrderDirection,
-      lastCandleTimestamp: candleTimestamp,
+      lastCandleTimestamp:  candleTimestamp,
       pendingOrderId:       undefined,
       pendingOrderPlacedAt: undefined,
       pendingExecutionId:   undefined,
@@ -483,7 +530,15 @@ export class CtcService {
 
     await this.db.collection(COL_SESSIONS).doc(sessionId).update(updates);
     const updated = { ...session, ...updates } as CtcSession;
+
+    // ✅ Sync ke kedua cache
     this.sessionCache.set(sessionId, updated);
+    if (isActive) {
+      this.activeSessionRegistry.set(sessionId, updated);
+    } else {
+      // Session selesai — hapus dari activeRegistry
+      this.activeSessionRegistry.delete(sessionId);
+    }
 
     return { session: updated, shouldStop, stopReason };
   }
@@ -495,15 +550,13 @@ export class CtcService {
   async markReadingCandle(sessionId: string): Promise<void> {
     const ts = this.now();
     await this.db.collection(COL_SESSIONS).doc(sessionId).update({ status: 'reading_candle', updatedAt: ts });
-    const c = this.sessionCache.get(sessionId);
-    if (c) { c.status = 'reading_candle'; c.updatedAt = ts; }
+    this._syncStatusToCache(sessionId, { status: 'reading_candle', updatedAt: ts });
   }
 
   async markPlacingOrder(sessionId: string): Promise<void> {
     const ts = this.now();
     await this.db.collection(COL_SESSIONS).doc(sessionId).update({ status: 'placing_order', updatedAt: ts });
-    const c = this.sessionCache.get(sessionId);
-    if (c) { c.status = 'placing_order'; c.updatedAt = ts; }
+    this._syncStatusToCache(sessionId, { status: 'placing_order', updatedAt: ts });
   }
 
   async markWaitingResult(
@@ -513,44 +566,42 @@ export class CtcService {
     direction: 'CALL' | 'PUT',
   ): Promise<void> {
     const ts = this.now();
-    await this.db.collection(COL_SESSIONS).doc(sessionId).update({
+    const patch = {
       status:               'waiting_result',
       pendingOrderId:       orderId,
       pendingOrderPlacedAt: ts,
       pendingExecutionId:   executionId,
       lastOrderDirection:   direction,
       updatedAt:            ts,
-    });
-    const c = this.sessionCache.get(sessionId);
-    if (c) {
-      c.status               = 'waiting_result';
-      c.pendingOrderId       = orderId;
-      c.pendingOrderPlacedAt = ts;
-      c.pendingExecutionId   = executionId;
-      c.lastOrderDirection   = direction;
-      c.updatedAt            = ts;
-    }
+    };
+    await this.db.collection(COL_SESSIONS).doc(sessionId).update(patch);
+    this._syncStatusToCache(sessionId, patch as Partial<CtcSession>);
   }
 
   async markWaiting(sessionId: string): Promise<void> {
     const nextCandleAt = this.calcNextCandleBoundary();
     const ts = this.now();
-    await this.db.collection(COL_SESSIONS).doc(sessionId).update({
+    const patch = {
       status:               'waiting',
       nextCandleAt,
       pendingOrderId:       undefined,
       pendingOrderPlacedAt: undefined,
       pendingExecutionId:   undefined,
       updatedAt:            ts,
-    });
+    };
+    await this.db.collection(COL_SESSIONS).doc(sessionId).update(patch);
+    this._syncStatusToCache(sessionId, patch as Partial<CtcSession>);
+  }
+
+  /** Sync patch ke sessionCache dan activeSessionRegistry */
+  private _syncStatusToCache(sessionId: string, patch: Partial<CtcSession>): void {
     const c = this.sessionCache.get(sessionId);
     if (c) {
-      c.status               = 'waiting';
-      c.nextCandleAt         = nextCandleAt;
-      c.pendingOrderId       = undefined;
-      c.pendingOrderPlacedAt = undefined;
-      c.pendingExecutionId   = undefined;
-      c.updatedAt            = ts;
+      Object.assign(c, patch);
+      this.sessionCache.set(sessionId, c);
+      if (this.activeSessionRegistry.has(sessionId)) {
+        this.activeSessionRegistry.set(sessionId, c);
+      }
     }
   }
 
@@ -575,17 +626,35 @@ export class CtcService {
     });
   }
 
+  // ✅ OPTIMIZED: Tidak lagi scan seluruh ctc_executions collection
+  //   Sebelum: WHERE status='placed' AND createdAt>=2hAgo → scan ratusan ribu doc
+  //   Sekarang: iterasi activeSessionRegistry → ambil hanya sesi yg waiting_result
+  //             → direct doc.get() per pendingExecutionId (1 read per sesi)
   async getPendingExecutions(): Promise<CtcExecution[]> {
-    const twoHoursAgo = new Date();
-    twoHoursAgo.setHours(twoHoursAgo.getHours() - 2);
+    const sessions = Array.from(this.activeSessionRegistry.values()).filter(
+      s => s.status === 'waiting_result' && s.pendingExecutionId,
+    );
 
-    const snap = await this.db
-      .collection(COL_EXECUTIONS)
-      .where('status', '==', 'placed')
-      .where('createdAt', '>=', twoHoursAgo.toISOString())
-      .limit(100)
-      .get();
-    return snap.docs.map(d => d.data() as CtcExecution);
+    if (sessions.length === 0) return [];
+
+    const results = await Promise.allSettled(
+      sessions.map(s =>
+        this.db.collection(COL_EXECUTIONS).doc(s.pendingExecutionId!).get(),
+      ),
+    );
+
+    const executions: CtcExecution[] = [];
+    results.forEach((r, idx) => {
+      if (r.status === 'fulfilled' && r.value.exists) {
+        executions.push(r.value.data() as CtcExecution);
+      } else if (r.status === 'rejected') {
+        this.logger.warn(
+          `⚠️ Failed to get execution for session ${sessions[idx].id.slice(-8)}: ${r.reason?.message}`,
+        );
+      }
+    });
+
+    return executions;
   }
 
   // ════════════════════════════════════════════════════════════════════════════
@@ -627,6 +696,7 @@ export class CtcService {
         }
       });
     }
+
     candles.sort((a, b) => a.t - b.t);
     const trimmed = candles.slice(-safeLimit);
 
@@ -635,8 +705,8 @@ export class CtcService {
 
     if (trimmed.length >= 2) {
       lastCompleted = trimmed[trimmed.length - 2];
-      const diff = lastCompleted.c - lastCompleted.o;
-      direction = diff > 0 ? 'bullish' : diff < 0 ? 'bearish' : 'neutral';
+      const diff    = lastCompleted.c - lastCompleted.o;
+      direction     = diff > 0 ? 'bullish' : diff < 0 ? 'bearish' : 'neutral';
     }
 
     return { assetId, timeframe: CTC_TIMEFRAME, candles: trimmed, lastCompleted, direction };
@@ -685,10 +755,6 @@ export class CtcService {
     return session;
   }
 
-  /**
-   * Hitung unix timestamp (seconds) dari batas candle 1m berikutnya.
-   * Contoh: sekarang 12:22:45 → nextCandleAt = 12:23:00
-   */
   calcNextCandleBoundary(): number {
     const nowSec     = TimezoneUtil.getCurrentTimestamp();
     const intoCandle = nowSec % CTC_TIMEFRAME_SECONDS;
@@ -703,6 +769,22 @@ export class CtcService {
     for (const [id, s] of this.sessionCache.entries()) {
       if (!s.isActive) this.sessionCache.delete(id);
     }
-    this.logger.debug(`🧹 CTC session cache cleaned. Remaining: ${this.sessionCache.size}`);
+    this.logger.debug(
+      `🧹 CTC cache cleaned. sessionCache: ${this.sessionCache.size}, ` +
+      `activeRegistry: ${this.activeSessionRegistry.size}`,
+    );
+  }
+
+  // ── Debug / monitoring ────────────────────────────────────────────────────
+
+  getRegistryStats() {
+    const sessions = Array.from(this.activeSessionRegistry.values());
+    return {
+      totalActive:    sessions.length,
+      waitingResult:  sessions.filter(s => s.status === 'waiting_result').length,
+      waiting:        sessions.filter(s => s.status === 'waiting').length,
+      placingOrder:   sessions.filter(s => s.status === 'placing_order').length,
+      readingCandle:  sessions.filter(s => s.status === 'reading_candle').length,
+    };
   }
 }

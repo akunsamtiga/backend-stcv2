@@ -57,13 +57,9 @@ export class CtcExecutorService {
   async handleCandleTick(): Promise<void> {
     this.totalCycles++;
 
-    let sessions: CtcSession[];
-    try {
-      sessions = await this.ctcService.getAllActiveSessions();
-    } catch (error) {
-      this.logger.error(`❌ Gagal fetch active CTC sessions: ${error.message}`);
-      return;
-    }
+    // ✅ OPTIMIZED: getAllActiveSessions() sekarang sync dari in-memory registry
+    //   ZERO Firestore read — tidak ada try/catch karena tidak ada I/O
+    const sessions = this.ctcService.getAllActiveSessions();
     if (!sessions.length) return;
 
     const nowSec = TimezoneUtil.getCurrentTimestamp();
@@ -77,6 +73,8 @@ export class CtcExecutorService {
 
   @Cron('* * * * * *')
   async checkPendingResults(): Promise<void> {
+    // ✅ OPTIMIZED: getPendingExecutions() sekarang menggunakan activeSessionRegistry
+    //   Tidak lagi scan seluruh ctc_executions — hanya direct doc.get() per session
     let pending: CtcExecution[];
     try {
       pending = await this.ctcService.getPendingExecutions();
