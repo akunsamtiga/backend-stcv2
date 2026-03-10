@@ -9,6 +9,7 @@ import { FirebaseService } from '../firebase/firebase.service';
 import { OrderScheduleService } from './order-schedule.service';
 import { PriceFetcherService } from '../assets/services/price-fetcher.service';
 import { BalanceService } from '../balance/balance.service'; // ✅ FIX: import BalanceService
+import { BinaryOrdersService } from '../binary-orders/binary-orders.service'; // ✅ FIX: register order ke registry
 import { BALANCE_TYPES } from '../common/constants'; // ✅ FIX: import BALANCE_TYPES
 import { ScheduleStatus, TrendType } from './dto/create-order-schedule.dto';
 import { OrderSchedule, ScheduleExecution, OrderMartingaleState } from './entities/order-schedule.entity';
@@ -44,6 +45,7 @@ export class OrderScheduleExecutorService {
     private orderScheduleService: OrderScheduleService,
     private priceFetcherService: PriceFetcherService,
     private balanceService: BalanceService, // ✅ FIX: inject BalanceService
+    private binaryOrdersService: BinaryOrdersService, // ✅ FIX: register scheduled orders ke settlement registry
   ) {
     this.logger.log('✅ OrderScheduleExecutorService initialized');
     this.logger.log('🎯 MODE: 1 Schedule = 1 Hari (Auto-delete setelah selesai)');
@@ -453,6 +455,8 @@ export class OrderScheduleExecutorService {
           const hasBalance = await this.checkUserBalance(latestSchedule.userId, amount);
           
           if (!hasBalance) {
+            this.logger.warn(`⚠️ Insufficient balance for ${scheduledTime}: required ${amount.toLocaleString()}`);
+            
             await this.recordExecution(
               executionId,
               latestSchedule,
@@ -461,9 +465,8 @@ export class OrderScheduleExecutorService {
               amount,
               orderState.currentStep,
               'failed',
-              'Insufficient balance',
+              'Insufficient balance'
             );
-            await this.autoStopInsufficientBalance(latestSchedule, scheduledTime, amount, 'order');
             return;
           }
         }
@@ -685,6 +688,11 @@ export class OrderScheduleExecutorService {
       }
       
       this.logger.log(`✅ Order ${orderId.slice(-8)} verified in Firestore`);
+
+      // ✅ Daftarkan ke BinaryOrdersService.pendingOrderRegistry agar bisa di-settle
+      // Tanpa ini, settlement cron tidak akan tahu order ini ada karena di-create
+      // langsung ke Firestore (bypass BinaryOrdersService.createOrder)
+      this.binaryOrdersService.registerExternalOrder(order as any);
 
       // ✅ FIX: Debit balance untuk akun real setelah order berhasil dibuat
       // Sebelumnya tidak ada debit sama sekali, sehingga saldo tidak berkurang
@@ -1094,6 +1102,8 @@ export class OrderScheduleExecutorService {
           const hasBalance = await this.checkUserBalance(latestSchedule.userId, amount);
 
           if (!hasBalance) {
+            this.logger.warn(`⚠️ Insufficient balance for recovery ${scheduledTime}: required ${amount.toLocaleString()}`);
+
             await this.recordRecoveryExecution(
               recoveryExecutionId,
               latestSchedule,
@@ -1102,9 +1112,8 @@ export class OrderScheduleExecutorService {
               amount,
               martingaleStep,
               'failed',
-              'Insufficient balance for recovery',
+              'Insufficient balance for recovery'
             );
-            await this.autoStopInsufficientBalance(latestSchedule, scheduledTime, amount, 'recovery');
             return;
           }
         }
@@ -1254,43 +1263,6 @@ export class OrderScheduleExecutorService {
     } catch (error) {
       this.logger.error(`❌ Error checking balance: ${error.message}`);
       return false;
-    }
-  }
-
-
-  private async autoStopInsufficientBalance(
-    schedule: any,
-    scheduledTime: string,
-    requiredAmount: number,
-    context: 'order' | 'recovery',
-  ): Promise<void> {
-    const label  = context === 'recovery' ? 'martingale recovery' : 'order';
-    const reason =
-      `Saldo ${schedule.accountType} tidak cukup untuk ${label} ` +
-      `jam ${scheduledTime}. ` +
-      `Dibutuhkan: Rp ${requiredAmount.toLocaleString('id-ID')}. ` +
-      `Schedule dihentikan otomatis.`;
-
-    this.logger.warn(
-      `[Auto-stop ${schedule.id.slice(-8)}] ${reason}`,
-    );
-
-    try {
-      await this.db.collection(this.schedulesCollection).doc(schedule.id).update({
-        status:    'paused',
-        isActive:  false,
-        pausedAt:  new Date(),
-        updatedAt: new Date(),
-        notes:     reason,
-      });
-
-      this.logger.log(
-        `[${schedule.id.slice(-8)}] Schedule auto-paused karena saldo tidak cukup`,
-      );
-    } catch (error) {
-      this.logger.error(
-        `[${schedule.id.slice(-8)}] Gagal auto-stop schedule: ${error.message}`,
-      );
     }
   }
 

@@ -895,6 +895,73 @@ export class BinaryOrdersService implements OnModuleInit {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
+  // ✅ REGISTER EXTERNAL ORDER
+  //
+  // Dipanggil oleh OrderScheduleExecutorService setelah membuat order langsung
+  // ke Firestore (tanpa melewati createOrder()).
+  // Tanpa ini, order schedule tidak akan pernah di-settle oleh processExpiredOrders.
+  // ─────────────────────────────────────────────────────────────────────────
+  registerExternalOrder(order: BinaryOrder): void {
+    this.pendingOrderRegistry.set(order.id, order);
+    this.logger.debug(
+      `📋 Registered external order ${order.id.slice(-8)} ` +
+      `[${order.accountType.toUpperCase()}] into pendingOrderRegistry ` +
+      `(registry size: ${this.pendingOrderRegistry.size})`,
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // ✅ RECONCILIATION CRON — Safety net setiap 5 menit
+  //
+  // Menjamin tidak ada order ACTIVE yang terlewat di registry.
+  // Menangani edge case:
+  //   - Server restart saat ada order aktif (sudah di-handle onModuleInit)
+  //   - registerExternalOrder gagal/belum dipanggil
+  //   - Order dibuat oleh service lain tanpa lewat BinaryOrdersService
+  // ─────────────────────────────────────────────────────────────────────────
+  @Cron('0 */5 * * * *')
+  private async reconcileRegistry(): Promise<void> {
+    try {
+      const db = this.firebaseService.getFirestore();
+
+      const [realSnap, demoSnap] = await Promise.all([
+        db.collection(COLLECTIONS.ORDERS)
+          .where('status', '==', ORDER_STATUS.ACTIVE)
+          .where('accountType', '==', BALANCE_ACCOUNT_TYPE.REAL)
+          .get(),
+        db.collection(COLLECTIONS.ORDERS)
+          .where('status', '==', ORDER_STATUS.ACTIVE)
+          .where('accountType', '==', BALANCE_ACCOUNT_TYPE.DEMO)
+          .get(),
+      ]);
+
+      let added = 0;
+
+      [...realSnap.docs, ...demoSnap.docs].forEach(doc => {
+        const order = doc.data() as BinaryOrder;
+        if (!this.pendingOrderRegistry.has(order.id)) {
+          this.pendingOrderRegistry.set(order.id, order);
+          added++;
+        }
+      });
+
+      if (added > 0) {
+        this.logger.warn(
+          `🔄 Registry reconciliation: added ${added} missed active orders ` +
+          `(total registry: ${this.pendingOrderRegistry.size})`,
+        );
+      } else {
+        this.logger.debug(
+          `✅ Registry reconciliation OK — no missed orders ` +
+          `(registry: ${this.pendingOrderRegistry.size})`,
+        );
+      }
+    } catch (error) {
+      this.logger.error(`❌ Registry reconciliation failed: ${error.message}`);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
   // STATS
   // ─────────────────────────────────────────────────────────────────────────
 

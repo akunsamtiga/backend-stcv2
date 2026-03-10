@@ -9,6 +9,7 @@ import { FirebaseModule } from '../firebase/firebase.module';
 import { AuthModule } from '../auth/auth.module';
 import { AssetsModule } from '../assets/assets.module';
 import { BalanceModule } from '../balance/balance.module'; // ✅ FIX: tambah BalanceModule
+import { BinaryOrdersModule } from '../binary-orders/binary-orders.module'; // ✅ FIX: untuk registerExternalOrder
 
 @Module({
   imports: [
@@ -16,7 +17,8 @@ import { BalanceModule } from '../balance/balance.module'; // ✅ FIX: tambah Ba
     FirebaseModule,
     AuthModule,
     forwardRef(() => AssetsModule),
-    BalanceModule, 
+    BalanceModule,
+    BinaryOrdersModule, // ✅ FIX: agar BinaryOrdersService bisa di-inject ke executor
   ],
   controllers: [OrderScheduleController],
   providers: [
