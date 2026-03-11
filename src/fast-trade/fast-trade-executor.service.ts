@@ -1,53 +1,60 @@
 // src/fast-trade/fast-trade-executor.service.ts
+//
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  FIXES                                                       ║
+// ║  #1  registerExternalOrder() dipanggil setelah order dibuat  ║
+// ║      → order masuk pendingOrderRegistry                      ║
+// ║      → processExpiredOrders (tiap 1 detik) langsung settle   ║
+// ║      SEBELUMNYA: tidak dipanggil → nyangkut sampai 5 menit   ║
+// ║                                                              ║
+// ║  #2  Expiry = entryTimestamp + tfSeconds (langsung)          ║
+// ║      SEBELUMNYA: pakai calculateExpiryTimestamp() yang       ║
+// ║      menambah +1 menit ekstra jika entry di detik > 20       ║
+// ║      → order 1m bisa jadi 2m, 5m jadi 6m, dst               ║
+// ║                                                              ║
+// ║  #3  Cron tick diubah dari */2 ke * (tiap 1 detik)           ║
+// ║      → delay eksekusi dari ±2s menjadi ±1s                   ║
+// ╚══════════════════════════════════════════════════════════════╝
 
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import { v4 as uuidv4 } from 'uuid';
-import { FieldValue } from '@google-cloud/firestore';
 import { FirebaseService } from '../firebase/firebase.service';
 import { FastTradeService } from './fast-trade.service';
 import { BalanceService } from '../balance/balance.service';
 import { PriceFetcherService } from '../assets/services/price-fetcher.service';
 import { UserStatusService } from '../user/user-status.service';
 import { TradingGateway } from '../websocket/trading.gateway';
+import { BinaryOrdersService } from '../binary-orders/binary-orders.service'; // ✅ FIX #1
 import {
   COLLECTIONS,
   ORDER_STATUS,
   BALANCE_TYPES,
-  BALANCE_ACCOUNT_TYPE,
 } from '../common/constants';
-import { CalculationUtil, TimezoneUtil } from '../common/utils';
+import { TimezoneUtil } from '../common/utils';
 import {
   FastTradeSession,
   FastTradeExecution,
   CandleDirection,
 } from './interfaces/fast-trade.interface';
 import {
-  FastTradeTimeframe,
-  FastTradeAccountType,
   TIMEFRAME_SECONDS_MAP,
   TIMEFRAME_DURATION_MAP,
 } from './dto/create-fast-trade.dto';
+import { BinaryOrder } from '../common/interfaces';
 
-// ── Lock flags ─────────────────────────────────────────────────────────────
-// Key: sessionId
 type SessionLockSet = Set<string>;
 
 @Injectable()
 export class FastTradeExecutorService {
   private readonly logger = new Logger(FastTradeExecutorService.name);
 
-  // Prevent concurrent execution for the same session
   private processingLock: SessionLockSet = new Set();
+  private pollingLock:    SessionLockSet = new Set();
 
-  // Track sessions that are currently waiting for a result poll
-  private pollingLock: SessionLockSet = new Set();
-
-  // Stats
-  private totalCycles      = 0;
+  private totalCycles       = 0;
   private totalOrdersPlaced = 0;
-  private totalWins        = 0;
-  private totalLosses      = 0;
+  private totalWins         = 0;
+  private totalLosses       = 0;
 
   constructor(
     private readonly firebaseService: FirebaseService,
@@ -56,48 +63,41 @@ export class FastTradeExecutorService {
     private readonly priceFetcherService: PriceFetcherService,
     private readonly userStatusService: UserStatusService,
     private readonly tradingGateway: TradingGateway,
+    private readonly binaryOrdersService: BinaryOrdersService, // ✅ FIX #1
   ) {
     this.logger.log('✅ FastTradeExecutorService initialized');
-    this.logger.log('⚡ Engine: candle-boundary detection every 2 seconds');
-    this.logger.log('🔄 Result polling: every 5 seconds');
+    this.logger.log('⚡ Tick engine: every 1 second');
+    this.logger.log('🔄 Result poller: every 1 second');
+    this.logger.log('🔒 Settlement: via pendingOrderRegistry (instant)');
   }
 
-  private get db() {
-    return this.firebaseService.getFirestore();
-  }
+  private get db() { return this.firebaseService.getFirestore(); }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // CRON 1: Main engine — runs every 2 seconds
-  //   Checks all active sessions → fires order at candle boundary
+  // CRON 1 — Main tick: every 1 second
+  // ✅ FIX #3: was */2, now * → delay ±1s instead of ±2s
   // ══════════════════════════════════════════════════════════════════════════
 
-  @Cron('*/2 * * * * *')
+  @Cron('* * * * * *')
   async handleCandleTick(): Promise<void> {
     this.totalCycles++;
 
-    // ✅ OPTIMIZED: getAllActiveSessions() sekarang sync dari in-memory registry
-    //   ZERO Firestore read — tidak ada try/catch karena tidak ada I/O
     const sessions = this.fastTradeService.getAllActiveSessions();
-
     if (sessions.length === 0) return;
 
     const nowSec = TimezoneUtil.getCurrentTimestamp();
 
-    // Process each session in parallel (they're independent)
     await Promise.allSettled(
       sessions.map(session => this.processTick(session, nowSec)),
     );
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // CRON 2: Result poller — runs every 5 seconds
-  //   Checks pending FastTrade executions and resolves them
+  // CRON 2 — Result poller: every 1 second
   // ══════════════════════════════════════════════════════════════════════════
 
   @Cron('* * * * * *')
   async checkPendingResults(): Promise<void> {
-    // ✅ OPTIMIZED: getPendingExecutions() sekarang menggunakan activeSessionRegistry
-    //   Tidak lagi scan seluruh fast_trade_executions — hanya direct doc.get() per session
     let pending: FastTradeExecution[];
     try {
       pending = await this.fastTradeService.getPendingExecutions();
@@ -109,14 +109,11 @@ export class FastTradeExecutorService {
     if (pending.length === 0) return;
 
     this.logger.debug(`🔍 Checking ${pending.length} pending FastTrade executions`);
-
-    await Promise.allSettled(
-      pending.map(exec => this.resolveExecution(exec)),
-    );
+    await Promise.allSettled(pending.map(exec => this.resolveExecution(exec)));
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // CRON 3: Daily cleanup
+  // CRON 3 — Daily cleanup
   // ══════════════════════════════════════════════════════════════════════════
 
   @Cron('0 3 * * *')
@@ -134,33 +131,25 @@ export class FastTradeExecutorService {
   // ══════════════════════════════════════════════════════════════════════════
 
   private async processTick(session: FastTradeSession, nowSec: number): Promise<void> {
-    // Skip if already placing/waiting for this session
     if (this.processingLock.has(session.id)) return;
-    if (session.status === 'waiting_result') return;  // order in-flight, wait for result poller
+    if (session.status === 'waiting_result') return;
 
-    const tfSeconds = TIMEFRAME_SECONDS_MAP[session.timeframe];
-
-    // Fire ONLY at or after the boundary — never before.
-    // distanceToCandle <= 0 means boundary has passed, candle is confirmed closed.
-    // Firing at distanceToCandle = 1 (1s early) would read a candle still forming.
+    const tfSeconds        = TIMEFRAME_SECONDS_MAP[session.timeframe];
     const distanceToCandle = session.nextCandleAt - nowSec;
     if (distanceToCandle > 0) return;
 
-    // Lock this session
     this.processingLock.add(session.id);
 
     try {
       this.logger.log(
-        `🕐 [${session.id.slice(-8)}] Candle boundary reached | ` +
-        `Asset: ${session.assetSymbol} | TF: ${session.timeframe} | ` +
-        `Step: ${session.currentStep} | Amount: ${session.currentAmount.toLocaleString('id-ID')}`,
+        `🕐 [${session.id.slice(-8)}] Candle boundary | ` +
+        `${session.assetSymbol} ${session.timeframe} | ` +
+        `Step: ${session.currentStep} | Rp ${session.currentAmount.toLocaleString('id-ID')}`,
       );
 
-      // ── Phase 1: Read candle direction ──────────────────────────────────
+      // Phase 1: read candle direction
       await this.fastTradeService.markReadingCandle(session.id);
 
-      // Pass the exact candle timestamp we expect (the one that just closed).
-      // getCandleDirection will query that key directly — instant, no blanket delay.
       const expectedCandleTs = session.nextCandleAt - tfSeconds;
       const { direction, candle } = await this.fastTradeService.getCandleDirection(
         session.assetId,
@@ -169,71 +158,52 @@ export class FastTradeExecutorService {
       );
 
       this.logger.log(
-        `📊 [${session.id.slice(-8)}] Candle direction: ${direction.toUpperCase()} | ` +
-        `Candle t=${candle?.t} O=${candle?.o} C=${candle?.c}`,
+        `📊 [${session.id.slice(-8)}] Candle: ${direction.toUpperCase()} | ` +
+        `t=${candle?.t} O=${candle?.o} C=${candle?.c}`,
       );
 
-      // Skip neutral — just reschedule
       if (direction === 'neutral') {
-        this.logger.warn(
-          `⚠️ [${session.id.slice(-8)}] Neutral candle — skipping this cycle`,
-        );
+        this.logger.warn(`⚠️ [${session.id.slice(-8)}] Neutral candle — skipping cycle`);
         const nextCandleAt = this.fastTradeService.calcNextCandleBoundary(tfSeconds);
         await this.fastTradeService.markWaiting(session.id, nextCandleAt);
-
-        // Log skipped execution — no binary direction for neutral candle
         await this.fastTradeService.saveExecution({
-          sessionId:        session.id,
-          userId:           session.userId,
-          candleTimestamp:  candle?.t ?? nowSec,
-          candleDirection:  direction,
-          timeframe:        session.timeframe,
-          direction:        'CALL',   // placeholder; candleDirection=neutral is the truth
-          amount:           session.currentAmount,
-          martingaleStep:   session.currentStep,
-          accountType:      session.accountType,
-          assetSymbol:      session.assetSymbol,
-          assetId:          session.assetId,
-          duration:         TIMEFRAME_DURATION_MAP[session.timeframe],
-          status:           'skipped',
-          profit:           0,
-          placedAt:         this.now(),
+          sessionId: session.id, userId: session.userId,
+          candleTimestamp: candle?.t ?? nowSec, candleDirection: direction,
+          timeframe: session.timeframe, direction: 'CALL',
+          amount: session.currentAmount, martingaleStep: session.currentStep,
+          accountType: session.accountType, assetSymbol: session.assetSymbol,
+          assetId: session.assetId, duration: TIMEFRAME_DURATION_MAP[session.timeframe],
+          status: 'skipped', profit: 0, placedAt: this.now(),
         });
         return;
       }
 
-      // ── Phase 2: Place order ────────────────────────────────────────────
+      // Phase 2: place order
       await this.fastTradeService.markPlacingOrder(session.id);
 
       const binaryDirection: 'CALL' | 'PUT' = direction === 'bullish' ? 'CALL' : 'PUT';
 
       const { orderId, entryPrice, executionId, error } = await this.placeBinaryOrder(
-        session,
-        binaryDirection,
-        candle?.t ?? nowSec,
-        direction,
+        session, binaryDirection, candle?.t ?? nowSec, direction,
       );
 
       if (error || !orderId) {
-        // Order failed — reschedule for next candle
         this.logger.error(`❌ [${session.id.slice(-8)}] Order placement failed: ${error}`);
         const nextCandleAt = this.fastTradeService.calcNextCandleBoundary(tfSeconds);
         await this.fastTradeService.markWaiting(session.id, nextCandleAt);
         return;
       }
 
-      // ── Phase 3: Mark waiting result (save direction for martingale retry) ──
+      // Phase 3: mark waiting result
       await this.fastTradeService.markWaitingResult(session.id, orderId, executionId!, binaryDirection);
-
       this.totalOrdersPlaced++;
 
       this.logger.log(
         `✅ [${session.id.slice(-8)}] Order placed: ${orderId.slice(-8)} | ` +
-        `${binaryDirection} @ ${entryPrice} | Amount: ${session.currentAmount.toLocaleString('id-ID')} | ` +
+        `${binaryDirection} @ ${entryPrice} | Rp ${session.currentAmount.toLocaleString('id-ID')} | ` +
         `Step: ${session.currentStep}`,
       );
 
-      // Emit WebSocket update
       this.emitSessionUpdate(session);
 
     } catch (error) {
@@ -241,8 +211,8 @@ export class FastTradeExecutorService {
         `❌ [${session.id.slice(-8)}] processTick error: ${error.message}`,
         error.stack,
       );
-      // Try to recover by rescheduling
       try {
+        const tfSeconds    = TIMEFRAME_SECONDS_MAP[session.timeframe];
         const nextCandleAt = this.fastTradeService.calcNextCandleBoundary(tfSeconds);
         await this.fastTradeService.markWaiting(session.id, nextCandleAt);
       } catch {}
@@ -252,7 +222,7 @@ export class FastTradeExecutorService {
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // CORE: Place binary order (mirrors binary-orders.service pattern)
+  // CORE: Place binary order
   // ══════════════════════════════════════════════════════════════════════════
 
   private async placeBinaryOrder(
@@ -260,133 +230,117 @@ export class FastTradeExecutorService {
     direction: 'CALL' | 'PUT',
     candleTimestamp: number,
     candleDirection: CandleDirection,
-  ): Promise<{
-    orderId?: string;
-    entryPrice?: number;
-    executionId?: string;
-    error?: string;
-  }> {
+  ): Promise<{ orderId?: string; entryPrice?: number; executionId?: string; error?: string }> {
     const maxRetries = 3;
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
         const amount      = session.currentAmount;
-        const accountType = session.accountType as string as 'real' | 'demo';
-        const duration    = TIMEFRAME_DURATION_MAP[session.timeframe];
+        const accountType = session.accountType as 'real' | 'demo';
+        const tfSeconds   = TIMEFRAME_SECONDS_MAP[session.timeframe];
+        const duration    = TIMEFRAME_DURATION_MAP[session.timeframe]; // minutes
 
-        // ── 1. Check balance ──────────────────────────────────────────────
+        // 1. Check balance
         const currentBalance = await this.balanceService.getCurrentBalanceStrict(
-          session.userId,
-          accountType,
+          session.userId, accountType,
         );
-
         if (currentBalance < amount) {
           const msg =
             `Saldo ${accountType} tidak cukup. ` +
             `Tersedia: Rp ${currentBalance.toLocaleString('id-ID')}, ` +
             `Dibutuhkan: Rp ${amount.toLocaleString('id-ID')}`;
-
           this.logger.warn(`⚠️ [${session.id.slice(-8)}] ${msg}`);
-
-          // Log skipped execution
           const exec = await this.fastTradeService.saveExecution({
-            sessionId:        session.id,
-            userId:           session.userId,
-            candleTimestamp,
-            candleDirection,
-            timeframe:        session.timeframe,
-            direction,
-            amount,
-            martingaleStep:   session.currentStep,
-            accountType:      session.accountType,
-            assetSymbol:      session.assetSymbol,
-            assetId:          session.assetId,
-            duration,
-            status:           'error',
-            profit:           0,
-            errorMessage:     msg,
-            placedAt:         this.now(),
+            sessionId: session.id, userId: session.userId, candleTimestamp, candleDirection,
+            timeframe: session.timeframe, direction, amount, martingaleStep: session.currentStep,
+            accountType: session.accountType, assetSymbol: session.assetSymbol,
+            assetId: session.assetId, duration, status: 'error', profit: 0,
+            errorMessage: msg, placedAt: this.now(),
           });
-
-          // Stop session if balance issue
           await this.fastTradeService.forceStopSession(session.id, msg);
           return { executionId: exec.id, error: msg };
         }
 
-        // ── 2. Get asset data ─────────────────────────────────────────────
+        // 2. Get asset
         const assetDoc = await this.db.collection(COLLECTIONS.ASSETS).doc(session.assetId).get();
         if (!assetDoc.exists) throw new Error(`Asset ${session.assetId} not found`);
         const asset = assetDoc.data() as any;
 
-        // ── 3. Get realtime price ─────────────────────────────────────────
+        // 3. Get realtime price
         let entryPrice = 0;
         try {
           const priceData = await this.priceFetcherService.getCurrentPriceRealtime(asset, true);
           if (priceData?.price) entryPrice = priceData.price;
         } catch (priceErr) {
-          this.logger.warn(
-            `⚠️ [${session.id.slice(-8)}] Price fetch failed, using fallback: ${priceErr.message}`,
-          );
+          this.logger.warn(`⚠️ Price fallback: ${priceErr.message}`);
           entryPrice = asset.simulatorSettings?.currentPrice
-            ?? asset.simulatorSettings?.initialPrice
-            ?? 0;
+            ?? asset.simulatorSettings?.initialPrice ?? 0;
         }
+        if (!entryPrice) throw new Error(`Cannot get entry price for ${asset.symbol}`);
 
-        if (!entryPrice) {
-          throw new Error(`Cannot get entry price for ${asset.symbol}`);
-        }
-
-        // ── 4. Get user status & profit rate ─────────────────────────────
+        // 4. User status & profit rate
         const userStatus  = await this.userStatusService.getUserStatus(session.userId);
         const statusBonus = this.userStatusService.getProfitBonus(userStatus);
         const profitRate  = (asset.profitRate ?? 85) + statusBonus;
 
-        // ── 5. Calculate expiry ───────────────────────────────────────────
+        // 5. ✅ FIX #2: Expiry = entryTimestamp + tfSeconds (DIRECT — no extra +1min)
+        //    calculateExpiryTimestamp() menambah +1 menit jika entry di detik > 20,
+        //    yang menyebabkan order 1m menjadi 2m, 5m menjadi 6m, dst.
         const entryTimestamp  = TimezoneUtil.getCurrentTimestamp();
-        const expiryTimestamp = CalculationUtil.calculateExpiryTimestamp(entryTimestamp, duration);
+        const expiryTimestamp = entryTimestamp + tfSeconds;  // ← FIX: langsung tambah detik
         const entryDate       = TimezoneUtil.fromTimestamp(entryTimestamp);
         const expiryDate      = TimezoneUtil.fromTimestamp(expiryTimestamp);
         const entryInfo       = TimezoneUtil.getDateTimeInfo(entryDate);
         const expiryInfo      = TimezoneUtil.getDateTimeInfo(expiryDate);
 
-        // ── 6. Create order in Firestore ──────────────────────────────────
+        this.logger.log(
+          `⏱️ [${session.id.slice(-8)}] Entry: ${entryInfo.datetime} | ` +
+          `Expiry: ${expiryInfo.datetime} (${tfSeconds}s from now)`,
+        );
+
+        // 6. Create order in Firestore
         const orderId = await this.firebaseService.generateId(COLLECTIONS.ORDERS);
 
-        const orderData = {
-          id:            orderId,
-          user_id:       session.userId,
+        const orderData: any = {
+          id:             orderId,
+          user_id:        session.userId,
           accountType,
-          asset_id:      session.assetId,
-          asset_name:    asset.name,
-          asset_symbol:  asset.symbol,
+          asset_id:       session.assetId,
+          asset_name:     asset.name,
+          asset_symbol:   asset.symbol,
           direction,
           amount,
           duration,
-          entry_price:   entryPrice,
-          entry_time:    entryInfo.datetime_iso,
-          exit_price:    null,
-          exit_time:     expiryInfo.datetime_iso,
-          status:        ORDER_STATUS.ACTIVE,
-          profit:        null,
+          entry_price:    entryPrice,
+          entry_time:     entryInfo.datetime_iso,
+          exit_price:     null,
+          exit_time:      expiryInfo.datetime_iso,
+          status:         ORDER_STATUS.ACTIVE,
+          profit:         null,
           profitRate,
           baseProfitRate: asset.profitRate ?? 85,
           statusBonus,
           userStatus,
           metadata: {
-            isFastTrade:       true,
+            isFastTrade:        true,
             fastTradeSessionId: session.id,
             candleTimestamp,
             candleDirection,
-            timeframe:         session.timeframe,
-            martingaleStep:    session.currentStep,
-            timezone:          'Asia/Jakarta',
+            timeframe:          session.timeframe,
+            martingaleStep:     session.currentStep,
+            timezone:           'Asia/Jakarta',
           },
           createdAt: entryInfo.datetime_iso,
         };
 
         await this.db.collection(COLLECTIONS.ORDERS).doc(orderId).set(orderData);
 
-        // ── 7. Debit balance ──────────────────────────────────────────────
+        // ✅ FIX #1: Register ke pendingOrderRegistry agar processExpiredOrders
+        //    (jalan tiap 1 detik) bisa settle order ini tepat waktu.
+        //    TANPA ini, order tidak terdeteksi sampai reconciliation (tiap 5 menit).
+        this.binaryOrdersService.registerExternalOrder(orderData as BinaryOrder);
+
+        // 7. Debit balance
         try {
           await this.balanceService.createBalanceEntry(
             session.userId,
@@ -400,82 +354,57 @@ export class FastTradeExecutorService {
             true,
           );
         } catch (debitErr) {
-          // Rollback order
-          this.logger.error(
-            `❌ [${session.id.slice(-8)}] Balance debit failed, rolling back: ${debitErr.message}`,
-          );
+          this.logger.error(`❌ [${session.id.slice(-8)}] Debit failed, rolling back: ${debitErr.message}`);
           await this.db.collection(COLLECTIONS.ORDERS).doc(orderId).delete();
+          // registry akan di-clean oleh reconciliation jika rollback
           throw new Error(`Balance debit failed: ${debitErr.message}`);
         }
 
         this.balanceService.clearUserCache(session.userId);
 
-        // ── 8. Save execution log ─────────────────────────────────────────
+        // 8. Save execution log
         const exec = await this.fastTradeService.saveExecution({
-          sessionId:       session.id,
-          userId:          session.userId,
-          candleTimestamp,
-          candleDirection,
-          timeframe:       session.timeframe,
-          orderId,
-          direction,
-          amount,
-          martingaleStep:  session.currentStep,
-          accountType:     session.accountType,
-          assetSymbol:     session.assetSymbol,
-          assetId:         session.assetId,
-          duration,
-          status:          'placed',
-          profit:          0,
-          entryPrice,
-          placedAt:        this.now(),
+          sessionId: session.id, userId: session.userId,
+          candleTimestamp, candleDirection, timeframe: session.timeframe,
+          orderId, direction, amount, martingaleStep: session.currentStep,
+          accountType: session.accountType, assetSymbol: session.assetSymbol,
+          assetId: session.assetId, duration, status: 'placed',
+          profit: 0, entryPrice, placedAt: this.now(),
         });
 
         return { orderId, entryPrice, executionId: exec.id };
 
       } catch (error) {
-        const isLastAttempt = attempt === maxRetries - 1;
+        const isLast = attempt === maxRetries - 1;
         this.logger.error(
           `❌ [${session.id.slice(-8)}] placeBinaryOrder attempt ${attempt + 1}/${maxRetries}: ${error.message}`,
         );
-
-        if (!isLastAttempt) {
-          await this.sleep(2000 * Math.pow(2, attempt));
+        if (!isLast) {
+          await this.sleep(1000 * Math.pow(2, attempt));
           continue;
         }
-
-        // All attempts failed — save error execution
         try {
           const exec = await this.fastTradeService.saveExecution({
-            sessionId:       session.id,
-            userId:          session.userId,
-            candleTimestamp,
-            candleDirection,
-            timeframe:       session.timeframe,
-            direction,
-            amount:          session.currentAmount,
-            martingaleStep:  session.currentStep,
-            accountType:     session.accountType,
-            assetSymbol:     session.assetSymbol,
-            assetId:         session.assetId,
-            duration:        TIMEFRAME_DURATION_MAP[session.timeframe],
-            status:          'error',
-            profit:          0,
-            errorMessage:    error.message,
-            placedAt:        this.now(),
+            sessionId: session.id, userId: session.userId,
+            candleTimestamp, candleDirection, timeframe: session.timeframe,
+            direction, amount: session.currentAmount, martingaleStep: session.currentStep,
+            accountType: session.accountType, assetSymbol: session.assetSymbol,
+            assetId: session.assetId, duration: TIMEFRAME_DURATION_MAP[session.timeframe],
+            status: 'error', profit: 0, errorMessage: error.message, placedAt: this.now(),
           });
           return { executionId: exec.id, error: error.message };
         } catch {}
-
         return { error: error.message };
       }
     }
-
     return { error: 'All retries exhausted' };
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // CORE: Resolve a pending execution (check binary order result)
+  // CORE: Resolve pending execution (baca hasil dari Firestore)
+  // Note: Actual settlement (status update + balance credit) dilakukan oleh
+  //       processExpiredOrders di BinaryOrdersService. Fungsi ini hanya
+  //       membaca hasilnya dan mengupdate session state + martingale.
   // ══════════════════════════════════════════════════════════════════════════
 
   private async resolveExecution(exec: FastTradeExecution): Promise<void> {
@@ -485,154 +414,105 @@ export class FastTradeExecutorService {
     this.pollingLock.add(exec.id);
 
     try {
-      // ── Fetch order from Firestore ──────────────────────────────────────
       const orderDoc = await this.db.collection(COLLECTIONS.ORDERS).doc(exec.orderId).get();
 
       if (!orderDoc.exists) {
-        // Stale — mark error
         await this.fastTradeService.updateExecution(exec.id, {
-          status:       'error',
-          errorMessage: 'Binary order not found',
+          status: 'error', errorMessage: 'Binary order not found',
         });
-        // Reschedule session
         await this.rescheduleSession(exec.sessionId);
         return;
       }
 
       const order = orderDoc.data() as any;
 
-      // Still active — wait for next poll
+      // Masih ACTIVE → tunggu processExpiredOrders yang settle
       if (order.status === ORDER_STATUS.ACTIVE) {
-        const expiryTs = TimezoneUtil.toTimestamp(new Date(order.exit_time));
-        const nowSec   = TimezoneUtil.getCurrentTimestamp();
-        const remaining = expiryTs - nowSec;
+        const expiryTs  = TimezoneUtil.toTimestamp(new Date(order.exit_time));
+        const remaining = expiryTs - TimezoneUtil.getCurrentTimestamp();
         this.logger.debug(
-          `⏳ [${exec.sessionId.slice(-8)}] Order ${exec.orderId.slice(-8)} still ACTIVE (${remaining}s remaining)`,
+          `⏳ [${exec.sessionId.slice(-8)}] Order ${exec.orderId.slice(-8)} ACTIVE (${remaining}s)`,
         );
         return;
       }
 
-      // ── Settled ─────────────────────────────────────────────────────────
-      const result: 'won' | 'lost' =
-        order.status === ORDER_STATUS.WON ? 'won' : 'lost';
-
-      const settledProfit = order.profit ?? 0;   // positive for win (platform profit amount)
-      const profitRate    = order.profitRate ?? 85;
-      const finalAmount   = result === 'won'
+      // Sudah settled oleh processExpiredOrders
+      const result: 'won' | 'lost' = order.status === ORDER_STATUS.WON ? 'won' : 'lost';
+      const profitRate  = order.profitRate ?? 85;
+      const finalAmount = result === 'won'
         ? Math.round(exec.amount * (profitRate / 100))
         : exec.amount;
 
-      // Update execution log
       const settledAt = this.now();
       await this.fastTradeService.updateExecution(exec.id, {
-        status:     result,
-        profit:     result === 'won' ? finalAmount : -exec.amount,
-        exitPrice:  order.exit_price ?? undefined,
-        settledAt,
+        status: result, profit: result === 'won' ? finalAmount : -exec.amount,
+        exitPrice: order.exit_price ?? undefined, settledAt,
       });
 
-      // ── Credit balance (only for WIN — debit already done at placement) ──
-      if (result === 'won') {
-        try {
-          await this.balanceService.createBalanceEntry(
-            exec.userId,
-            {
-              accountType: exec.accountType as 'real' | 'demo',
-              type:        BALANCE_TYPES.ORDER_PROFIT,
-              amount:      exec.amount + finalAmount,   // return stake + profit
-              description: `[FastTrade] WIN ${exec.assetSymbol} ${exec.direction} ` +
-                           `#${exec.orderId!.slice(-8)} (+${finalAmount.toLocaleString('id-ID')})`,
-            },
-            true,
-          );
-          this.balanceService.clearUserCache(exec.userId);
-        } catch (creditErr) {
-          this.logger.error(
-            `❌ [${exec.sessionId.slice(-8)}] Balance credit failed for WIN: ${creditErr.message}`,
-          );
-        }
-      }
+      // Balance credit sudah dilakukan oleh settleOrderInstant di BinaryOrdersService.
+      // TIDAK perlu credit ulang di sini untuk menghindari double credit.
+      // Note: BinaryOrdersService.settleOrderInstant sudah:
+      //   - Update order status ke WON/LOST
+      //   - Credit balance jika WON (amount + profit)
+      //   - Emit WebSocket orderSettled
 
-      // ── Update session state ─────────────────────────────────────────────
+      // Update session state & martingale
       const session = await this.fastTradeService.getSessionById(exec.sessionId);
       if (!session.isActive) {
-        this.logger.warn(
-          `⚠️ [${exec.sessionId.slice(-8)}] Session already stopped — skipping state update`,
-        );
+        this.logger.warn(`⚠️ [${exec.sessionId.slice(-8)}] Session already stopped`);
         return;
       }
 
       const tfSeconds = TIMEFRAME_SECONDS_MAP[session.timeframe];
       const { shouldStop, stopReason, session: updated, isMartingaleRetry, retryDirection } =
         await this.fastTradeService.applyOrderResult(
-          exec.sessionId,
-          result,
-          finalAmount,
-          exec.candleTimestamp,
-          tfSeconds,
+          exec.sessionId, result, finalAmount, exec.candleTimestamp, tfSeconds,
         );
 
-      // Stats
       if (result === 'won') this.totalWins++;
       else                   this.totalLosses++;
 
       this.logger.log(
-        `${result === 'won' ? '✅ WIN' : '❌ LOSS'} ` +
-        `[${exec.sessionId.slice(-8)}] ` +
+        `${result === 'won' ? '✅ WIN' : '❌ LOSS'} [${exec.sessionId.slice(-8)}] ` +
         `${exec.assetSymbol} ${exec.direction} | ` +
-        `Amount: ${exec.amount.toLocaleString('id-ID')} | ` +
+        `Rp ${exec.amount.toLocaleString('id-ID')} | ` +
         `${result === 'won' ? '+' : '-'}${result === 'won' ? finalAmount : exec.amount} | ` +
-        `Step: ${exec.martingaleStep} | ` +
-        `TotalPnL: ${updated.totalPnL.toLocaleString('id-ID')}`,
+        `Step: ${exec.martingaleStep} | TotalPnL: ${updated.totalPnL.toLocaleString('id-ID')}`,
       );
 
-      // ── Emit WebSocket ────────────────────────────────────────────────────
-      this.emitOrderSettled(exec.userId, exec.orderId!, result, settledProfit);
+      this.emitOrderSettled(exec.userId, exec.orderId!, result, finalAmount);
       this.emitSessionUpdate(updated);
 
       if (shouldStop) {
-        this.logger.log(
-          `🏁 [${exec.sessionId.slice(-8)}] Session completed: ${stopReason}`,
-        );
+        this.logger.log(`🏁 [${exec.sessionId.slice(-8)}] Session completed: ${stopReason}`);
         return;
       }
 
-      // ── Martingale retry: immediately place order in SAME direction ────────
-      // (no candle read — direction follows the original losing trade)
+      // Martingale retry: pasang order langsung tanpa tunggu candle baru
       if (isMartingaleRetry && retryDirection) {
         this.logger.log(
           `🔄 [${exec.sessionId.slice(-8)}] Martingale retry step ${updated.currentStep} | ` +
-          `Direction: ${retryDirection} (same as losing trade) | ` +
-          `Amount: ${updated.currentAmount.toLocaleString('id-ID')}`,
+          `${retryDirection} | Rp ${updated.currentAmount.toLocaleString('id-ID')}`,
         );
-
         try {
           await this.fastTradeService.markPlacingOrder(exec.sessionId);
-
           const { orderId: newOrderId, entryPrice: newEntry, executionId: newExecId, error: retryError } =
             await this.placeBinaryOrder(
-              updated,            // session now has updated currentStep + currentAmount
-              retryDirection,     // SAME direction as the losing order
-              exec.candleTimestamp,
-              exec.candleDirection,
+              updated, retryDirection, exec.candleTimestamp, exec.candleDirection,
             );
 
           if (retryError || !newOrderId) {
-            this.logger.error(`❌ [${exec.sessionId.slice(-8)}] Martingale retry failed: ${retryError}`);
+            this.logger.error(`❌ Martingale retry failed: ${retryError}`);
             await this.rescheduleSession(exec.sessionId);
             return;
           }
 
           await this.fastTradeService.markWaitingResult(
-            exec.sessionId,
-            newOrderId,
-            newExecId!,
-            retryDirection,   // keep tracking direction for further martingale
+            exec.sessionId, newOrderId, newExecId!, retryDirection,
           );
-
           this.totalOrdersPlaced++;
           this.logger.log(
-            `✅ [${exec.sessionId.slice(-8)}] Martingale order placed: ${newOrderId.slice(-8)} | ` +
+            `✅ [${exec.sessionId.slice(-8)}] Martingale order: ${newOrderId.slice(-8)} | ` +
             `${retryDirection} @ ${newEntry} | Step: ${updated.currentStep}`,
           );
           this.emitSessionUpdate(updated);
@@ -640,13 +520,10 @@ export class FastTradeExecutorService {
           this.logger.error(`❌ Martingale retry error: ${retryErr.message}`);
           await this.rescheduleSession(exec.sessionId);
         }
-        return;
       }
-
     } catch (error) {
       this.logger.error(
-        `❌ resolveExecution error [${exec.id.slice(-8)}]: ${error.message}`,
-        error.stack,
+        `❌ resolveExecution [${exec.id.slice(-8)}]: ${error.message}`, error.stack,
       );
     } finally {
       this.pollingLock.delete(exec.id);
@@ -671,21 +548,15 @@ export class FastTradeExecutorService {
     try {
       const userId = (session as FastTradeSession).userId;
       if (!userId) return;
-
       this.tradingGateway.emitOrderUpdate(userId, {
-        type:      'fast_trade_session_update',
+        type: 'fast_trade_session_update',
         sessionId: (session as FastTradeSession).id,
-        data:      session,
+        data: session,
       });
     } catch {}
   }
 
-  private emitOrderSettled(
-    userId: string,
-    orderId: string,
-    result: 'won' | 'lost',
-    profit: number,
-  ): void {
+  private emitOrderSettled(userId: string, orderId: string, result: 'won' | 'lost', profit: number): void {
     try {
       this.tradingGateway.emitOrderSettled(userId, {
         orderId,
@@ -696,30 +567,26 @@ export class FastTradeExecutorService {
     } catch {}
   }
 
-  private now(): string {
-    return TimezoneUtil.toISOString();
-  }
-
-  private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
-
-  // ══════════════════════════════════════════════════════════════════════════
-  // MONITORING
-  // ══════════════════════════════════════════════════════════════════════════
+  private now(): string { return TimezoneUtil.toISOString(); }
+  private sleep(ms: number): Promise<void> { return new Promise(r => setTimeout(r, ms)); }
 
   getStats() {
     return {
-      totalCycles:         this.totalCycles,
-      totalOrdersPlaced:   this.totalOrdersPlaced,
-      totalWins:           this.totalWins,
-      totalLosses:         this.totalLosses,
-      winRate:             this.totalOrdersPlaced > 0
+      totalCycles:           this.totalCycles,
+      totalOrdersPlaced:     this.totalOrdersPlaced,
+      totalWins:             this.totalWins,
+      totalLosses:           this.totalLosses,
+      winRate:               this.totalOrdersPlaced > 0
         ? ((this.totalWins / this.totalOrdersPlaced) * 100).toFixed(1) + '%'
         : 'N/A',
       activeProcessingLocks: this.processingLock.size,
       activePollingLocks:    this.pollingLock.size,
-      cronInterval:          '2s (candle tick) + 5s (result poll)',
+      cronInterval:          '1s tick + 1s result poll',
+      fixes: [
+        '#1 registerExternalOrder → instant settlement via pendingOrderRegistry',
+        '#2 Expiry = entry + tfSeconds (no extra +1min)',
+        '#3 Cron tiap 1s (was 2s)',
+      ],
     };
   }
 }

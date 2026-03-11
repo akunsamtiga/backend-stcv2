@@ -1,4 +1,8 @@
 // src/fast-trade/fast-trade.module.ts
+//
+// ✅ FIX: Tambah BinaryOrdersModule ke imports
+//    Diperlukan agar FastTradeExecutorService bisa inject BinaryOrdersService
+//    untuk memanggil registerExternalOrder() setelah order dibuat.
 
 import { Module, forwardRef } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
@@ -11,6 +15,7 @@ import { AssetsModule } from '../assets/assets.module';
 import { BalanceModule } from '../balance/balance.module';
 import { UserModule } from '../user/user.module';
 import { WebSocketModule } from '../websocket/websocket.module';
+import { BinaryOrdersModule } from '../binary-orders/binary-orders.module'; // ✅ FIX
 
 @Module({
   imports: [
@@ -21,6 +26,7 @@ import { WebSocketModule } from '../websocket/websocket.module';
     UserModule,
     forwardRef(() => AssetsModule),
     forwardRef(() => WebSocketModule),
+    forwardRef(() => BinaryOrdersModule), // ✅ FIX: forwardRef untuk hindari circular dep
   ],
   controllers: [FastTradeController],
   providers: [
