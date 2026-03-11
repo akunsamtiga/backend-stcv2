@@ -204,6 +204,11 @@ export interface AffiliatorProgram {
   lockedCommissionBalance: number; // Accumulated before unlock (reserved / informational)
   isCommissionUnlocked: boolean;
 
+  // ── Autotrade ──────────────────────────────────────────────
+  autotradeEnabled: boolean;          // ← TAMBAHKAN INI
+  autotradeWithdrawalFee: number;     // ← TAMBAHKAN INI (default 0, jika aktif = 5)
+  // ──────────────────────────────────────────────────────────
+
   // Stats
   totalInvited: number;
   totalInvitedDeposited: number;

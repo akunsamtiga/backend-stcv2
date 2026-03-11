@@ -29,6 +29,7 @@ import {
   ApproveCommissionWithdrawalDto,
   GetCommissionWithdrawalsQueryDto,
 } from './dto/affiliate-commission-withdrawal.dto';
+import { AddAutotradeWhitelistDto, GetAutotradeWhitelistQueryDto } from './dto/autotrade-whitelist.dto';
 
 // ─── Detailed invitee stats (enriched per invitee) ───────────────────────────
 interface InviteeStats {
@@ -114,15 +115,18 @@ export class AffiliateProgramService {
 
     const unlockThreshold = dto.unlockThreshold ?? AFFILIATE_PROGRAM_CONFIG.DEFAULT_UNLOCK_THRESHOLD;
 
+    // ── Autotrade config ──────────────────────────────────────────────────
+    const autotradeEnabled  = dto.enableAutotrade === true;
+    const autotradeWithdrawalFee = autotradeEnabled ? 5 : 0; // 5% fee jika autotrade aktif
+
     // NOTE: revenueSharePercentage dari DTO diabaikan — komisi dihitung DINAMIS
-    // berdasarkan fase (baru/lama) dan jumlah active invitees (lihat calculateCurrentCommissionRate)
     const program: AffiliatorProgram = {
       id: programId,
       userId,
       userEmail: user.email,
       affiliateCode,
       isActive: true,
-      revenueSharePercentage: AFFILIATE_COMMISSION_TIERS.NEW_AFFILIATE_RATE, // snapshot awal, akan berubah dinamis
+      revenueSharePercentage: AFFILIATE_COMMISSION_TIERS.NEW_AFFILIATE_RATE,
       unlockThreshold,
       commissionBalance: 0,
       lockedCommissionBalance: 0,
@@ -131,6 +135,10 @@ export class AffiliateProgramService {
       totalInvitedDeposited: 0,
       totalCommissionEarned: 0,
       totalCommissionWithdrawn: 0,
+      // ── autotrade fields ──
+      autotradeEnabled,
+      autotradeWithdrawalFee,
+      // ─────────────────────
       assignedBy: adminId,
       assignedAt: timestamp,
       createdAt: timestamp,
@@ -163,7 +171,6 @@ export class AffiliateProgramService {
 
       initialBalanceEntry = { id: balanceId, amount: dto.initialRealBalance };
 
-      // ── Update status user berdasarkan total deposit baru ───────────────
       if (this.userStatusService) {
         try {
           const statusResult = await this.userStatusService.updateUserStatus(userId);
@@ -182,11 +189,10 @@ export class AffiliateProgramService {
         `💰 Saldo awal Rp ${dto.initialRealBalance.toLocaleString('id-ID')} ditambahkan ke akun real ${user.email} (balance id: ${balanceId})`
       );
     }
-    // ─────────────────────────────────────────────────────────────────────
 
     this.logger.log(
-      `✅ User ${user.email} dijadikan affiliator (kode: ${affiliateCode}, unlock: ${unlockThreshold}) oleh admin ${adminId}. ` +
-      `Fase awal: NEW (80% flat selama ${AFFILIATE_COMMISSION_TIERS.NEW_AFFILIATE_MONTHS} bulan pertama)`
+      `✅ User ${user.email} dijadikan affiliator (kode: ${affiliateCode}, unlock: ${unlockThreshold}` +
+      `${autotradeEnabled ? ', autotrade: AKTIF (fee 5%)' : ''}) oleh admin ${adminId}.`
     );
 
     return {
@@ -201,11 +207,19 @@ export class AffiliateProgramService {
         isCommissionUnlocked: false,
         assignedAt: timestamp,
         shareLink: `https://stouch.id/ref/${affiliateCode}`,
+        autotradeEnabled,
+        autotradeWithdrawalFee,
         commissionSystem: {
           currentPhase: 'new',
           description: `Fase Baru: ${AFFILIATE_COMMISSION_TIERS.NEW_AFFILIATE_RATE}% flat dari semua loss selama ${AFFILIATE_COMMISSION_TIERS.NEW_AFFILIATE_MONTHS} bulan pertama.`,
           afterNewPhase: 'Fase Lama: komisi berbasis jumlah user aktif per bulan (50%–80%).',
         },
+        ...(autotradeEnabled && {
+          autotradeInfo: {
+            message: 'Fitur autotrade aktif. Kelola whitelist user di endpoint /affiliate-program/autotrade/whitelist',
+            withdrawalFeeNote: 'Setiap penarikan komisi akan dikenakan fee 5% karena autotrade aktif.',
+          },
+        }),
       },
       ...(initialBalanceEntry && {
         initialBalance: {
@@ -271,8 +285,6 @@ export class AffiliateProgramService {
     const program = programDoc.data() as AffiliatorProgram;
     const updates: any = { updatedAt: new Date().toISOString(), updatedBy: adminId };
 
-    // NOTE: revenueSharePercentage tidak digunakan dalam sistem baru (komisi dinamis),
-    // tapi field ini tetap bisa di-update untuk kompatibilitas dengan tampilan dashboard.
     if (dto.revenueSharePercentage !== undefined) {
       updates.revenueSharePercentage = dto.revenueSharePercentage;
     }
@@ -283,6 +295,11 @@ export class AffiliateProgramService {
     }
     if (dto.isActive !== undefined) {
       updates.isActive = dto.isActive;
+    }
+    // ── Toggle autotrade ──
+    if (dto.enableAutotrade !== undefined) {
+      updates.autotradeEnabled = dto.enableAutotrade;
+      updates.autotradeWithdrawalFee = dto.enableAutotrade ? 5 : 0;
     }
 
     await programDoc.ref.update(updates);
@@ -344,6 +361,7 @@ export class AffiliateProgramService {
         totalAffiliators: total,
         activeAffiliators: programs.filter(p => p.isActive).length,
         unlockedPrograms: programs.filter(p => p.isCommissionUnlocked).length,
+        autotradeEnabledCount: programs.filter(p => (p as any).autotradeEnabled).length,
         totalCommissionPaid: programs.reduce((s, p) => s + (p.totalCommissionEarned || 0), 0),
       },
     };
@@ -389,6 +407,21 @@ export class AffiliateProgramService {
       (d: FirebaseFirestore.QueryDocumentSnapshot) => d.data() as AffiliateCommissionLog
     );
 
+    // ── Ambil jumlah whitelist jika autotrade aktif ───────────────────────
+    let autotradeStats: any = null;
+    if ((program as any).autotradeEnabled) {
+      const wlSnap = await db
+        .collection(COLLECTIONS.AUTOTRADE_WHITELIST)
+        .where('affiliatorId', '==', userId)
+        .where('isActive', '==', true)
+        .get();
+      autotradeStats = {
+        enabled: true,
+        withdrawalFeePercent: (program as any).autotradeWithdrawalFee ?? 5,
+        whitelistedUserCount: wlSnap.size,
+      };
+    }
+
     const depositedInvites = invites.filter(i => i.hasDeposited);
     const pendingInvites = invites.filter(i => !i.hasDeposited);
     const unlockCount = Math.min(depositedInvites.length, program.unlockThreshold);
@@ -403,6 +436,7 @@ export class AffiliateProgramService {
         shareLink: `https://stouch.id/ref/${program.affiliateCode}`,
       },
       commissionPhase: phaseInfo,
+      autotrade: autotradeStats,
       stats: {
         totalInvited: invites.length,
         registeredNoDeposit: pendingInvites.length,
@@ -461,12 +495,29 @@ export class AffiliateProgramService {
 
     const phaseInfo = await this.getPhaseInfo(program);
 
+    // ── Autotrade info jika aktif ─────────────────────────────────────────
+    let autotradeInfo: any = null;
+    if ((program as any).autotradeEnabled) {
+      const wlSnap = await db
+        .collection(COLLECTIONS.AUTOTRADE_WHITELIST)
+        .where('affiliatorId', '==', userId)
+        .where('isActive', '==', true)
+        .get();
+      autotradeInfo = {
+        enabled: true,
+        withdrawalFeePercent: (program as any).autotradeWithdrawalFee ?? 5,
+        whitelistedUserCount: wlSnap.size,
+        message: 'Kelola whitelist user autotrade Anda di menu Whitelist Autotrade.',
+      };
+    }
+
     return {
       affiliateCode: program.affiliateCode,
       shareLink: `https://stouch.id/ref/${program.affiliateCode}`,
       isCommissionUnlocked: isUnlocked,
       revenueSharePercentage: program.revenueSharePercentage,
       commissionPhase: phaseInfo,
+      autotrade: autotradeInfo,
       balances: {
         commissionBalance: program.commissionBalance,
         lockedCommissionBalance: program.lockedCommissionBalance ?? 0,
@@ -622,6 +673,9 @@ export class AffiliateProgramService {
     const isUnlocked = depositedInvitesCount >= program.unlockThreshold;
     const phaseInfo = await this.getPhaseInfo(program);
 
+    const autotradeEnabled = (program as any).autotradeEnabled ?? false;
+    const autotradeWithdrawalFee = (program as any).autotradeWithdrawalFee ?? 0;
+
     return {
       commissionBalance: program.commissionBalance,
       isCommissionUnlocked: isUnlocked,
@@ -630,6 +684,13 @@ export class AffiliateProgramService {
       totalEarned: program.totalCommissionEarned,
       totalWithdrawn: program.totalCommissionWithdrawn || 0,
       commissionPhase: phaseInfo,
+      withdrawalInfo: autotradeEnabled
+        ? {
+            feeApplied: true,
+            feePercent: autotradeWithdrawalFee,
+            note: `Fee ${autotradeWithdrawalFee}% dikenakan pada setiap penarikan karena fitur autotrade aktif.`,
+          }
+        : { feeApplied: false },
       unlockStatus: {
         depositedInvites: depositedInvitesCount,
         required: program.unlockThreshold,
@@ -722,6 +783,12 @@ export class AffiliateProgramService {
       );
     }
 
+    // ── Kalkulasi fee autotrade ───────────────────────────────────────────
+    const autotradeEnabled = (program as any).autotradeEnabled ?? false;
+    const feePercent = autotradeEnabled ? ((program as any).autotradeWithdrawalFee ?? 5) : 0;
+    const feeAmount = autotradeEnabled ? Math.round(dto.amount * feePercent / 100) : 0;
+    const netAmount = dto.amount - feeAmount;
+
     const withdrawalId = await this.firebaseService.generateId(
       COLLECTIONS.AFFILIATE_COMMISSION_WITHDRAWALS,
     );
@@ -741,6 +808,12 @@ export class AffiliateProgramService {
       },
       commissionBalanceAtRequest: program.commissionBalance,
       note: dto.note,
+      // ── autotrade fee fields ──
+      ...(autotradeEnabled && {
+        autotradeFeePercent: feePercent,
+        autotradeFeeAmount: feeAmount,
+        netAmountAfterFee: netAmount,
+      }),
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -756,14 +829,23 @@ export class AffiliateProgramService {
     });
 
     this.logger.log(
-      `✅ Penarikan komisi diajukan: affiliator ${userId}, Rp ${dto.amount.toLocaleString('id-ID')}, id: ${withdrawalId}`,
+      `✅ Penarikan komisi diajukan: affiliator ${userId}, Rp ${dto.amount.toLocaleString('id-ID')}` +
+      `${autotradeEnabled ? ` (fee ${feePercent}% = Rp ${feeAmount.toLocaleString('id-ID')}, net: Rp ${netAmount.toLocaleString('id-ID')})` : ''}, id: ${withdrawalId}`,
     );
 
     return {
       message: 'Request penarikan komisi berhasil diajukan',
       withdrawal: {
         id: withdrawalId,
-        amount: dto.amount,
+        requestedAmount: dto.amount,
+        ...(autotradeEnabled && {
+          autotradeFee: {
+            percent: feePercent,
+            amount: feeAmount,
+            note: `Fee ${feePercent}% dikenakan karena fitur autotrade aktif`,
+          },
+          netAmount,
+        }),
         status: COMMISSION_WITHDRAWAL_STATUS.PENDING,
         bankAccount: withdrawal.bankAccount,
         commissionBalanceRemaining: program.commissionBalance - dto.amount,
@@ -814,6 +896,9 @@ export class AffiliateProgramService {
       withdrawals: withdrawals.map(w => ({
         id: w.id,
         amount: w.amount,
+        netAmountAfterFee: (w as any).netAmountAfterFee,
+        autotradeFeeAmount: (w as any).autotradeFeeAmount,
+        autotradeFeePercent: (w as any).autotradeFeePercent,
         status: w.status,
         bankAccount: w.bankAccount,
         note: w.note,
@@ -962,15 +1047,22 @@ export class AffiliateProgramService {
     const timestamp = new Date().toISOString();
 
     if (dto.approve) {
+      // ── Hitung net amount setelah fee autotrade (jika ada) ───────────────
+      const feeAmount: number = (withdrawal as any).autotradeFeeAmount ?? 0;
+      const netAmount: number = (withdrawal as any).netAmountAfterFee ?? withdrawal.amount;
+
       const balanceId = await this.firebaseService.generateId(COLLECTIONS.BALANCE);
 
+      // Balance entry menggunakan net amount (setelah dipotong fee)
       await db.collection(COLLECTIONS.BALANCE).doc(balanceId).set({
         id: balanceId,
         user_id: withdrawal.affiliatorId,
         accountType: BALANCE_ACCOUNT_TYPE.REAL,
         type: BALANCE_TYPES.AFFILIATE_COMMISSION,
-        amount: withdrawal.amount,
-        description: `Penarikan komisi disetujui — ${withdrawal.bankAccount.bankName} ${withdrawal.bankAccount.accountNumber}`,
+        amount: netAmount,
+        description: feeAmount > 0
+          ? `Penarikan komisi disetujui (setelah fee autotrade ${(withdrawal as any).autotradeFeePercent ?? 5}% = Rp ${feeAmount.toLocaleString('id-ID')}) — ${withdrawal.bankAccount.bankName} ${withdrawal.bankAccount.accountNumber}`
+          : `Penarikan komisi disetujui — ${withdrawal.bankAccount.bankName} ${withdrawal.bankAccount.accountNumber}`,
         createdAt: timestamp,
       });
 
@@ -996,14 +1088,18 @@ export class AffiliateProgramService {
       }
 
       this.logger.log(
-        `✅ Penarikan komisi DISETUJUI: ${withdrawalId} | Affiliator: ${withdrawal.userEmail} | Rp ${withdrawal.amount.toLocaleString('id-ID')}`
+        `✅ Penarikan komisi DISETUJUI: ${withdrawalId} | Affiliator: ${withdrawal.userEmail} | ` +
+        `Request: Rp ${withdrawal.amount.toLocaleString('id-ID')}` +
+        (feeAmount > 0 ? ` | Fee: Rp ${feeAmount.toLocaleString('id-ID')} | Net: Rp ${netAmount.toLocaleString('id-ID')}` : '')
       );
 
       return {
         message: 'Penarikan komisi disetujui dan berhasil diproses',
         withdrawal: {
           id: withdrawalId,
-          amount: withdrawal.amount,
+          requestedAmount: withdrawal.amount,
+          feeAmount: feeAmount > 0 ? feeAmount : undefined,
+          netAmount,
           status: COMMISSION_WITHDRAWAL_STATUS.COMPLETED,
           affiliatorEmail: withdrawal.userEmail,
           bankAccount: withdrawal.bankAccount,
@@ -1197,17 +1293,7 @@ export class AffiliateProgramService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // ORDER LOST HOOK — komisi dihitung DINAMIS berdasarkan fase & active users
-  //
-  // Fase 1 (< 2 bulan sejak assignedAt):
-  //   → Flat 80% dari semua invitee yang sudah deposit
-  //
-  // Fase 2 (≥ 2 bulan sejak assignedAt):
-  //   → Tier berdasarkan jumlah invitee AKTIF bulan ini:
-  //       0–50 aktif  = 50%
-  //      51–70 aktif  = 60%
-  //      71–100 aktif = 70%
-  //     101+   aktif  = 80%
+  // ORDER LOST HOOK
   // ─────────────────────────────────────────────────────────────────────────
 
   @OnEvent('affiliate.order.lost')
@@ -1239,7 +1325,6 @@ export class AffiliateProgramService {
 
       if (!program.isActive) return;
 
-      // ── Hitung komisi dinamis ─────────────────────────────────────────────
       const dynamicRate = await this.calculateCurrentCommissionRate(program);
       const lossAmount = Math.abs(order.profit || order.amount);
       const commissionAmount = (lossAmount * dynamicRate) / 100;
@@ -1267,7 +1352,6 @@ export class AffiliateProgramService {
       await programDoc.ref.update({
         commissionBalance: program.commissionBalance + commissionAmount,
         totalCommissionEarned: (program.totalCommissionEarned || 0) + commissionAmount,
-        // Update snapshot of current rate so dashboard shows latest value
         revenueSharePercentage: dynamicRate,
         updatedAt: timestamp,
       });
@@ -1314,42 +1398,289 @@ export class AffiliateProgramService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
+  // AUTOTRADE WHITELIST — Fitur baru
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /** Ambil whitelist milik affiliator */
+  async getAutotradeWhitelist(userId: string, query: GetAutotradeWhitelistQueryDto) {
+    const db = this.firebaseService.getFirestore();
+
+    const programSnap = await db
+      .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
+      .where('userId', '==', userId)
+      .where('isActive', '==', true)
+      .limit(1)
+      .get();
+
+    if (programSnap.empty) {
+      throw new ForbiddenException('Anda bukan affiliator aktif');
+    }
+
+    const program = programSnap.docs[0].data() as any;
+
+    if (!program.autotradeEnabled) {
+      throw new ForbiddenException('Fitur autotrade tidak diaktifkan untuk program Anda. Hubungi super admin.');
+    }
+
+    const page  = query.page  || 1;
+    const limit = query.limit || 20;
+    const offset = (page - 1) * limit;
+
+    const totalSnap = await db
+      .collection(COLLECTIONS.AUTOTRADE_WHITELIST)
+      .where('affiliatorId', '==', userId)
+      .where('isActive', '==', true)
+      .get();
+
+    const total = totalSnap.size;
+
+    const listSnap = await db
+      .collection(COLLECTIONS.AUTOTRADE_WHITELIST)
+      .where('affiliatorId', '==', userId)
+      .where('isActive', '==', true)
+      .orderBy('addedAt', 'desc')
+      .offset(offset)
+      .limit(limit)
+      .get();
+
+    const whitelist = listSnap.docs.map(d => d.data());
+
+    return {
+      autotradeEnabled: true,
+      withdrawalFeePercent: program.autotradeWithdrawalFee ?? 5,
+      whitelist,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+      totalWhitelisted: total,
+    };
+  }
+
+  /** Tambah user ke whitelist */
+  async addToAutotradeWhitelist(affiliatorUserId: string, dto: AddAutotradeWhitelistDto) {
+    const db = this.firebaseService.getFirestore();
+
+    const programSnap = await db
+      .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
+      .where('userId', '==', affiliatorUserId)
+      .where('isActive', '==', true)
+      .limit(1)
+      .get();
+
+    if (programSnap.empty) {
+      throw new ForbiddenException('Anda bukan affiliator aktif');
+    }
+
+    const program = programSnap.docs[0].data() as any;
+
+    if (!program.autotradeEnabled) {
+      throw new ForbiddenException('Fitur autotrade tidak diaktifkan untuk program Anda');
+    }
+
+    const targetUserDoc = await db.collection(COLLECTIONS.USERS).doc(dto.userId).get();
+    if (!targetUserDoc.exists) {
+      throw new NotFoundException(`User dengan ID ${dto.userId} tidak ditemukan`);
+    }
+    const targetUser = targetUserDoc.data() as any;
+
+    const existingSnap = await db
+      .collection(COLLECTIONS.AUTOTRADE_WHITELIST)
+      .where('affiliatorId', '==', affiliatorUserId)
+      .where('userId', '==', dto.userId)
+      .where('isActive', '==', true)
+      .limit(1)
+      .get();
+
+    if (!existingSnap.empty) {
+      throw new ConflictException(`User ${dto.userId} sudah ada di whitelist Anda`);
+    }
+
+    const timestamp = new Date().toISOString();
+    const entryId = await this.firebaseService.generateId(COLLECTIONS.AUTOTRADE_WHITELIST);
+
+    const entry = {
+      id: entryId,
+      affiliatorId: affiliatorUserId,
+      programId: programSnap.docs[0].id,
+      userId: dto.userId,
+      userEmail: targetUser?.email || '',
+      note: dto.note || '',
+      isActive: true,
+      addedAt: timestamp,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+
+    await db.collection(COLLECTIONS.AUTOTRADE_WHITELIST).doc(entryId).set(entry);
+
+    this.logger.log(`✅ User ${dto.userId} ditambahkan ke whitelist autotrade affiliator ${affiliatorUserId}`);
+
+    return {
+      message: `User ${dto.userId} berhasil ditambahkan ke whitelist autotrade`,
+      entry,
+    };
+  }
+
+  /** Hapus user dari whitelist */
+  async removeFromAutotradeWhitelist(affiliatorUserId: string, targetUserId: string) {
+    const db = this.firebaseService.getFirestore();
+
+    const programSnap = await db
+      .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
+      .where('userId', '==', affiliatorUserId)
+      .where('isActive', '==', true)
+      .limit(1)
+      .get();
+
+    if (programSnap.empty) {
+      throw new ForbiddenException('Anda bukan affiliator aktif');
+    }
+
+    if (!(programSnap.docs[0].data() as any).autotradeEnabled) {
+      throw new ForbiddenException('Fitur autotrade tidak diaktifkan');
+    }
+
+    const entrySnap = await db
+      .collection(COLLECTIONS.AUTOTRADE_WHITELIST)
+      .where('affiliatorId', '==', affiliatorUserId)
+      .where('userId', '==', targetUserId)
+      .where('isActive', '==', true)
+      .limit(1)
+      .get();
+
+    if (entrySnap.empty) {
+      throw new NotFoundException(`User ${targetUserId} tidak ditemukan di whitelist Anda`);
+    }
+
+    await entrySnap.docs[0].ref.update({
+      isActive: false,
+      removedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    this.logger.log(`🗑️ User ${targetUserId} dihapus dari whitelist autotrade affiliator ${affiliatorUserId}`);
+
+    return { message: `User ${targetUserId} berhasil dihapus dari whitelist autotrade` };
+  }
+
+  /** Cek apakah user ada di whitelist affiliator ini */
+  async checkAutotradeWhitelist(affiliatorUserId: string, targetUserId: string) {
+    const db = this.firebaseService.getFirestore();
+
+    const programSnap = await db
+      .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
+      .where('userId', '==', affiliatorUserId)
+      .where('isActive', '==', true)
+      .limit(1)
+      .get();
+
+    if (programSnap.empty) {
+      throw new ForbiddenException('Anda bukan affiliator aktif');
+    }
+
+    if (!(programSnap.docs[0].data() as any).autotradeEnabled) {
+      throw new ForbiddenException('Fitur autotrade tidak diaktifkan');
+    }
+
+    const entrySnap = await db
+      .collection(COLLECTIONS.AUTOTRADE_WHITELIST)
+      .where('affiliatorId', '==', affiliatorUserId)
+      .where('userId', '==', targetUserId)
+      .where('isActive', '==', true)
+      .limit(1)
+      .get();
+
+    return {
+      userId: targetUserId,
+      isWhitelisted: !entrySnap.empty,
+    };
+  }
+
+  /**
+   * Validasi apakah userId diizinkan login autotrade.
+   * Dipanggil dari AuthService.autotradeLogin().
+   * Cari di semua whitelist affiliator yang aktif, atau filter by affiliateCode jika diberikan.
+   */
+  async validateAutotradeLogin(
+    userId: string,
+    affiliateCode?: string,
+  ): Promise<{
+    allowed: boolean;
+    affiliatorId?: string;
+    affiliateCode?: string;
+    reason?: string;
+  }> {
+    const db = this.firebaseService.getFirestore();
+
+    let affiliatorId: string | undefined;
+
+    if (affiliateCode) {
+      const programSnap = await db
+        .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
+        .where('affiliateCode', '==', affiliateCode.toUpperCase())
+        .where('isActive', '==', true)
+        .where('autotradeEnabled', '==', true)
+        .limit(1)
+        .get();
+
+      if (programSnap.empty) {
+        return {
+          allowed: false,
+          reason: 'Kode affiliate tidak valid atau autotrade tidak aktif untuk kode ini',
+        };
+      }
+
+      affiliatorId = programSnap.docs[0].data().userId;
+    }
+
+    let query = db
+      .collection(COLLECTIONS.AUTOTRADE_WHITELIST)
+      .where('userId', '==', userId)
+      .where('isActive', '==', true) as any;
+
+    if (affiliatorId) {
+      query = query.where('affiliatorId', '==', affiliatorId);
+    }
+
+    const snap = await query.limit(1).get();
+
+    if (snap.empty) {
+      return {
+        allowed: false,
+        reason: affiliateCode
+          ? `User ID ${userId} tidak terdaftar di whitelist autotrade kode ${affiliateCode}`
+          : `User ID ${userId} tidak terdaftar di whitelist autotrade manapun`,
+      };
+    }
+
+    const entry = snap.docs[0].data();
+    return {
+      allowed: true,
+      affiliatorId: entry.affiliatorId,
+      affiliateCode,
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
   // PRIVATE: DYNAMIC COMMISSION RATE ENGINE
   // ─────────────────────────────────────────────────────────────────────────
 
-  /**
-   * Menentukan persentase komisi saat ini berdasarkan fase affiliator.
-   *
-   * FASE 1 — Affiliator Baru (< 2 bulan sejak assignedAt):
-   *   Flat 80% tanpa memandang jumlah user aktif.
-   *
-   * FASE 2 — Affiliator Lama (≥ 2 bulan sejak assignedAt):
-   *   Tier berdasarkan jumlah invitee AKTIF (transaksi real dalam 30 hari):
-   *     0 – 50  aktif  → 50%
-   *    51 – 70  aktif  → 60%
-   *    71 – 100 aktif  → 70%
-   *   101+      aktif  → 80%
-   */
   private async calculateCurrentCommissionRate(program: AffiliatorProgram): Promise<number> {
     const assignedAt = new Date(program.assignedAt);
     const now = new Date();
-
-    // Hitung usia program dalam bulan
     const monthsActive = this.getMonthsDiff(assignedAt, now);
 
     if (monthsActive < AFFILIATE_COMMISSION_TIERS.NEW_AFFILIATE_MONTHS) {
-      // ── Fase 1: Affiliator baru ──────────────────────────────────────────
       return AFFILIATE_COMMISSION_TIERS.NEW_AFFILIATE_RATE;
     }
 
-    // ── Fase 2: Affiliator lama — hitung active invitees ──────────────────
     const activeCount = await this.countActiveInvitees(program);
     return this.getTieredCommissionRate(activeCount);
   }
 
-  /**
-   * Kembalikan CommissionPhaseInfo lengkap untuk ditampilkan di dashboard.
-   */
   async getPhaseInfo(program: AffiliatorProgram): Promise<CommissionPhaseInfo> {
     const assignedAt = new Date(program.assignedAt);
     const now = new Date();
@@ -1385,13 +1716,6 @@ export class AffiliateProgramService {
     };
   }
 
-  /**
-   * Tier komisi untuk Fase 2 berdasarkan jumlah user aktif.
-   *   0–50   → 50%
-   *  51–70   → 60%
-   *  71–100  → 70%
-   * 101+     → 80%
-   */
   private getTieredCommissionRate(activeUsers: number): number {
     for (const tier of AFFILIATE_COMMISSION_TIERS.TIERS) {
       if (activeUsers >= tier.minActive) {
@@ -1401,11 +1725,8 @@ export class AffiliateProgramService {
     return AFFILIATE_COMMISSION_TIERS.TIERS[AFFILIATE_COMMISSION_TIERS.TIERS.length - 1].rate;
   }
 
-  /**
-   * Info tier berikutnya (untuk display di dashboard).
-   */
   private getNextTierInfo(activeUsers: number): { needed: number; rate: number } | null {
-    const tiers = [...AFFILIATE_COMMISSION_TIERS.TIERS].reverse(); // ascending order
+    const tiers = [...AFFILIATE_COMMISSION_TIERS.TIERS].reverse();
     for (const tier of tiers) {
       if (activeUsers < tier.minActive) {
         return { needed: tier.minActive - activeUsers, rate: tier.rate };
@@ -1414,10 +1735,6 @@ export class AffiliateProgramService {
     return null;
   }
 
-  /**
-   * Hitung jumlah invitee yang AKTIF:
-   * Aktif = memiliki minimal 1 order di real account dalam 30 hari terakhir.
-   */
   private async countActiveInvitees(program: AffiliatorProgram): Promise<number> {
     const db = this.firebaseService.getFirestore();
 
@@ -1437,7 +1754,6 @@ export class AffiliateProgramService {
 
     const activeUserIds = new Set<string>();
 
-    // Firestore 'in' operator supports up to 30 values per query
     const BATCH_SIZE = 30;
     for (let i = 0; i < inviteeIds.length; i += BATCH_SIZE) {
       const batch = inviteeIds.slice(i, i + BATCH_SIZE);
@@ -1458,10 +1774,6 @@ export class AffiliateProgramService {
     return activeUserIds.size;
   }
 
-  /**
-   * Cek apakah 1 invitee tertentu aktif (ada order real dalam 30 hari).
-   * Digunakan saat enrich getMyInvites.
-   */
   private async isInviteeActive(inviteeId: string): Promise<boolean> {
     const db = this.firebaseService.getFirestore();
 
@@ -1480,9 +1792,6 @@ export class AffiliateProgramService {
     return !snap.empty;
   }
 
-  /**
-   * Selisih bulan antara dua tanggal (pembulatan ke bawah).
-   */
   private getMonthsDiff(from: Date, to: Date): number {
     const years = to.getFullYear() - from.getFullYear();
     const months = to.getMonth() - from.getMonth();

@@ -82,6 +82,24 @@ export class AssignAffiliatorDto {
   @IsNumber()
   @Min(1)
   initialRealBalance?: number;
+
+  // ── AUTOTRADE ─────────────────────────────────────────────────────────────
+
+  @ApiPropertyOptional({
+    example: false,
+    description: `Aktifkan fitur autotrade untuk affiliator ini.
+    
+    Jika diaktifkan:
+    - Affiliator dapat mengelola whitelist User ID yang bisa menggunakan bot autotrade miliknya.
+    - Bot autotrade hanya bisa login jika User ID-nya sudah diwhitelist affiliator ini.
+    - Setiap penarikan komisi affiliate akan dikenakan **fee 5%** sebagai biaya layanan autotrade.
+    
+    Jika tidak diaktifkan:
+    - Penarikan komisi berjalan normal tanpa fee tambahan.`,
+  })
+  @IsOptional()
+  @IsBoolean()
+  enableAutotrade?: boolean;
 }
 
 /** Super Admin: update affiliator program config */
@@ -117,6 +135,15 @@ export class UpdateAffiliatorConfigDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @ApiPropertyOptional({
+    example: false,
+    description: `Toggle fitur autotrade untuk program affiliator ini.
+    Mengaktifkan akan menambahkan fee 5% pada setiap penarikan komisi.`,
+  })
+  @IsOptional()
+  @IsBoolean()
+  enableAutotrade?: boolean;
 }
 
 /** Query parameters for listing affiliators */

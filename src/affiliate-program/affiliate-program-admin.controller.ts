@@ -39,11 +39,12 @@ export class AffiliateProgramAdminController {
     summary: 'Assign affiliator status to a user (Super Admin only)',
     description: `Grants a user the Affiliator role with a unique affiliate code.
     
-    The assigned user will:
-    - Receive a unique affiliate code to share with new users
-    - Start tracking invited users who register using that code
-    - Have their commission balance locked until unlockThreshold invited users deposit
-    - Earn revenueSharePercentage% of losses from post-unlock invited users
+    **Fitur Autotrade (opsional):**
+    Jika \`enableAutotrade: true\` dikirim di body:
+    - Affiliator mendapatkan akses ke endpoint whitelist autotrade (\`/affiliate-program/autotrade/whitelist\`)
+    - Affiliator dapat menambahkan/menghapus User ID yang boleh menggunakan bot autotrade miliknya
+    - Bot autotrade hanya bisa login jika User ID-nya ada di whitelist affiliator tersebut
+    - Setiap penarikan komisi akan dikenakan **fee 5%** sebagai biaya layanan autotrade
     
     **Optional:** Jika \`initialRealBalance\` diisi, saldo sejumlah tersebut akan langsung 
     ditambahkan ke akun real user pada saat assign.`,
@@ -67,18 +68,17 @@ export class AffiliateProgramAdminController {
             isCommissionUnlocked: false,
             assignedAt: '2024-01-01T00:00:00.000Z',
             shareLink: 'https://stouch.id/ref/AFFAB12CD34',
+            autotradeEnabled: true,
+            autotradeWithdrawalFee: 5,
+            autotradeInfo: {
+              message: 'Fitur autotrade aktif. Kelola whitelist user di endpoint /affiliate-program/autotrade/whitelist',
+              withdrawalFeeNote: 'Setiap penarikan komisi akan dikenakan fee 5% karena autotrade aktif.',
+            },
             commissionSystem: {
               currentPhase: 'new',
               description: 'Fase Baru: 80% flat dari semua loss selama 2 bulan pertama.',
               afterNewPhase: 'Fase Lama: komisi berbasis jumlah user aktif per bulan (50%–80%).',
             },
-          },
-          initialBalance: {
-            added: true,
-            amount: 500000,
-            balanceId: 'balance_789',
-            accountType: 'real',
-            message: 'Rp 500.000 berhasil ditambahkan ke akun real',
           },
         },
       },
@@ -114,9 +114,11 @@ export class AffiliateProgramAdminController {
   @Roles(USER_ROLES.SUPER_ADMIN)
   @ApiOperation({
     summary: 'Update affiliator program configuration (Super Admin only)',
-    description: `Modify revenue share percentage, unlock threshold, or active status for a specific affiliator.
+    description: `Modify revenue share percentage, unlock threshold, active status, atau toggle autotrade.
     
-    ⚠️ Changing the revenue share percentage takes effect immediately for future commission calculations.`,
+    **Toggle Autotrade:**
+    Kirim \`enableAutotrade: true\` untuk mengaktifkan, atau \`enableAutotrade: false\` untuk menonaktifkan.
+    Mengaktifkan autotrade akan otomatis set \`autotradeWithdrawalFee = 5\`.`,
   })
   @ApiParam({ name: 'programId', description: 'Affiliator program ID' })
   @ApiResponse({ status: 200, description: 'Configuration updated' })
@@ -133,7 +135,7 @@ export class AffiliateProgramAdminController {
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
   @ApiOperation({
     summary: 'Get all affiliators (Admin only)',
-    description: 'Returns a paginated list of all affiliator programs with summary statistics.',
+    description: 'Returns a paginated list of all affiliator programs with summary statistics. Includes autotradeEnabledCount.',
   })
   @ApiResponse({
     status: 200,
@@ -149,6 +151,8 @@ export class AffiliateProgramAdminController {
               userEmail: 'affiliator@example.com',
               affiliateCode: 'AFFAB12CD34',
               isActive: true,
+              autotradeEnabled: true,
+              autotradeWithdrawalFee: 5,
               revenueSharePercentage: 50,
               unlockThreshold: 5,
               isCommissionUnlocked: true,
@@ -165,6 +169,7 @@ export class AffiliateProgramAdminController {
             totalAffiliators: 5,
             activeAffiliators: 4,
             unlockedPrograms: 3,
+            autotradeEnabledCount: 2,
             totalCommissionPaid: 5400000,
           },
         },
@@ -179,7 +184,7 @@ export class AffiliateProgramAdminController {
   @Roles(USER_ROLES.SUPER_ADMIN, USER_ROLES.ADMIN)
   @ApiOperation({
     summary: 'Get affiliator detail with full stats (Admin only)',
-    description: 'Returns program config, invite list, commission logs, and earnings breakdown.',
+    description: 'Returns program config, invite list, commission logs, earnings breakdown, dan autotrade whitelist stats.',
   })
   @ApiParam({ name: 'userId', description: 'User ID of the affiliator' })
   @ApiResponse({ status: 200, description: 'Affiliator detail' })
@@ -204,50 +209,6 @@ export class AffiliateProgramAdminController {
     enum: ['pending', 'approved', 'rejected', 'completed'],
     description: 'Filter by status',
   })
-  @ApiResponse({
-    status: 200,
-    description: 'Commission withdrawal requests retrieved successfully',
-    schema: {
-      example: {
-        success: true,
-        data: {
-          withdrawals: [
-            {
-              id: 'acw_abc123',
-              affiliatorId: 'user_xyz',
-              programId: 'prog_abc',
-              amount: 150000,
-              status: 'pending',
-              userEmail: 'affiliator@example.com',
-              bankAccount: {
-                bankName: 'Bank BCA',
-                accountNumber: '1234567890',
-                accountHolderName: 'John Doe',
-              },
-              commissionBalanceAtRequest: 450000,
-              note: 'Penarikan bulan Januari',
-              createdAt: '2024-02-01T10:00:00.000Z',
-            },
-          ],
-          pagination: {
-            page: 1,
-            limit: 20,
-            total: 5,
-            totalPages: 1,
-          },
-          summary: {
-            total: 5,
-            pending: 2,
-            approved: 0,
-            rejected: 1,
-            completed: 2,
-            totalAmountPending: 300000,
-            totalAmountCompleted: 500000,
-          },
-        },
-      },
-    },
-  })
   getAllCommissionWithdrawals(@Query() query: GetCommissionWithdrawalsQueryDto) {
     return this.affiliateProgramService.getAllCommissionWithdrawals(query);
   }
@@ -259,15 +220,15 @@ export class AffiliateProgramAdminController {
     description: `Proses request penarikan komisi affiliate.
 
     **APPROVE (approve: true):**
-    - Membuat balance entry (type: \`affiliate_commission\`) di real account affiliator
-    - Real balance affiliator langsung bertambah sejumlah amount
+    - Jika affiliator memiliki autotrade aktif, **fee ${5}% otomatis dipotong dari amount**
+    - Balance entry dibuat dengan \`netAmountAfterFee\` (amount setelah fee)
+    - Real balance affiliator bertambah sejumlah \`netAmountAfterFee\`
     - Status withdrawal diubah menjadi **completed**
-    - Statistik \`totalCommissionWithdrawn\` di program diperbarui
     
     **REJECT (approve: false):**
     - Wajib menyertakan \`rejectionReason\`
-    - Saldo yang sudah di-reserve dikembalikan ke commission balance affiliator
-    - Status withdrawal diubah menjadi **rejected**`,
+    - Saldo dikembalikan ke commission balance affiliator
+    - Status diubah menjadi **rejected**`,
   })
   @ApiParam({ name: 'withdrawalId', description: 'Commission withdrawal request ID' })
   @ApiResponse({
@@ -277,10 +238,12 @@ export class AffiliateProgramAdminController {
       example: {
         success: true,
         data: {
-          message: 'Commission withdrawal approved and processed successfully',
+          message: 'Penarikan komisi disetujui dan berhasil diproses',
           withdrawal: {
             id: 'acw_abc123',
-            amount: 150000,
+            requestedAmount: 150000,
+            feeAmount: 7500,
+            netAmount: 142500,
             status: 'completed',
             affiliatorEmail: 'affiliator@example.com',
             bankAccount: {

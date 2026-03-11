@@ -9,6 +9,7 @@ import { AuthService } from './auth.service';
 import { GoogleAuthService } from './auth.service.google';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
+import { AutotradeLoginDto } from './dto/autotrade-login.dto';
 import { GoogleLoginDto } from './dto/google-login.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/user.decorator';
@@ -82,6 +83,65 @@ export class AuthController {
   @ApiResponse({ status: 401, description: 'Invalid credentials' })
   login(@Body() loginDto: LoginDto) {
     return this.authService.login(loginDto);
+  }
+
+  // ─── Autotrade Login ───────────────────────────────────────────────────────
+
+  @Post('autotrade-login')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Login khusus bot autotrade (with whitelist check)',
+    description: `Login untuk bot autotrade. Selain validasi email & password,
+sistem akan memverifikasi bahwa User ID terdaftar di whitelist autotrade.
+
+**Flow:**
+1. Validasi email + password (sama seperti login biasa)
+2. Periksa apakah User ID ada di whitelist autotrade
+   - Jika \`affiliateCode\` diisi → hanya cek whitelist affiliator tersebut
+   - Jika tidak diisi → cek di semua whitelist affiliator yang aktif
+3. Jika tidak diwhitelist → **403 Forbidden**
+4. Jika diwhitelist → kembalikan token + info affiliator
+
+⚠️ User yang tidak diwhitelist tidak bisa menggunakan fitur autotrade.`,
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Autotrade login berhasil, user diizinkan menggunakan bot',
+    schema: {
+      example: {
+        success: true,
+        data: {
+          message: 'Autotrade login successful',
+          user: {
+            id: '12345',
+            email: 'user@example.com',
+            role: 'user',
+            status: 'standard',
+            emailVerified: true,
+          },
+          autotrade: {
+            allowed: true,
+            affiliatorId: 'user_affiliator_xyz',
+            affiliateCode: 'AFFAB12CD34',
+          },
+          token: 'eyJ...',
+        },
+      },
+    },
+  })
+  @ApiResponse({ status: 401, description: 'Email/password salah atau akun nonaktif' })
+  @ApiResponse({
+    status: 403,
+    description: 'User ID tidak ada di whitelist autotrade',
+    schema: {
+      example: {
+        success: false,
+        error: 'User ID 12345 tidak terdaftar di whitelist autotrade kode AFFAB12CD34',
+      },
+    },
+  })
+  autotradeLogin(@Body() dto: AutotradeLoginDto) {
+    return this.authService.autotradeLogin(dto);
   }
 
   // ─── Email Verification ────────────────────────────────────────────────────

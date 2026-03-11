@@ -166,6 +166,7 @@ export const COLLECTIONS = {
   AFFILIATOR_INVITES: 'affiliator_invites',
   AFFILIATE_COMMISSION_LOGS: 'affiliate_commission_logs',
   AFFILIATE_COMMISSION_WITHDRAWALS: 'affiliate_commission_withdrawals',
+  AUTOTRADE_WHITELIST:             'autotrade_whitelist',   
 } as const;
 
 export const ASSET_TYPE = {

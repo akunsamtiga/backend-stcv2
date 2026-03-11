@@ -3,6 +3,7 @@
 import {
   Injectable, UnauthorizedException, ConflictException, Logger,
   OnModuleInit, BadRequestException, Optional, NotFoundException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -12,6 +13,7 @@ import { FirebaseService } from '../firebase/firebase.service';
 import { EmailService } from '../email/email.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
+import { AutotradeLoginDto } from './dto/autotrade-login.dto';
 import {
   COLLECTIONS, BALANCE_TYPES, BALANCE_ACCOUNT_TYPE,
   USER_ROLES, USER_STATUS, AFFILIATE_STATUS,
@@ -111,7 +113,7 @@ export class AuthService implements OnModuleInit {
 
       if (snapshot.empty) {
         const hashedPassword = await bcrypt.hash(password, this.BCRYPT_ROUNDS);
-        const userId = await this.firebaseService.generateNumericId(COLLECTIONS.USERS); // ✅ CHANGED: numeric random 8-digit ID
+        const userId = await this.firebaseService.generateNumericId(COLLECTIONS.USERS);
         const timestamp = new Date().toISOString();
 
         const defaultProfile: UserProfile = {
@@ -124,7 +126,7 @@ export class AuthService implements OnModuleInit {
             timezone: 'Asia/Jakarta',
           },
           verification: {
-            emailVerified: true, // Super admin langsung verified
+            emailVerified: true,
             phoneVerified: false,
             identityVerified: false,
             bankVerified: false,
@@ -193,13 +195,11 @@ export class AuthService implements OnModuleInit {
     const token = this.generateEmailVerificationToken();
     const expiresAt = new Date(Date.now() + this.EMAIL_VERIFY_TOKEN_TTL_MS).toISOString();
 
-    // Simpan token ke Firestore
     await db.collection(COLLECTIONS.USERS).doc(userId).update({
       emailVerificationToken: token,
       emailVerificationTokenExpiresAt: expiresAt,
     });
 
-    // Kirim email (non-blocking, tidak throw jika gagal)
     try {
       await this.emailService.sendEmailVerification(email, token);
     } catch (error) {
@@ -226,18 +226,15 @@ export class AuthService implements OnModuleInit {
     const userDoc = snapshot.docs[0];
     const userData = userDoc.data();
 
-    // Cek apakah sudah verified
     if (userData.profile?.verification?.emailVerified === true) {
       return { message: 'Email sudah terverifikasi sebelumnya' };
     }
 
-    // Cek expiry token
     const expiresAt = new Date(userData.emailVerificationTokenExpiresAt);
     if (new Date() > expiresAt) {
       throw new BadRequestException('Token verifikasi sudah kadaluarsa. Silakan minta kirim ulang.');
     }
 
-    // Update status verified & hapus token
     await userDoc.ref.update({
       'profile.verification.emailVerified': true,
       'profile.verification.verificationLevel': 'basic',
@@ -246,7 +243,6 @@ export class AuthService implements OnModuleInit {
       updatedAt: new Date().toISOString(),
     });
 
-    // Invalidate cache
     this.userCache.delete(userDoc.id);
 
     this.logger.log(`✅ Email verified for user: ${userData.email}`);
@@ -268,17 +264,15 @@ export class AuthService implements OnModuleInit {
       throw new NotFoundException('User tidak ditemukan');
     }
 
-    // Cek apakah sudah verified
     if (userData.profile?.verification?.emailVerified === true) {
       throw new BadRequestException('Email sudah terverifikasi');
     }
 
-    // Rate limiting: cek apakah token yang ada belum expired lebih dari 1 menit
     if (userData.emailVerificationTokenExpiresAt) {
       const expiresAt = new Date(userData.emailVerificationTokenExpiresAt);
       const tokenAge = (expiresAt.getTime() - Date.now());
       const maxAge = this.EMAIL_VERIFY_TOKEN_TTL_MS;
-      const minWaitMs = 60 * 1000; // 1 menit
+      const minWaitMs = 60 * 1000;
 
       if (tokenAge > (maxAge - minWaitMs)) {
         throw new BadRequestException(
@@ -342,7 +336,6 @@ export class AuthService implements OnModuleInit {
       }
 
       const hashedPassword = await bcrypt.hash(password, this.BCRYPT_ROUNDS);
-      // ✅ CHANGED: generateNumericId untuk user (ID berupa angka: "1", "2", "3", ...)
       const userId = await this.firebaseService.generateNumericId(COLLECTIONS.USERS);
       const timestamp = new Date().toISOString();
       const newUserReferralCode = this.generateReferralCode();
@@ -367,7 +360,7 @@ export class AuthService implements OnModuleInit {
           timezone: 'Asia/Jakarta',
         },
         verification: {
-          emailVerified: false,       // ← false, perlu verifikasi dulu
+          emailVerified: false,
           phoneVerified: false,
           identityVerified: false,
           bankVerified: false,
@@ -375,7 +368,6 @@ export class AuthService implements OnModuleInit {
         },
       };
 
-      // Generate token verifikasi
       const verificationToken = this.generateEmailVerificationToken();
       const verificationTokenExpiresAt = new Date(
         Date.now() + this.EMAIL_VERIFY_TOKEN_TTL_MS
@@ -464,7 +456,6 @@ export class AuthService implements OnModuleInit {
         }
       }
 
-      // Kirim email verifikasi (non-blocking)
       this.emailService.sendEmailVerification(email, verificationToken).catch(err => {
         this.logger.error(`⚠️ Failed to send verification email: ${err.message}`);
       });
@@ -591,7 +582,6 @@ export class AuthService implements OnModuleInit {
         lastLoginAt,
         emailVerified,
       },
-      // Tampilkan reminder jika belum verifikasi
       emailVerification: !emailVerified
         ? {
             required: false,
@@ -599,6 +589,62 @@ export class AuthService implements OnModuleInit {
           }
         : null,
       token,
+    };
+  }
+
+  // ─── Autotrade Login ──────────────────────────────────────────────────────
+  //
+  // Login khusus untuk bot autotrade.
+  // Selain validasi email+password, memeriksa apakah User ID ada di whitelist
+  // autotrade (opsional: filter by affiliateCode).
+  //
+  // Endpoint: POST /auth/autotrade-login
+  // ─────────────────────────────────────────────────────────────────────────
+
+  async autotradeLogin(dto: AutotradeLoginDto) {
+    const startTime = Date.now();
+
+    // 1. Validasi credentials (email + password) — reuse logika login biasa
+    const loginResult = await this.login({ email: dto.email, password: dto.password });
+
+    const userId = loginResult.user.id;
+
+    // 2. Cek whitelist autotrade
+    if (!this.affiliateProgramService) {
+      throw new ForbiddenException(
+        'Layanan autotrade tidak tersedia. Hubungi administrator.'
+      );
+    }
+
+    const whitelistCheck = await this.affiliateProgramService.validateAutotradeLogin(
+      userId,
+      dto.affiliateCode,
+    );
+
+    if (!whitelistCheck.allowed) {
+      this.logger.warn(
+        `🚫 Autotrade login DITOLAK: user ${userId} (${dto.email}) — ${whitelistCheck.reason}`
+      );
+      throw new ForbiddenException(
+        whitelistCheck.reason || 'User ID Anda tidak diizinkan menggunakan autotrade'
+      );
+    }
+
+    const duration = Date.now() - startTime;
+    this.logger.log(
+      `🤖 Autotrade login BERHASIL: ${dto.email} (user ${userId}) ` +
+      `di bawah affiliator ${whitelistCheck.affiliatorId} — ${duration}ms`
+    );
+
+    return {
+      message: 'Autotrade login successful',
+      user: loginResult.user,
+      autotrade: {
+        allowed: true,
+        affiliatorId: whitelistCheck.affiliatorId,
+        affiliateCode: dto.affiliateCode,
+      },
+      token: loginResult.token,
     };
   }
 

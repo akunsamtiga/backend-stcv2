@@ -7,6 +7,7 @@ import { ModuleRef } from '@nestjs/core';
 import { AffiliateProgramService } from './affiliate-program.service';
 import { AffiliateProgramController } from './affiliate-program.controller';
 import { AffiliateProgramAdminController } from './affiliate-program-admin.controller';
+import { AutotradeWhitelistController } from './autotrade-whitelist.controller';
 import { AuthModule } from '../auth/auth.module';
 import { BalanceModule } from '../balance/balance.module';
 
@@ -28,6 +29,7 @@ import { BalanceModule } from '../balance/balance.module';
   controllers: [
     AffiliateProgramController,
     AffiliateProgramAdminController,
+    AutotradeWhitelistController,   // ← tambahan: whitelist CRUD untuk affiliator
   ],
   providers: [AffiliateProgramService],
   exports: [AffiliateProgramService],
@@ -38,11 +40,9 @@ export class AffiliateProgramModule implements OnModuleInit {
     private affiliateProgramService: AffiliateProgramService,
   ) {}
 
-  // ✅ FIX: Setelah semua module siap, inject AffiliateProgramService
-  // ke dalam AuthService dan GoogleAuthService yang menggunakan @Optional().
-  // Ini menghindari circular dependency (AffiliateProgramModule → AuthModule → AffiliateProgramModule).
   async onModuleInit() {
     setTimeout(async () => {
+      // ── Inject AffiliateProgramService ke AuthService (lazy, hindari circular dep) ──
       try {
         const { AuthService } = await import('../auth/auth.service');
         const authService = this.moduleRef.get(AuthService, { strict: false });
@@ -53,6 +53,7 @@ export class AffiliateProgramModule implements OnModuleInit {
         // Ignore if not available
       }
 
+      // ── Inject AffiliateProgramService ke GoogleAuthService ──
       try {
         const { GoogleAuthService } = await import('../auth/auth.service.google');
         const googleAuthService = this.moduleRef.get(GoogleAuthService, { strict: false });
