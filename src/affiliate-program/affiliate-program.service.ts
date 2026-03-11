@@ -265,6 +265,32 @@ export class AffiliateProgramService {
       updatedAt: timestamp,
     });
 
+    // ── Nonaktifkan semua whitelist entry milik affiliator ini ────────────
+    // Penting: tanpa ini, user yang sudah diwhitelist masih bisa login autotrade
+    // walaupun affiliator-nya sudah dicabut.
+    const whitelistSnap = await db
+      .collection(COLLECTIONS.AUTOTRADE_WHITELIST)
+      .where('affiliatorId', '==', userId)
+      .where('isActive', '==', true)
+      .get();
+
+    if (!whitelistSnap.empty) {
+      const batch = db.batch();
+      whitelistSnap.docs.forEach(doc => {
+        batch.update(doc.ref, {
+          isActive: false,
+          removedAt: timestamp,
+          removeReason: 'Affiliator program dicabut oleh admin',
+          updatedAt: timestamp,
+        });
+      });
+      await batch.commit();
+      this.logger.log(
+        `🗑️ ${whitelistSnap.size} whitelist entry dinonaktifkan karena affiliator ${userId} dicabut`
+      );
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
     this.logger.log(`⛔ Status affiliator dicabut untuk user ${userId} oleh admin ${adminId}`);
 
     return { message: 'Status affiliator berhasil dicabut' };
@@ -954,8 +980,9 @@ export class AffiliateProgramService {
     }
 
     await withdrawalDoc.ref.update({
-      status: COMMISSION_WITHDRAWAL_STATUS.REJECTED,
+      status: COMMISSION_WITHDRAWAL_STATUS.CANCELLED ?? COMMISSION_WITHDRAWAL_STATUS.REJECTED,
       rejectionReason: 'Dibatalkan oleh affiliator',
+      cancelledAt: timestamp,
       updatedAt: timestamp,
     });
 
@@ -1657,6 +1684,28 @@ export class AffiliateProgramService {
     }
 
     const entry = snap.docs[0].data();
+
+    // ── Jika tanpa affiliateCode, verifikasi bahwa affiliator masih aktif ─
+    // Ini mencegah user yang diwhitelist oleh affiliator yang sudah dicabut
+    // tetap bisa login (edge case: jika cleanup whitelist di revokeAffiliator gagal).
+    if (!affiliatorId) {
+      const affiliatorProgramSnap = await db
+        .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
+        .where('userId', '==', entry.affiliatorId)
+        .where('isActive', '==', true)
+        .where('autotradeEnabled', '==', true)
+        .limit(1)
+        .get();
+
+      if (affiliatorProgramSnap.empty) {
+        return {
+          allowed: false,
+          reason: `Program autotrade affiliator untuk user ${userId} tidak lagi aktif`,
+        };
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
     return {
       allowed: true,
       affiliatorId: entry.affiliatorId,

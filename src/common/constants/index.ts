@@ -143,11 +143,13 @@ export const WITHDRAWAL_CONFIG = {
 } as const;
 
 export const COMMISSION_WITHDRAWAL_STATUS = {
-  PENDING: 'pending',
-  APPROVED: 'approved',
-  REJECTED: 'rejected',
+  PENDING:   'pending',
+  APPROVED:  'approved',
+  REJECTED:  'rejected',    // Admin menolak
+  CANCELLED: 'cancelled',   // Affiliator membatalkan sendiri (BARU)
   COMPLETED: 'completed',
 } as const;
+
 
 export const COMMISSION_WITHDRAWAL_CONFIG = {
   MIN_AMOUNT: 50000,

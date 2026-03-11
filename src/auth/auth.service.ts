@@ -604,12 +604,34 @@ export class AuthService implements OnModuleInit {
   async autotradeLogin(dto: AutotradeLoginDto) {
     const startTime = Date.now();
 
-    // 1. Validasi credentials (email + password) — reuse logika login biasa
-    const loginResult = await this.login({ email: dto.email, password: dto.password });
+    // 1. Validasi credentials (tanpa mencatat login dulu)
+    const db = this.firebaseService.getFirestore();
+    const usersSnapshot = await db.collection(COLLECTIONS.USERS)
+      .where('email', '==', dto.email)
+      .limit(1)
+      .get();
 
-    const userId = loginResult.user.id;
+    if (usersSnapshot.empty) {
+      throw new UnauthorizedException('Invalid email or password');
+    }
 
-    // 2. Cek whitelist autotrade
+    const userDoc = usersSnapshot.docs[0];
+    const userForCheck = userDoc.data() as import('../common/interfaces').User;
+
+    if (!userForCheck.isActive) {
+      throw new UnauthorizedException('Account is deactivated');
+    }
+
+    const bcrypt = await import('bcrypt');
+    const isPasswordValid = await bcrypt.compare(dto.password, userForCheck.password);
+    if (!isPasswordValid) {
+      throw new UnauthorizedException('Invalid email or password');
+    }
+
+    const userId = userForCheck.id;
+
+    // 2. Cek whitelist autotrade SEBELUM mencatat login
+    // (agar loginCount tidak bertambah jika whitelist check gagal)
     if (!this.affiliateProgramService) {
       throw new ForbiddenException(
         'Layanan autotrade tidak tersedia. Hubungi administrator.'
@@ -629,6 +651,9 @@ export class AuthService implements OnModuleInit {
         whitelistCheck.reason || 'User ID Anda tidak diizinkan menggunakan autotrade'
       );
     }
+
+    // 3. Whitelist OK — baru lakukan login penuh (catat loginCount, lastLoginAt, dll.)
+    const loginResult = await this.login({ email: dto.email, password: dto.password });
 
     const duration = Date.now() - startTime;
     this.logger.log(
