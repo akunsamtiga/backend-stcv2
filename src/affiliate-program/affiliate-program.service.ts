@@ -1642,6 +1642,33 @@ export class AffiliateProgramService {
   }> {
     const db = this.firebaseService.getFirestore();
 
+    // ── FIX: Cek apakah user yang login adalah affiliator itu sendiri ─────────
+    // Jika ya, dan programnya aktif + autotrade diaktifkan, langsung izinkan masuk
+    // tanpa perlu ada di whitelist (whitelist adalah untuk user BOT mereka, bukan diri sendiri)
+    const ownProgramSnap = await db
+      .collection(COLLECTIONS.AFFILIATOR_PROGRAMS)
+      .where('userId', '==', userId)
+      .where('isActive', '==', true)
+      .where('autotradeEnabled', '==', true)
+      .limit(1)
+      .get();
+
+    if (!ownProgramSnap.empty) {
+      const ownProgram = ownProgramSnap.docs[0].data();
+      // Jika affiliateCode diisi, pastikan cocok dengan kode miliknya sendiri
+      if (!affiliateCode || ownProgram.affiliateCode === affiliateCode.toUpperCase()) {
+        this.logger.log(
+          `✅ Autotrade login DIIZINKAN: user ${userId} adalah pemilik program autotrade (affiliateCode: ${ownProgram.affiliateCode})`
+        );
+        return {
+          allowed: true,
+          affiliatorId: userId,
+          affiliateCode: ownProgram.affiliateCode,
+        };
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     let affiliatorId: string | undefined;
 
     if (affiliateCode) {
