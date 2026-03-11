@@ -60,7 +60,11 @@ export class BinaryOrdersService implements OnModuleInit {
   // Order cache untuk getOrderById
   private orderCache: Map<string, BinaryOrder> = new Map();
 
-  private processingLock = false;
+  // ✅ FIX #2: Ganti single global lock → per-order tracking
+  // Global lock menyebabkan semua cron tick berikutnya diskip selama satu batch
+  // sedang berjalan (bisa 2–6 detik), sehingga order yang expire di tengah batch
+  // tidak diproses sampai batch selesai.
+  private processingOrders: Set<string> = new Set();
 
   private orderCreateCount   = 0;
   private orderSettleCount   = 0;
@@ -500,9 +504,12 @@ export class BinaryOrdersService implements OnModuleInit {
 
   @Cron('*/1 * * * * *')
   async processExpiredOrders() {
-    if (this.processingLock) return;
+    // ✅ FIX #2: Tidak ada global lock — setiap tick bebas memproses order baru.
+    // Order yang sedang diproses dilacak per-order di processingOrders Set,
+    // sehingga order yang expire di tick berikutnya tetap bisa diproses
+    // meskipun batch sebelumnya belum selesai.
 
-    // ✅ Fast path: jika registry kosong, skip semua — ZERO Firestore read
+    // Fast path: jika registry kosong, skip semua — ZERO Firestore read
     if (this.pendingOrderRegistry.size === 0) {
       this.settlementRunCount++;
       if (this.settlementRunCount % 60 === 0) {
@@ -513,14 +520,13 @@ export class BinaryOrdersService implements OnModuleInit {
       return;
     }
 
-    // ✅ Jika registry belum berhasil di-hydrate (startup error), coba sekali lagi
+    // Jika registry belum berhasil di-hydrate (startup error), coba sekali lagi
     if (!this.registryHydrated) {
       this.logger.warn('⚠️ Registry not hydrated yet, retrying...');
       await this.hydrateRegistry();
       return;
     }
 
-    this.processingLock = true;
     this.settlementRunCount++;
     const startTime = Date.now();
 
@@ -528,29 +534,23 @@ export class BinaryOrdersService implements OnModuleInit {
       const currentTimestamp = TimezoneUtil.getCurrentTimestamp();
       const currentDateTime  = TimezoneUtil.formatDateTime();
 
-      // ✅ Ambil semua order dari in-memory registry — ZERO Firestore read
+      // Ambil semua order dari in-memory registry — ZERO Firestore read
       const allOrders = Array.from(this.pendingOrderRegistry.values());
 
-      // Filter berdasarkan accountType dan expiry
-      const expiredRealOrders = allOrders.filter(order => {
-        if (order.accountType !== BALANCE_ACCOUNT_TYPE.REAL) return false;
+      // ✅ FIX #2: Filter expired DAN skip order yang sedang diproses
+      const expiredOrders = allOrders.filter(order => {
+        if (this.processingOrders.has(order.id)) return false; // sudah diproses di tick lain
         const exitTimestamp = TimezoneUtil.toTimestamp(new Date(order.exit_time!));
         return currentTimestamp >= exitTimestamp;
       });
 
-      const expiredDemoOrders = allOrders.filter(order => {
-        if (order.accountType !== BALANCE_ACCOUNT_TYPE.DEMO) return false;
-        const exitTimestamp = TimezoneUtil.toTimestamp(new Date(order.exit_time!));
-        return currentTimestamp >= exitTimestamp;
-      });
-
-      const totalExpired = expiredRealOrders.length + expiredDemoOrders.length;
+      const totalExpired = expiredOrders.length;
 
       if (totalExpired === 0) {
         if (this.settlementRunCount % 60 === 0) {
           this.logger.debug(
             `⏰ Settlement check #${this.settlementRunCount}: No expired orders ` +
-            `(${allOrders.length} active in registry)`,
+            `(${allOrders.length} active in registry, ${this.processingOrders.size} processing)`,
           );
         }
         return;
@@ -558,28 +558,20 @@ export class BinaryOrdersService implements OnModuleInit {
 
       this.logger.log(
         `⚡ [${currentDateTime} WIB] Processing ${totalExpired} expired orders ` +
-        `(Real: ${expiredRealOrders.length}, Demo: ${expiredDemoOrders.length})`,
+        `(Real: ${expiredOrders.filter(o => o.accountType === BALANCE_ACCOUNT_TYPE.REAL).length}, ` +
+        `Demo: ${expiredOrders.filter(o => o.accountType === BALANCE_ACCOUNT_TYPE.DEMO).length})`,
       );
 
-      const PARALLEL_LIMIT = 20;
-      await Promise.all([
-        this.settleBatch(expiredRealOrders, PARALLEL_LIMIT),
-        this.settleBatch(expiredDemoOrders, PARALLEL_LIMIT),
-      ]);
+      // ✅ Tandai semua order ini sebagai "sedang diproses" sebelum mulai
+      expiredOrders.forEach(o => this.processingOrders.add(o.id));
+
+      // Proses semua secara paralel — tidak ada global lock yang memblokir tick berikutnya
+      await Promise.allSettled(expiredOrders.map(order => this.settleOrderInstant(order)));
 
       const duration = Date.now() - startTime;
       this.logger.log(`⚡ Settled ${totalExpired} orders in ${duration}ms`);
     } catch (error) {
       this.logger.error(`Settlement error: ${error.message}`);
-    } finally {
-      this.processingLock = false;
-    }
-  }
-
-  private async settleBatch(orders: BinaryOrder[], batchSize: number): Promise<void> {
-    for (let i = 0; i < orders.length; i += batchSize) {
-      const batch = orders.slice(i, i + batchSize);
-      await Promise.allSettled(batch.map(order => this.settleOrderInstant(order)));
     }
   }
 
@@ -589,26 +581,34 @@ export class BinaryOrdersService implements OnModuleInit {
     try {
       const asset = await this.getCachedAssetFast(order.asset_id);
 
-      let priceData: any = null;
-      let attempts       = 0;
-      const maxAttempts  = 3;
+    let priceData: any = null;
+    let attempts       = 0;
+    const maxAttempts  = 3;
 
-      while (attempts < maxAttempts && !priceData?.price) {
-        try {
-          priceData = await Promise.race([
-            this.priceFetcherService.getCurrentPrice(asset, false),
-            new Promise<any>((_, reject) =>
-              setTimeout(() => reject(new Error('Timeout')), 2000),
-            ),
-          ]);
-          if (priceData?.price) break;
-        } catch (error) {
-          attempts++;
-          if (attempts < maxAttempts) {
-            await new Promise(resolve => setTimeout(resolve, 500));
-          }
+    // ✅ FIX #1: attempts di-increment di awal loop (bukan hanya di catch).
+    // Bug sebelumnya: jika getCurrentPrice() return { price: null } tanpa throw,
+    // attempts tidak bertambah → infinite loop → processingLock tidak pernah release
+    // → semua order berikutnya tidak pernah disettle.
+    while (attempts < maxAttempts) {
+      attempts++;
+      try {
+        priceData = await Promise.race([
+          this.priceFetcherService.getCurrentPrice(asset, false),
+          new Promise<any>((_, reject) =>
+            setTimeout(() => reject(new Error('Timeout')), 2000),
+          ),
+        ]);
+        if (priceData?.price) break;
+        // priceData return tapi price null/0 — lanjut retry
+        if (attempts < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      } catch (error) {
+        if (attempts < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, 500));
         }
       }
+    }
 
       if (!priceData?.price) {
         this.logger.warn(
@@ -718,6 +718,11 @@ export class BinaryOrdersService implements OnModuleInit {
       );
     } catch (error) {
       this.logger.error(`Settlement failed for ${order.id}: ${error.message}`);
+    } finally {
+      // ✅ FIX #2: SELALU hapus dari processingOrders — baik sukses maupun error.
+      // Tanpa ini, order yang gagal settle akan stuck di processingOrders selamanya
+      // dan tidak akan pernah di-retry di cron tick berikutnya.
+      this.processingOrders.delete(order.id);
     }
   }
 
@@ -919,7 +924,10 @@ export class BinaryOrdersService implements OnModuleInit {
   //   - registerExternalOrder gagal/belum dipanggil
   //   - Order dibuat oleh service lain tanpa lewat BinaryOrdersService
   // ─────────────────────────────────────────────────────────────────────────
-  @Cron('0 */5 * * * *')
+  // ✅ FIX #4: Percepat dari 5 menit → 30 detik.
+  // Safety net untuk order yang lolos dari registry (race condition saat banyak
+  // order masuk bersamaan). Dengan 5 menit, order bisa stuck hingga 5 menit.
+  @Cron('*/30 * * * * *')
   private async reconcileRegistry(): Promise<void> {
     try {
       const db = this.firebaseService.getFirestore();
