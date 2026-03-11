@@ -150,7 +150,6 @@ export const COMMISSION_WITHDRAWAL_STATUS = {
   COMPLETED: 'completed',
 } as const;
 
-
 export const COMMISSION_WITHDRAWAL_CONFIG = {
   MIN_AMOUNT: 50000,
 } as const;
